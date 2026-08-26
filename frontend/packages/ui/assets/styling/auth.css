@@ -1,0 +1,185 @@
+.auth-page {
+    --bg: #f7f1e7;
+    --card-bg: #fffdfb;
+    --border: #e7ded0;
+    --text-primary: #262220;
+    --text-muted: #8c8579;
+    --placeholder: #aaa196;
+    --accent: #c2884f;
+    --accent-hover: #ad7640;
+
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 96px 20px 60px;
+    background-color: var(--bg);
+}
+
+.auth-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    max-width: 360px;
+}
+
+.auth-brand .icon-inbox {
+    width: 40px;
+    height: 40px;
+    color: var(--accent);
+    margin-bottom: 12px;
+}
+
+.brand-name {
+    font-family: Georgia, 'Times New Roman', 'Liberation Serif', serif;
+    font-size: 56px;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 16px;
+    line-height: 1;
+}
+
+.brand-tagline {
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 430px;
+    margin-top: 32px;
+    padding: 32px;
+    background-color: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 20px 40px rgba(60, 45, 25, 0.06);
+}
+
+.auth-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+}
+
+.auth-tab {
+    flex: 1;
+    position: relative;
+    background: none;
+    border: none;
+    padding: 0 0 14px;
+    font-family: inherit;
+    font-size: 16px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.auth-tab.active {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.auth-tab.active::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background-color: var(--accent);
+}
+
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.input-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    padding: 0 14px;
+    background-color: #fff;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+.input-group .icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+}
+
+.input-field {
+    flex: 1;
+    height: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.input-field::placeholder {
+    color: var(--placeholder);
+}
+
+.input-icon-button {
+    display: flex;
+    align-items: center;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.input-icon-button .icon {
+    width: 18px;
+    height: 18px;
+}
+
+.btn-primary {
+    height: 52px;
+    margin-top: 4px;
+    border: none;
+    border-radius: 10px;
+    background-color: var(--accent);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-primary:hover {
+    background-color: var(--accent-hover);
+}
+
+.link-forgot {
+    display: block;
+    margin-top: 4px;
+    text-align: center;
+    color: var(--accent);
+    font-size: 14px;
+    text-decoration: none;
+}
+
+.link-forgot:hover {
+    text-decoration: underline;
+}
+
+.icon {
+    display: inline-flex;
+}
+
+.icon svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
