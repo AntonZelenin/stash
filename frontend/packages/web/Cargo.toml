@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 dioxus = { workspace = true }
+ui = { workspace = true }
 
 [features]
 default = ["web"]

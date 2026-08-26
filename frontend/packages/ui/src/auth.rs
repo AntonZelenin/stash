@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 
 use crate::icons::{IconEye, IconEyeOff, IconInbox, IconLock, IconMail};
 
-const AUTH_CSS: Asset = asset!("/assets/auth.css");
+const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 
 #[derive(Clone, Copy, PartialEq)]
 enum AuthTab {

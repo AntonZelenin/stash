@@ -1,9 +1,6 @@
 use dioxus::prelude::*;
 
-use views::Auth;
-
-mod icons;
-mod views;
+use ui::Auth;
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
