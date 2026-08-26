@@ -1,0 +1,3 @@
+# Local environment services (API, Worker, PostgreSQL, MinIO, Queue) will be
+# defined here once the corresponding components are implemented.
+# See docs/architecture.md for the expected services.
