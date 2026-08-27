@@ -3,7 +3,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from app.dependencies import get_current_user
-from app.schemas.items import CreateTextItemRequest, ItemCreated, ItemStatus
+from app.api.schemas.items import CreateTextItemRequest, ItemCreated, ItemStatus
 
 router = APIRouter(tags=["items"])
 

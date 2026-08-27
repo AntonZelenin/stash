@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status
 
-from app.schemas.auth import LoginRequest, LoginResponse
+from app.api.schemas.auth import LoginRequest, LoginResponse
 
 router = APIRouter(tags=["auth"])
 

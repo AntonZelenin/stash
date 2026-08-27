@@ -2,7 +2,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.schemas.items import ItemType
+from app.api.schemas.items import ItemType
 
 
 class SearchRequest(BaseModel):

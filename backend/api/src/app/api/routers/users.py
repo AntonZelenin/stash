@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, status
 
-from app.schemas.users import UserCreateRequest, UserCreateResponse
+from app.api.schemas.users import UserCreateRequest, UserCreateResponse
 
 router = APIRouter(tags=["users"])
 

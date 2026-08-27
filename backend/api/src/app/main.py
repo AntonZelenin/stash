@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import auth, items, search, users
+from app.api.routers import auth, items, search, users
 
 app = FastAPI(
     title="Stash API",
