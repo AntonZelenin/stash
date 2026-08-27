@@ -1,9 +1,9 @@
 use api::ApiError;
 use dioxus::prelude::*;
 
+use crate::AuthSession;
 use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
 use crate::routes::Route;
-use crate::AuthSession;
 
 const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 

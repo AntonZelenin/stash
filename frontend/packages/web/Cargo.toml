@@ -7,7 +7,8 @@ edition = "2024"
 dioxus = { workspace = true }
 ui = { workspace = true }
 api = { workspace = true }
-gloo-storage = "0.3"
+serde_json = "1"
+web-sys = { version = "0.3", features = ["Storage", "Window"] }
 
 [features]
 default = ["web"]

@@ -1,21 +1,35 @@
 use api::{TokenPair, TokenStore};
-use gloo_storage::{LocalStorage, Storage};
+use web_sys::window;
 
 const STORAGE_KEY: &str = "stash.tokens";
 
 /// Persists the current token pair in the browser's `localStorage`.
 pub struct LocalStorageTokenStore;
 
+impl LocalStorageTokenStore {
+    fn storage() -> Option<web_sys::Storage> {
+        window()?.local_storage().ok()?
+    }
+}
+
 impl TokenStore for LocalStorageTokenStore {
     fn load(&self) -> Option<TokenPair> {
-        LocalStorage::get(STORAGE_KEY).ok()
+        let raw = Self::storage()?.get_item(STORAGE_KEY).ok()??;
+        serde_json::from_str(&raw).ok()
     }
 
     fn save(&self, tokens: &TokenPair) {
-        let _ = LocalStorage::set(STORAGE_KEY, tokens);
+        let Some(storage) = Self::storage() else {
+            return;
+        };
+        if let Ok(raw) = serde_json::to_string(tokens) {
+            let _ = storage.set_item(STORAGE_KEY, &raw);
+        }
     }
 
     fn clear(&self) {
-        LocalStorage::delete(STORAGE_KEY);
+        if let Some(storage) = Self::storage() {
+            let _ = storage.remove_item(STORAGE_KEY);
+        }
     }
 }

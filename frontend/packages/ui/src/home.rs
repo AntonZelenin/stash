@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
-use crate::routes::Route;
 use crate::AuthSession;
+use crate::routes::Route;
 
 #[component]
 pub fn Home() -> Element {
