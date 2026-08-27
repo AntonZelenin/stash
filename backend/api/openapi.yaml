@@ -75,15 +75,38 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - access_token
-                properties:
-                  access_token:
-                    type: string
+                $ref: "#/components/schemas/TokenPair"
 
         "401":
           description: Invalid credentials
+
+  /refresh:
+    post:
+      summary: Refresh an access token
+      operationId: refreshToken
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+
+      responses:
+        "200":
+          description: Refresh successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+
+        "401":
+          description: Invalid refresh token
 
   /items/text:
     post:
@@ -224,6 +247,17 @@ paths:
 
 components:
   schemas:
+    TokenPair:
+      type: object
+      required:
+        - access_token
+        - refresh_token
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+
     ItemCreated:
       type: object
       required:
@@ -245,4 +279,3 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT

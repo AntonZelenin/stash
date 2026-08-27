@@ -1,9 +1,4 @@
-from uuid import uuid4
-
-import jwt
-import pytest
-
-from app.auth.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.auth.security import generate_token, hash_password, hash_token, verify_password
 
 
 def test_hash_password_does_not_return_plaintext():
@@ -28,16 +23,19 @@ def test_verify_password_rejects_oversized_password_instead_of_raising():
     assert verify_password("x" * 100, password_hash) is False
 
 
-def test_access_token_roundtrips_user_id():
-    user_id = uuid4()
+def test_generate_token_returns_unique_high_entropy_values():
+    tokens = {generate_token() for _ in range(100)}
 
-    token = create_access_token(user_id)
+    assert len(tokens) == 100
+    assert all(len(token) >= 32 for token in tokens)
 
-    assert decode_access_token(token) == user_id
+
+def test_hash_token_is_deterministic_and_does_not_return_plaintext():
+    token = generate_token()
+
+    assert hash_token(token) == hash_token(token)
+    assert hash_token(token) != token
 
 
-def test_decode_access_token_rejects_tampered_token():
-    token = create_access_token(uuid4())
-
-    with pytest.raises(jwt.PyJWTError):
-        decode_access_token(token + "tampered")
+def test_hash_token_differs_for_different_tokens():
+    assert hash_token(generate_token()) != hash_token(generate_token())

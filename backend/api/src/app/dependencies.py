@@ -1,14 +1,12 @@
-import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.security import decode_access_token
+from app.auth.services import AuthService
 from app.db import get_db_session
 from app.users.models import User
-from app.users.repos import UserRepository
 
-_bearer_scheme = HTTPBearer(scheme_name="bearerAuth", bearerFormat="JWT", auto_error=False)
+_bearer_scheme = HTTPBearer(scheme_name="bearerAuth", auto_error=False)
 
 
 def _unauthorized() -> HTTPException:
@@ -26,12 +24,7 @@ async def get_current_user(
     if credentials is None:
         raise _unauthorized()
 
-    try:
-        user_id = decode_access_token(credentials.credentials)
-    except (jwt.PyJWTError, ValueError):
-        raise _unauthorized() from None
-
-    user = await UserRepository(session).get_by_id(user_id)
+    user = await AuthService(session).get_user_by_access_token(credentials.credentials)
     if user is None:
         raise _unauthorized()
 

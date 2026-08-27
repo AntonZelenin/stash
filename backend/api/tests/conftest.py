@@ -5,21 +5,24 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.main import app
 from app.users.models import User
 
+_TEST_TABLES = [User.__table__, AccessToken.__table__, RefreshToken.__table__]
+
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession]:
-    """A fresh in-memory SQLite DB (users table only) for each test."""
+    """A fresh in-memory SQLite DB (users + auth tables only) for each test."""
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     async with engine.begin() as conn:
-        await conn.run_sync(User.metadata.create_all, tables=[User.__table__])
+        await conn.run_sync(User.metadata.create_all, tables=_TEST_TABLES)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
