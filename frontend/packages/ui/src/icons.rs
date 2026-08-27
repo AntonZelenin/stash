@@ -12,9 +12,9 @@ macro_rules! icon {
 }
 
 icon!(
-    IconInbox,
-    "icon-inbox",
-    r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>"#
+    IconStash,
+    "icon-stash",
+    r##"<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="stash-mark-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fca01e"/><stop offset="25%" stop-color="#fd5969"/><stop offset="50%" stop-color="#ef21ea"/><stop offset="75%" stop-color="#6675f5"/><stop offset="100%" stop-color="#1bd4b3"/></linearGradient></defs><path stroke="url(#stash-mark-gradient)" d="M12 6.5 6 9v9h12V9Z"/><path stroke="url(#stash-mark-gradient)" d="M6 9 12 11.5 18 9"/></svg>"##
 );
 
 icon!(

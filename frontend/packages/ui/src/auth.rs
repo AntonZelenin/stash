@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::icons::{IconEye, IconEyeOff, IconInbox, IconLock, IconMail};
+use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
 
 const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 
@@ -18,36 +18,38 @@ pub fn Auth() -> Element {
         document::Link { rel: "stylesheet", href: AUTH_CSS }
 
         div { class: "auth-page",
-            div { class: "auth-brand",
-                IconInbox {}
-                h1 { class: "brand-name", "stash" }
-                p { class: "brand-tagline",
-                    "Save everything."
-                    br {}
-                    "Find it anytime."
-                }
-            }
-
-            div { class: "auth-card",
-                div { class: "auth-tabs",
-                    button {
-                        class: if tab() == AuthTab::Login { "auth-tab active" } else { "auth-tab" },
-                        r#type: "button",
-                        onclick: move |_| tab.set(AuthTab::Login),
-                        "Log in"
-                    }
-                    button {
-                        class: if tab() == AuthTab::Signup { "auth-tab active" } else { "auth-tab" },
-                        r#type: "button",
-                        onclick: move |_| tab.set(AuthTab::Signup),
-                        "Sign up"
+            div { class: "auth-content",
+                div { class: "auth-brand",
+                    IconStash {}
+                    h1 { class: "brand-name", "stash" }
+                    p { class: "brand-tagline",
+                        "Save everything."
+                        br {}
+                        "Find it anytime."
                     }
                 }
 
-                if tab() == AuthTab::Login {
-                    LoginForm {}
-                } else {
-                    SignupForm {}
+                div { class: "auth-card",
+                    div { class: "auth-tabs",
+                        button {
+                            class: if tab() == AuthTab::Login { "auth-tab active" } else { "auth-tab" },
+                            r#type: "button",
+                            onclick: move |_| tab.set(AuthTab::Login),
+                            "Log in"
+                        }
+                        button {
+                            class: if tab() == AuthTab::Signup { "auth-tab active" } else { "auth-tab" },
+                            r#type: "button",
+                            onclick: move |_| tab.set(AuthTab::Signup),
+                            "Sign up"
+                        }
+                    }
+
+                    if tab() == AuthTab::Login {
+                        LoginForm {}
+                    } else {
+                        SignupForm {}
+                    }
                 }
             }
         }
