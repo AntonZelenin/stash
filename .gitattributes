@@ -1,0 +1,6 @@
+# Files that get executed inside Linux containers (shebang scripts) must
+# always check out with LF, regardless of the developer's OS or git
+# core.autocrlf setting — a CRLF shebang line breaks `exec` on Linux with a
+# misleading "no such file or directory" error.
+*.sh text eol=lf
+Dockerfile text eol=lf
