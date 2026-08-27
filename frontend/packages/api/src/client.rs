@@ -1,6 +1,7 @@
-use reqwest::{Method, RequestBuilder};
+use reqwest::{Method, RequestBuilder, Response};
+use serde::Deserialize;
 
-use crate::error::ApiError;
+use crate::error::{ApiError, FieldError};
 use crate::models::{
     CreateTextItemRequest, ItemCreated, LoginRequest, RefreshRequest, RegisterRequest,
     RegisterResponse, TokenPair,
@@ -39,7 +40,9 @@ impl ApiClient {
         match response.status().as_u16() {
             201 => response.json().await.map_err(|_| ApiError::Server),
             409 => Err(ApiError::Conflict),
-            422 => Err(ApiError::Validation),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
             _ => Err(ApiError::Server),
         }
     }
@@ -59,7 +62,9 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            422 => Err(ApiError::Validation),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
             _ => Err(ApiError::Server),
         }
     }
@@ -107,8 +112,45 @@ impl ApiClient {
         match response.status().as_u16() {
             202 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            422 => Err(ApiError::Validation),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
             _ => Err(ApiError::Server),
         }
+    }
+}
+
+/// FastAPI's shape for a 422 from request-body validation:
+/// `{"detail": [{"loc": ["body", "password"], "msg": "...", "type": "..."}]}`.
+#[derive(Deserialize)]
+struct ValidationErrorBody {
+    detail: Vec<ValidationErrorItem>,
+}
+
+#[derive(Deserialize)]
+struct ValidationErrorItem {
+    loc: Vec<serde_json::Value>,
+    msg: String,
+}
+
+/// Parses a 422 response into field-level errors. Falls back to a single
+/// generic, field-less error if the body doesn't match the shape above (e.g.
+/// a 422 raised manually with a plain string `detail`).
+async fn parse_validation_errors(response: Response) -> Vec<FieldError> {
+    match response.json::<ValidationErrorBody>().await {
+        Ok(body) => body
+            .detail
+            .into_iter()
+            .map(|item| FieldError {
+                // `loc` is `["body", "<field name>", ...]` for a body field;
+                // take the field name directly under "body" if present.
+                field: item.loc.get(1).and_then(|v| v.as_str()).map(str::to_string),
+                message: item.msg,
+            })
+            .collect(),
+        Err(_) => vec![FieldError {
+            field: None,
+            message: "Invalid request".to_string(),
+        }],
     }
 }

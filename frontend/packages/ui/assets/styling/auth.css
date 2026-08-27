@@ -137,6 +137,16 @@
     border-radius: 12px;
 }
 
+.input-group.has-error {
+    border-color: #dc2626;
+}
+
+.field-error {
+    margin: -6px 0 0;
+    color: #dc2626;
+    font-size: 13px;
+}
+
 .input-group .icon {
     flex-shrink: 0;
     width: 18px;

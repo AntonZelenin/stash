@@ -27,3 +27,9 @@ app.include_router(users.router)
 app.include_router(auth.router)
 app.include_router(items.router)
 app.include_router(search.router)
+
+
+@app.get("/health", include_in_schema=False)
+async def health() -> dict[str, str]:
+    """Liveness probe. Not part of the public API contract."""
+    return {"status": "ok"}

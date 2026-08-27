@@ -1,3 +1,4 @@
+use api::ApiError;
 use dioxus::prelude::*;
 
 use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
@@ -10,6 +11,46 @@ const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 enum AuthTab {
     Login,
     Signup,
+}
+
+/// An `ApiError` split into what a login/signup form can show: a top-level
+/// message, and messages tied to the specific fields the backend named.
+struct FormErrors {
+    general: Option<String>,
+    email: Option<String>,
+    password: Option<String>,
+}
+
+fn split_error(err: ApiError) -> FormErrors {
+    match err {
+        ApiError::Validation(field_errors) => {
+            let mut result = FormErrors {
+                general: None,
+                email: None,
+                password: None,
+            };
+            let mut general_messages = Vec::new();
+
+            for field_error in field_errors {
+                match field_error.field.as_deref() {
+                    Some("email") => result.email = Some(field_error.message),
+                    Some("password") => result.password = Some(field_error.message),
+                    _ => general_messages.push(field_error.message),
+                }
+            }
+
+            if !general_messages.is_empty() {
+                result.general = Some(general_messages.join(" "));
+            }
+
+            result
+        }
+        other => FormErrors {
+            general: Some(other.to_string()),
+            email: None,
+            password: None,
+        },
+    }
 }
 
 #[component]
@@ -78,7 +119,9 @@ fn LoginForm() -> Element {
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut show_password = use_signal(|| false);
-    let mut error = use_signal(|| None::<String>);
+    let mut general_error = use_signal(|| None::<String>);
+    let mut email_error = use_signal(|| None::<String>);
+    let mut password_error = use_signal(|| None::<String>);
     let mut is_submitting = use_signal(|| false);
 
     rsx! {
@@ -93,22 +136,27 @@ fn LoginForm() -> Element {
                 let session = session.clone();
                 spawn(async move {
                     is_submitting.set(true);
-                    error.set(None);
+                    general_error.set(None);
+                    email_error.set(None);
+                    password_error.set(None);
 
-                    match session.login(&email(), &password()).await {
-                        Ok(()) => {}
-                        Err(err) => error.set(Some(err.to_string())),
+                    if let Err(err) = session.login(&email(), &password()).await {
+                        let errors = split_error(err);
+                        general_error.set(errors.general);
+                        email_error.set(errors.email);
+                        password_error.set(errors.password);
                     }
 
                     is_submitting.set(false);
                 });
             },
 
-            if let Some(message) = error() {
+            if let Some(message) = general_error() {
                 p { class: "auth-error", "{message}" }
             }
 
-            div { class: "input-group",
+            div {
+                class: if email_error().is_some() { "input-group has-error" } else { "input-group" },
                 IconMail {}
                 input {
                     class: "input-field",
@@ -118,8 +166,12 @@ fn LoginForm() -> Element {
                     oninput: move |evt| email.set(evt.value()),
                 }
             }
+            if let Some(message) = email_error() {
+                p { class: "field-error", "{message}" }
+            }
 
-            div { class: "input-group",
+            div {
+                class: if password_error().is_some() { "input-group has-error" } else { "input-group" },
                 IconLock {}
                 input {
                     class: "input-field",
@@ -134,6 +186,9 @@ fn LoginForm() -> Element {
                     onclick: move |_| show_password.set(!show_password()),
                     if show_password() { IconEyeOff {} } else { IconEye {} }
                 }
+            }
+            if let Some(message) = password_error() {
+                p { class: "field-error", "{message}" }
             }
 
             button {
@@ -161,7 +216,10 @@ fn SignupForm() -> Element {
     let mut password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);
     let mut show_password = use_signal(|| false);
-    let mut error = use_signal(|| None::<String>);
+    let mut general_error = use_signal(|| None::<String>);
+    let mut email_error = use_signal(|| None::<String>);
+    let mut password_error = use_signal(|| None::<String>);
+    let mut confirm_password_error = use_signal(|| None::<String>);
     let mut is_submitting = use_signal(|| false);
 
     rsx! {
@@ -173,30 +231,37 @@ fn SignupForm() -> Element {
                     return;
                 }
 
+                general_error.set(None);
+                email_error.set(None);
+                password_error.set(None);
+                confirm_password_error.set(None);
+
                 if password() != confirm_password() {
-                    error.set(Some("Passwords don't match".to_string()));
+                    confirm_password_error.set(Some("Passwords don't match".to_string()));
                     return;
                 }
 
                 let session = session.clone();
                 spawn(async move {
                     is_submitting.set(true);
-                    error.set(None);
 
-                    match session.register(&email(), &password()).await {
-                        Ok(()) => {}
-                        Err(err) => error.set(Some(err.to_string())),
+                    if let Err(err) = session.register(&email(), &password()).await {
+                        let errors = split_error(err);
+                        general_error.set(errors.general);
+                        email_error.set(errors.email);
+                        password_error.set(errors.password);
                     }
 
                     is_submitting.set(false);
                 });
             },
 
-            if let Some(message) = error() {
+            if let Some(message) = general_error() {
                 p { class: "auth-error", "{message}" }
             }
 
-            div { class: "input-group",
+            div {
+                class: if email_error().is_some() { "input-group has-error" } else { "input-group" },
                 IconMail {}
                 input {
                     class: "input-field",
@@ -206,8 +271,12 @@ fn SignupForm() -> Element {
                     oninput: move |evt| email.set(evt.value()),
                 }
             }
+            if let Some(message) = email_error() {
+                p { class: "field-error", "{message}" }
+            }
 
-            div { class: "input-group",
+            div {
+                class: if password_error().is_some() { "input-group has-error" } else { "input-group" },
                 IconLock {}
                 input {
                     class: "input-field",
@@ -223,8 +292,12 @@ fn SignupForm() -> Element {
                     if show_password() { IconEyeOff {} } else { IconEye {} }
                 }
             }
+            if let Some(message) = password_error() {
+                p { class: "field-error", "{message}" }
+            }
 
-            div { class: "input-group",
+            div {
+                class: if confirm_password_error().is_some() { "input-group has-error" } else { "input-group" },
                 IconLock {}
                 input {
                     class: "input-field",
@@ -233,6 +306,9 @@ fn SignupForm() -> Element {
                     value: "{confirm_password}",
                     oninput: move |evt| confirm_password.set(evt.value()),
                 }
+            }
+            if let Some(message) = confirm_password_error() {
+                p { class: "field-error", "{message}" }
             }
 
             button {
