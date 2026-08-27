@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
 
 use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
+use crate::routes::Route;
+use crate::AuthSession;
 
 const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 
@@ -12,6 +14,19 @@ enum AuthTab {
 
 #[component]
 pub fn Auth() -> Element {
+    let session = use_context::<AuthSession>();
+    let nav = use_navigator();
+
+    // Covers both "redirect after a successful login/signup" and "don't
+    // show the login form to an already-authenticated visitor": both cases
+    // are just `session.tokens` becoming `Some`, which this reactively picks
+    // up regardless of how it happened.
+    use_effect(move || {
+        if session.is_authenticated() {
+            nav.push(Route::Home {});
+        }
+    });
+
     let mut tab = use_signal(|| AuthTab::Login);
 
     rsx! {
@@ -58,14 +73,40 @@ pub fn Auth() -> Element {
 
 #[component]
 fn LoginForm() -> Element {
+    let session = use_context::<AuthSession>();
+
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut show_password = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let mut is_submitting = use_signal(|| false);
 
     rsx! {
         form {
             class: "auth-form",
-            onsubmit: move |evt| evt.prevent_default(),
+            onsubmit: move |evt| {
+                evt.prevent_default();
+                if is_submitting() {
+                    return;
+                }
+
+                let session = session.clone();
+                spawn(async move {
+                    is_submitting.set(true);
+                    error.set(None);
+
+                    match session.login(&email(), &password()).await {
+                        Ok(()) => {}
+                        Err(err) => error.set(Some(err.to_string())),
+                    }
+
+                    is_submitting.set(false);
+                });
+            },
+
+            if let Some(message) = error() {
+                p { class: "auth-error", "{message}" }
+            }
 
             div { class: "input-group",
                 IconMail {}
@@ -95,7 +136,12 @@ fn LoginForm() -> Element {
                 }
             }
 
-            button { class: "btn-primary", r#type: "submit", "Log in" }
+            button {
+                class: "btn-primary",
+                r#type: "submit",
+                disabled: is_submitting(),
+                if is_submitting() { "Logging in..." } else { "Log in" }
+            }
 
             a {
                 class: "link-forgot",
@@ -109,15 +155,46 @@ fn LoginForm() -> Element {
 
 #[component]
 fn SignupForm() -> Element {
+    let session = use_context::<AuthSession>();
+
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);
     let mut show_password = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let mut is_submitting = use_signal(|| false);
 
     rsx! {
         form {
             class: "auth-form",
-            onsubmit: move |evt| evt.prevent_default(),
+            onsubmit: move |evt| {
+                evt.prevent_default();
+                if is_submitting() {
+                    return;
+                }
+
+                if password() != confirm_password() {
+                    error.set(Some("Passwords don't match".to_string()));
+                    return;
+                }
+
+                let session = session.clone();
+                spawn(async move {
+                    is_submitting.set(true);
+                    error.set(None);
+
+                    match session.register(&email(), &password()).await {
+                        Ok(()) => {}
+                        Err(err) => error.set(Some(err.to_string())),
+                    }
+
+                    is_submitting.set(false);
+                });
+            },
+
+            if let Some(message) = error() {
+                p { class: "auth-error", "{message}" }
+            }
 
             div { class: "input-group",
                 IconMail {}
@@ -158,7 +235,12 @@ fn SignupForm() -> Element {
                 }
             }
 
-            button { class: "btn-primary", r#type: "submit", "Sign up" }
+            button {
+                class: "btn-primary",
+                r#type: "submit",
+                disabled: is_submitting(),
+                if is_submitting() { "Signing up..." } else { "Sign up" }
+            }
         }
     }
 }

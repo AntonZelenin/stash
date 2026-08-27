@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 dioxus = { workspace = true }
 ui = { workspace = true }
+api = { workspace = true }
+gloo-storage = "0.3"
 
 [features]
 default = ["web"]

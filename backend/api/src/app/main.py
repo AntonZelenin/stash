@@ -1,6 +1,8 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import auth, items, search, users
+from app.config import get_settings
 
 app = FastAPI(
     title="Stash API",
@@ -11,6 +13,14 @@ app = FastAPI(
         {"name": "items"},
         {"name": "search"},
     ],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(users.router)
