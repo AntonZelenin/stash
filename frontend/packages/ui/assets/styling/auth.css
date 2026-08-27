@@ -111,6 +111,21 @@
     gap: 14px;
 }
 
+.auth-error {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: #fef2f2;
+    color: #dc2626;
+    font-size: 14px;
+    text-align: center;
+}
+
+.btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .input-group {
     display: flex;
     align-items: center;
@@ -120,6 +135,16 @@
     background-color: #fff;
     border: 1px solid var(--border);
     border-radius: 12px;
+}
+
+.input-group.has-error {
+    border-color: #dc2626;
+}
+
+.field-error {
+    margin: -6px 0 0;
+    color: #dc2626;
+    font-size: 13px;
 }
 
 .input-group .icon {

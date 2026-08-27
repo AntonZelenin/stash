@@ -1,8 +1,9 @@
-from uuid import uuid4
-
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.users import UserCreateRequest, UserCreateResponse
+from app.db import get_db_session
+from app.users.services import EmailAlreadyRegisteredError, UserService
 
 router = APIRouter(tags=["users"])
 
@@ -16,5 +17,13 @@ router = APIRouter(tags=["users"])
         422: {"description": "Invalid request"},
     },
 )
-async def create_user(payload: UserCreateRequest) -> UserCreateResponse:
-    return UserCreateResponse(id=uuid4())
+async def create_user(
+    payload: UserCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> UserCreateResponse:
+    try:
+        user = await UserService(session).register(payload.email, payload.password)
+    except EmailAlreadyRegisteredError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "User already exists") from None
+
+    return UserCreateResponse(id=user.id)

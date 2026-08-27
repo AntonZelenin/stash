@@ -54,6 +54,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
+      CORS_ALLOWED_ORIGINS: '["http://localhost:${FRONTEND_PORT:-8080}"]'
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -61,6 +62,12 @@ services:
       S3_BUCKET: ${S3_BUCKET:-stash}
     ports:
       - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,25 +76,25 @@ services:
       minio:
         condition: service_healthy
 
-  content_analyzer:
-    build:
-      context: ./backend
-      dockerfile: content_analyzer/Dockerfile
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
-      VALKEY_URL: redis://valkey:6379
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      S3_BUCKET: ${S3_BUCKET:-stash}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+#  content_analyzer:
+#    build:
+#      context: ./backend
+#      dockerfile: content_analyzer/Dockerfile
+#    restart: unless-stopped
+#    environment:
+#      DATABASE_URL: postgresql://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
+#      VALKEY_URL: redis://valkey:6379
+#      S3_ENDPOINT_URL: http://minio:9000
+#      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+#      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+#      S3_BUCKET: ${S3_BUCKET:-stash}
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      valkey:
+#        condition: service_healthy
+#      minio:
+#        condition: service_healthy
 
   frontend:
     build:
@@ -97,7 +104,8 @@ services:
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:
