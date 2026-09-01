@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
-      CORS_ALLOWED_ORIGINS: '["http://localhost:${FRONTEND_PORT:-8080}"]'
+      CORS_ALLOWED_ORIGINS: '["http://localhost:${FRONTEND_PORT:-8080}", "http://127.0.0.1:${FRONTEND_PORT:-8080}"]'
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -103,6 +103,15 @@ services:
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
+    volumes:
+      # Live source, so dx serve's watcher picks up host edits without a
+      # rebuild. frontend_target is a separate named volume shadowing
+      # /app/target specifically: it keeps the container's own Linux build
+      # cache (faster incremental rebuilds) without ever mixing in the
+      # host's target/, which — on a non-Linux host — holds artifacts built
+      # for the wrong OS/ABI.
+      - ./frontend:/app
+      - frontend_target:/app/target
     depends_on:
       api:
         condition: service_healthy
@@ -111,3 +120,4 @@ volumes:
   postgres_data:
   valkey_data:
   minio_data:
+  frontend_target:
