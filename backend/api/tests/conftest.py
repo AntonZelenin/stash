@@ -7,10 +7,17 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
+from app.items.models import Item, TextContent
 from app.main import app
 from app.users.models import User
 
-_TEST_TABLES = [User.__table__, AccessToken.__table__, RefreshToken.__table__]
+_TEST_TABLES = [
+    User.__table__,
+    AccessToken.__table__,
+    RefreshToken.__table__,
+    Item.__table__,
+    TextContent.__table__,
+]
 
 
 @pytest.fixture
