@@ -5,16 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import Item, ItemType, TextContent
-
-
-async def _register_and_login(client: AsyncClient, email: str = "alice@example.com", password: str = "correct-horse"):
-    register_response = await client.post("/users", json={"email": email, "password": password})
-    login_response = await client.post("/login", json={"email": email, "password": password})
-    return register_response.json()["id"], login_response.json()["access_token"]
+from helpers import register_and_login
 
 
 async def test_create_text_item_persists_and_associates_with_user(client: AsyncClient, session: AsyncSession):
-    user_id, token = await _register_and_login(client)
+    user_id, token = await register_and_login(client)
 
     response = await client.post(
         "/items/text", json={"text": "hello world"}, headers={"Authorization": f"Bearer {token}"}
@@ -34,7 +29,7 @@ async def test_create_text_item_persists_and_associates_with_user(client: AsyncC
 
 
 async def test_create_text_item_rejects_empty_text(client: AsyncClient):
-    _, token = await _register_and_login(client)
+    _, token = await register_and_login(client)
 
     response = await client.post("/items/text", json={"text": ""}, headers={"Authorization": f"Bearer {token}"})
 
@@ -42,7 +37,7 @@ async def test_create_text_item_rejects_empty_text(client: AsyncClient):
 
 
 async def test_create_text_item_rejects_whitespace_only_text(client: AsyncClient):
-    _, token = await _register_and_login(client)
+    _, token = await register_and_login(client)
 
     response = await client.post("/items/text", json={"text": "   "}, headers={"Authorization": f"Bearer {token}"})
 

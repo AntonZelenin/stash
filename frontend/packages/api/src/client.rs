@@ -118,6 +118,36 @@ impl ApiClient {
             _ => Err(ApiError::Server),
         }
     }
+
+    pub async fn create_image_item(
+        &self,
+        access_token: &str,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> Result<ItemCreated, ApiError> {
+        let part = reqwest::multipart::Part::bytes(data)
+            .file_name(file_name.to_string())
+            .mime_str(content_type)
+            .map_err(|_| ApiError::Server)?;
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let response = self
+            .authenticated(Method::POST, "/items/image", access_token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            202 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            _ => Err(ApiError::Server),
+        }
+    }
 }
 
 /// FastAPI's shape for a 422 from request-body validation:

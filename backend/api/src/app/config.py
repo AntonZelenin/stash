@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14
     cors_allowed_origins: list[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
+    s3_endpoint_url: str = "http://localhost:9000"
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: str = "minioadmin"
+    s3_bucket: str = "stash"
 
 
 @lru_cache

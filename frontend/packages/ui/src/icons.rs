@@ -76,3 +76,9 @@ icon!(
     "icon-arrow-up",
     r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>"#
 );
+
+icon!(
+    IconImage,
+    "icon-image",
+    r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="9.5" r="1.75"/><path d="m21 15-5-5-9 9"/></svg>"#
+);
