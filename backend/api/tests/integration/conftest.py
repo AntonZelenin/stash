@@ -7,15 +7,35 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
+from app.items.models import ImageMetadata, Item, TextContent
 from app.main import app
+from app.storage.base import ObjectStorage
+from app.storage.minio import get_object_storage
 from app.users.models import User
 
-_TEST_TABLES = [User.__table__, AccessToken.__table__, RefreshToken.__table__]
+_TEST_TABLES = [
+    User.__table__,
+    AccessToken.__table__,
+    RefreshToken.__table__,
+    Item.__table__,
+    TextContent.__table__,
+    ImageMetadata.__table__,
+]
+
+
+class FakeObjectStorage(ObjectStorage):
+    """In-memory stand-in for MinIO, so tests never touch real storage."""
+
+    def __init__(self):
+        self.uploads: dict[str, tuple[bytes, str]] = {}
+
+    async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
+        self.uploads[key] = (data, content_type)
 
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession]:
-    """A fresh in-memory SQLite DB (users + auth tables only) for each test."""
+    """A fresh in-memory SQLite DB (users, auth, and item tables) for each test."""
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -45,7 +65,15 @@ async def session() -> AsyncGenerator[AsyncSession]:
 
 
 @pytest.fixture
-async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
+def storage() -> FakeObjectStorage:
+    fake = FakeObjectStorage()
+    app.dependency_overrides[get_object_storage] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_object_storage, None)
+
+
+@pytest.fixture
+async def client(session: AsyncSession, storage: FakeObjectStorage) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

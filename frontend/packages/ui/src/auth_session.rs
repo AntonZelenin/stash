@@ -70,6 +70,29 @@ impl AuthSession {
         .await
     }
 
+    pub async fn create_image_item(
+        &self,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> Result<ItemCreated, ApiError> {
+        let client = self.client.clone();
+        let file_name = file_name.to_string();
+        let content_type = content_type.to_string();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let file_name = file_name.clone();
+            let content_type = content_type.clone();
+            let data = data.clone();
+            async move {
+                client
+                    .create_image_item(&access_token, &file_name, &content_type, data)
+                    .await
+            }
+        })
+        .await
+    }
+
     /// Runs an authenticated call with the current access token. If the
     /// server reports it as expired/invalid (401), transparently redeems
     /// the stored refresh token for a new pair and retries once. If the

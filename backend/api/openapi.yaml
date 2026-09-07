@@ -127,6 +127,7 @@ paths:
               properties:
                 text:
                   type: string
+                  minLength: 1
 
       responses:
         "202":
@@ -162,6 +163,10 @@ paths:
                 file:
                   type: string
                   format: binary
+                  maxLength: 10485760
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/gif, image/webp
 
       responses:
         "202":
@@ -175,7 +180,7 @@ paths:
           description: Unauthorized
 
         "422":
-          description: Invalid content
+          description: Invalid content (empty file, unsupported image type, or file too large)
 
   /search:
     post:
