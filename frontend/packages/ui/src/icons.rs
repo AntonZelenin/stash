@@ -82,3 +82,9 @@ icon!(
     "icon-image",
     r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="9.5" r="1.75"/><path d="m21 15-5-5-9 9"/></svg>"#
 );
+
+icon!(
+    IconClose,
+    "icon-close",
+    r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>"#
+);

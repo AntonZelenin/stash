@@ -260,6 +260,69 @@
     font-size: 14px;
 }
 
+/* ---- staged image preview ---- */
+
+.home-image-preview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 620px;
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    text-align: left;
+}
+
+.home-image-preview-thumb {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    object-fit: cover;
+}
+
+.home-image-preview-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.home-image-preview-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.home-image-preview-remove:hover {
+    background: #f5f6f8;
+    color: var(--text-primary);
+}
+
+.home-image-preview-remove:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.home-image-preview-remove .icon {
+    width: 16px;
+    height: 16px;
+}
+
 /* ---- drag and drop ---- */
 
 .home-dragging::after {

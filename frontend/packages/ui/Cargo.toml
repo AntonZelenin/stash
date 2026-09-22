@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 dioxus = { workspace = true }
 api = { workspace = true }
+base64 = { workspace = true }
 

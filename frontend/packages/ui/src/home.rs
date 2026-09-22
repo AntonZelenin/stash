@@ -1,9 +1,11 @@
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
 
 use crate::AuthSession;
 use crate::icons::{
-    IconArrowUp, IconHelp, IconImage, IconLogout, IconMenu, IconSliders, IconStash, IconUser,
+    IconArrowUp, IconClose, IconHelp, IconImage, IconLogout, IconMenu, IconSliders, IconStash,
+    IconUser,
 };
 use crate::routes::Route;
 
@@ -29,33 +31,35 @@ fn guess_content_type(file_name: &str) -> &'static str {
     }
 }
 
-/// Reads `file` and sends it to the backend as a new image item. Shared by
-/// both the file-picker input and drag-and-drop, which differ only in how
-/// they obtain the `FileData`.
-async fn upload_file(
-    session: AuthSession,
-    mut is_submitting: Signal<bool>,
-    mut status: Signal<Option<String>>,
-    file: FileData,
-) {
+/// An image the user has picked or dropped but not yet sent. Holds a
+/// `data:` URL rather than an object URL for the preview so it works the
+/// same way on every platform `ui` supports, not just the browser.
+#[derive(Clone, PartialEq)]
+struct PendingImage {
+    file_name: String,
+    content_type: &'static str,
+    data: Vec<u8>,
+    preview_url: String,
+}
+
+/// Reads `file` into a `PendingImage` ready for preview, without uploading
+/// it. Shared by both the file-picker input and drag-and-drop, which differ
+/// only in how they obtain the `FileData`.
+async fn stage_file(file: FileData) -> Option<PendingImage> {
     let file_name = file.name();
-    let Ok(data) = file.read_bytes().await else {
-        status.set(Some("Could not read the selected file".to_string()));
-        return;
-    };
-
-    is_submitting.set(true);
-    status.set(None);
-
+    let data = file.read_bytes().await.ok()?.to_vec();
     let content_type = guess_content_type(&file_name);
-    if let Err(err) = session
-        .create_image_item(&file_name, content_type, data.to_vec())
-        .await
-    {
-        status.set(Some(err.to_string()));
-    }
+    let preview_url = format!(
+        "data:{content_type};base64,{}",
+        BASE64_STANDARD.encode(&data)
+    );
 
-    is_submitting.set(false);
+    Some(PendingImage {
+        file_name,
+        content_type,
+        data,
+        preview_url,
+    })
 }
 
 const HOME_CSS: Asset = asset!("/assets/styling/home.css");
@@ -82,11 +86,37 @@ pub fn Home() -> Element {
     // dragleave-then-dragenter for that child, and only the count (not a
     // single flag) tells the container it's still being dragged over.
     let mut drag_depth = use_signal(|| 0i32);
+    let mut pending_image = use_signal(|| None::<PendingImage>);
 
-    let submit = {
+    let mut submit = {
         let session = session.clone();
         move || {
-            if is_submitting() || note().trim().is_empty() {
+            if is_submitting() {
+                return;
+            }
+
+            // A staged image takes priority: send that, and leave the note
+            // text (if any) for the next send rather than silently dropping
+            // it.
+            if let Some(image) = pending_image.write().take() {
+                let session = session.clone();
+                spawn(async move {
+                    is_submitting.set(true);
+                    status.set(None);
+
+                    if let Err(err) = session
+                        .create_image_item(&image.file_name, image.content_type, image.data)
+                        .await
+                    {
+                        status.set(Some(err.to_string()));
+                    }
+
+                    is_submitting.set(false);
+                });
+                return;
+            }
+
+            if note().trim().is_empty() {
                 return;
             }
 
@@ -105,41 +135,43 @@ pub fn Home() -> Element {
         }
     };
 
-    let upload_image = {
-        let session = session.clone();
-        move |evt: FormEvent| {
-            let session = session.clone();
-            async move {
-                if is_submitting() {
-                    return;
-                }
-                let Some(file) = evt.files().into_iter().next() else {
-                    return;
-                };
-                upload_file(session, is_submitting, status, file).await;
+    let stage_picked_file = move |evt: FormEvent| async move {
+        if is_submitting() {
+            return;
+        }
+        let Some(file) = evt.files().into_iter().next() else {
+            return;
+        };
+        match stage_file(file).await {
+            Some(image) => {
+                status.set(None);
+                pending_image.set(Some(image));
             }
+            None => status.set(Some("Could not read the selected file".to_string())),
         }
     };
 
-    let handle_drop = {
-        let session = session.clone();
-        move |evt: DragEvent| {
-            // Must run synchronously, before any `.await`, or the browser's
-            // default action (opening the dropped file) fires first.
-            evt.prevent_default();
-            drag_depth.set(0);
+    let handle_drop = move |evt: DragEvent| {
+        // Must run synchronously, before any `.await`, or the browser's
+        // default action (opening the dropped file) fires first.
+        evt.prevent_default();
+        drag_depth.set(0);
 
-            if is_submitting() {
-                return;
-            }
-            let Some(file) = evt.files().into_iter().next() else {
-                return;
-            };
-            let session = session.clone();
-            spawn(async move {
-                upload_file(session, is_submitting, status, file).await;
-            });
+        if is_submitting() {
+            return;
         }
+        let Some(file) = evt.files().into_iter().next() else {
+            return;
+        };
+        spawn(async move {
+            match stage_file(file).await {
+                Some(image) => {
+                    status.set(None);
+                    pending_image.set(Some(image));
+                }
+                None => status.set(Some("Could not read the selected file".to_string())),
+            }
+        });
     };
 
     rsx! {
@@ -171,6 +203,25 @@ pub fn Home() -> Element {
                     div { class: "home-drop-hint", "Drop image to upload" }
                 }
 
+                if let Some(image) = pending_image() {
+                    div { class: "home-image-preview",
+                        img {
+                            class: "home-image-preview-thumb",
+                            src: "{image.preview_url}",
+                            alt: "{image.file_name}",
+                        }
+                        span { class: "home-image-preview-name", "{image.file_name}" }
+                        button {
+                            class: "home-image-preview-remove",
+                            r#type: "button",
+                            title: "Remove image",
+                            disabled: is_submitting(),
+                            onclick: move |_| pending_image.set(None),
+                            IconClose {}
+                        }
+                    }
+                }
+
                 form {
                     class: "home-input-wrap",
                     onsubmit: move |evt| {
@@ -190,7 +241,7 @@ pub fn Home() -> Element {
                             class: "home-image-input",
                             accept: "image/png,image/jpeg,image/gif,image/webp",
                             disabled: is_submitting(),
-                            onchange: upload_image,
+                            onchange: stage_picked_file,
                         }
                         label {
                             class: "home-input-attach",
