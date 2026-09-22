@@ -86,7 +86,7 @@ pub fn Home() -> Element {
     // dragleave-then-dragenter for that child, and only the count (not a
     // single flag) tells the container it's still being dragged over.
     let mut drag_depth = use_signal(|| 0i32);
-    let mut pending_image = use_signal(|| None::<PendingImage>);
+    let mut pending_images = use_signal(Vec::<PendingImage>::new);
 
     let mut submit = {
         let session = session.clone();
@@ -95,21 +95,28 @@ pub fn Home() -> Element {
                 return;
             }
 
-            // A staged image takes priority: send that, and leave the note
+            // Staged images take priority: send those, and leave the note
             // text (if any) for the next send rather than silently dropping
             // it.
-            if let Some(image) = pending_image.write().take() {
+            let images = std::mem::take(&mut *pending_images.write());
+            if !images.is_empty() {
                 let session = session.clone();
                 spawn(async move {
                     is_submitting.set(true);
                     status.set(None);
 
-                    if let Err(err) = session
-                        .create_image_item(&image.file_name, image.content_type, image.data)
-                        .await
-                    {
-                        status.set(Some(err.to_string()));
+                    // One failure shouldn't stop the rest from uploading;
+                    // report the last error, if any, once all are done.
+                    let mut last_error = None;
+                    for image in images {
+                        if let Err(err) = session
+                            .create_image_item(&image.file_name, image.content_type, image.data)
+                            .await
+                        {
+                            last_error = Some(err.to_string());
+                        }
                     }
+                    status.set(last_error);
 
                     is_submitting.set(false);
                 });
@@ -135,19 +142,20 @@ pub fn Home() -> Element {
         }
     };
 
-    let stage_picked_file = move |evt: FormEvent| async move {
+    let stage_picked_files = move |evt: FormEvent| async move {
         if is_submitting() {
             return;
         }
-        let Some(file) = evt.files().into_iter().next() else {
+        let files = evt.files();
+        if files.is_empty() {
             return;
-        };
-        match stage_file(file).await {
-            Some(image) => {
-                status.set(None);
-                pending_image.set(Some(image));
+        }
+        status.set(None);
+        for file in files {
+            match stage_file(file).await {
+                Some(image) => pending_images.write().push(image),
+                None => status.set(Some("Could not read the selected file".to_string())),
             }
-            None => status.set(Some("Could not read the selected file".to_string())),
         }
     };
 
@@ -160,16 +168,17 @@ pub fn Home() -> Element {
         if is_submitting() {
             return;
         }
-        let Some(file) = evt.files().into_iter().next() else {
+        let files = evt.files();
+        if files.is_empty() {
             return;
-        };
+        }
         spawn(async move {
-            match stage_file(file).await {
-                Some(image) => {
-                    status.set(None);
-                    pending_image.set(Some(image));
+            status.set(None);
+            for file in files {
+                match stage_file(file).await {
+                    Some(image) => pending_images.write().push(image),
+                    None => status.set(Some("Could not read the selected file".to_string())),
                 }
-                None => status.set(Some("Could not read the selected file".to_string())),
             }
         });
     };
@@ -203,21 +212,29 @@ pub fn Home() -> Element {
                     div { class: "home-drop-hint", "Drop image to upload" }
                 }
 
-                if let Some(image) = pending_image() {
-                    div { class: "home-image-preview",
-                        img {
-                            class: "home-image-preview-thumb",
-                            src: "{image.preview_url}",
-                            alt: "{image.file_name}",
-                        }
-                        span { class: "home-image-preview-name", "{image.file_name}" }
-                        button {
-                            class: "home-image-preview-remove",
-                            r#type: "button",
-                            title: "Remove image",
-                            disabled: is_submitting(),
-                            onclick: move |_| pending_image.set(None),
-                            IconClose {}
+                if !pending_images().is_empty() {
+                    div { class: "home-image-preview-list",
+                        for (index , image) in pending_images().into_iter().enumerate() {
+                            div {
+                                class: "home-image-preview",
+                                key: "{index}-{image.file_name}",
+                                img {
+                                    class: "home-image-preview-thumb",
+                                    src: "{image.preview_url}",
+                                    alt: "{image.file_name}",
+                                }
+                                span { class: "home-image-preview-name", "{image.file_name}" }
+                                button {
+                                    class: "home-image-preview-remove",
+                                    r#type: "button",
+                                    title: "Remove image",
+                                    disabled: is_submitting(),
+                                    onclick: move |_| {
+                                        pending_images.write().remove(index);
+                                    },
+                                    IconClose {}
+                                }
+                            }
                         }
                     }
                 }
@@ -240,8 +257,9 @@ pub fn Home() -> Element {
                             id: IMAGE_UPLOAD_INPUT_ID,
                             class: "home-image-input",
                             accept: "image/png,image/jpeg,image/gif,image/webp",
+                            multiple: true,
                             disabled: is_submitting(),
-                            onchange: stage_picked_file,
+                            onchange: stage_picked_files,
                         }
                         label {
                             class: "home-input-attach",

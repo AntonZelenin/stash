@@ -262,14 +262,22 @@
 
 /* ---- staged image preview ---- */
 
-.home-image-preview {
+.home-image-preview-list {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
     width: 100%;
     max-width: 620px;
     margin: 0 0 12px;
-    padding: 8px 12px;
+}
+
+.home-image-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 220px;
+    padding: 6px 10px;
     background: #fff;
     border: 1px solid var(--border);
     border-radius: 14px;
