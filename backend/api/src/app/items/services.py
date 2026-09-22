@@ -15,7 +15,7 @@ from app.storage.base import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
-_MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+_MAX_IMAGE_SIZE_BYTES = 100 * 1024 * 1024
 
 _IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/png": ".png",
