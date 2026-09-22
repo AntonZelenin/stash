@@ -1,3 +1,4 @@
+use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
 
 use crate::AuthSession;
@@ -28,6 +29,35 @@ fn guess_content_type(file_name: &str) -> &'static str {
     }
 }
 
+/// Reads `file` and sends it to the backend as a new image item. Shared by
+/// both the file-picker input and drag-and-drop, which differ only in how
+/// they obtain the `FileData`.
+async fn upload_file(
+    session: AuthSession,
+    mut is_submitting: Signal<bool>,
+    mut status: Signal<Option<String>>,
+    file: FileData,
+) {
+    let file_name = file.name();
+    let Ok(data) = file.read_bytes().await else {
+        status.set(Some("Could not read the selected file".to_string()));
+        return;
+    };
+
+    is_submitting.set(true);
+    status.set(None);
+
+    let content_type = guess_content_type(&file_name);
+    if let Err(err) = session
+        .create_image_item(&file_name, content_type, data.to_vec())
+        .await
+    {
+        status.set(Some(err.to_string()));
+    }
+
+    is_submitting.set(false);
+}
+
 const HOME_CSS: Asset = asset!("/assets/styling/home.css");
 
 #[component]
@@ -47,6 +77,11 @@ pub fn Home() -> Element {
     let mut note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut status = use_signal(|| None::<String>);
+    // Counts nested dragenter/dragleave pairs rather than a bool: the
+    // pointer crossing from the container into a child element fires
+    // dragleave-then-dragenter for that child, and only the count (not a
+    // single flag) tells the container it's still being dragged over.
+    let mut drag_depth = use_signal(|| 0i32);
 
     let submit = {
         let session = session.clone();
@@ -70,47 +105,71 @@ pub fn Home() -> Element {
         }
     };
 
-    let upload_image = move |evt: FormEvent| {
+    let upload_image = {
         let session = session.clone();
-        async move {
+        move |evt: FormEvent| {
+            let session = session.clone();
+            async move {
+                if is_submitting() {
+                    return;
+                }
+                let Some(file) = evt.files().into_iter().next() else {
+                    return;
+                };
+                upload_file(session, is_submitting, status, file).await;
+            }
+        }
+    };
+
+    let handle_drop = {
+        let session = session.clone();
+        move |evt: DragEvent| {
+            // Must run synchronously, before any `.await`, or the browser's
+            // default action (opening the dropped file) fires first.
+            evt.prevent_default();
+            drag_depth.set(0);
+
             if is_submitting() {
                 return;
             }
-
             let Some(file) = evt.files().into_iter().next() else {
                 return;
             };
-            let file_name = file.name();
-            let Ok(data) = file.read_bytes().await else {
-                status.set(Some("Could not read the selected file".to_string()));
-                return;
-            };
-
-            is_submitting.set(true);
-            status.set(None);
-
-            let content_type = guess_content_type(&file_name);
-            if let Err(err) = session
-                .create_image_item(&file_name, content_type, data.to_vec())
-                .await
-            {
-                status.set(Some(err.to_string()));
-            }
-
-            is_submitting.set(false);
+            let session = session.clone();
+            spawn(async move {
+                upload_file(session, is_submitting, status, file).await;
+            });
         }
     };
 
     rsx! {
         document::Link { rel: "stylesheet", href: HOME_CSS }
 
-        div { class: "home",
+        div {
+            class: if drag_depth() > 0 { "home home-dragging" } else { "home" },
+            ondragenter: move |evt| {
+                evt.prevent_default();
+                drag_depth += 1;
+            },
+            ondragleave: move |evt| {
+                evt.prevent_default();
+                drag_depth -= 1;
+            },
+            // Required for `ondrop` to fire at all — browsers reject drops
+            // on elements that don't cancel dragover's default action.
+            ondragover: move |evt| evt.prevent_default(),
+            ondrop: handle_drop,
+
             TopBar {}
 
             div { class: "home-center",
                 IconStash {}
                 h1 { class: "home-title", "stash" }
                 p { class: "home-tagline", "Save anything. Find anytime." }
+
+                if drag_depth() > 0 {
+                    div { class: "home-drop-hint", "Drop image to upload" }
+                }
 
                 form {
                     class: "home-input-wrap",

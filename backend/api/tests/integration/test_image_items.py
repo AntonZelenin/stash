@@ -2,9 +2,10 @@ from uuid import UUID
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import ImageMetadata, Item, ItemType
-from conftest import FakeObjectStorage
+from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import register_and_login
 
 # A minimal, valid 1x1 PNG.
@@ -91,3 +92,20 @@ async def test_create_image_item_rejects_missing_token(client: AsyncClient):
     )
 
     assert response.status_code == 401
+
+
+async def test_create_image_item_publishes_processing_job(client: AsyncClient, queue: FakeJobQueue):
+    user_id, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/image",
+        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    assert len(queue.published) == 1
+    job = queue.published[0]
+    assert str(job.item_id) == response.json()["id"]
+    assert str(job.user_id) == user_id
+    assert job.item_type == QueueItemType.image

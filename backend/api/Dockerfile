@@ -16,10 +16,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # package present to resolve/build the wheel, so a deps-only cache layer
 # isn't achievable without extra tooling. Not worth it for a service this
 # small.
+#
+# `stash-shared` (the queue interface + Valkey client) is installed first,
+# same reasoning: no lockfile/workspace tooling here, so it's a plain local
+# package install rather than a declared path dependency.
+COPY shared ./shared
 COPY api/pyproject.toml ./
 COPY api/src ./src
 
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir ./shared \
     && pip install --no-cache-dir .
 
 # ---- runtime -----------------------------------------------------------

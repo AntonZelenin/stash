@@ -259,3 +259,26 @@
     color: #dc2626;
     font-size: 14px;
 }
+
+/* ---- drag and drop ---- */
+
+.home-dragging::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    border: 3px dashed #6675f5;
+    background: rgba(102, 117, 245, 0.06);
+    pointer-events: none;
+    z-index: 20;
+}
+
+.home-drop-hint {
+    margin: 0 0 16px;
+    padding: 10px 20px;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 8px 24px rgba(20, 22, 27, 0.1);
+}
