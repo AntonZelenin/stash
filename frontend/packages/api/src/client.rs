@@ -191,12 +191,34 @@ struct ValidationErrorItem {
     msg: String,
 }
 
-/// Parses a 422 response into field-level errors. Falls back to a single
-/// generic, field-less error if the body doesn't match the shape above (e.g.
-/// a 422 raised manually with a plain string `detail`).
+/// FastAPI's shape for a 422 raised manually via `HTTPException(422, "...")`
+/// — e.g. "File is too large", "Unsupported image type", "Invalid cursor".
+/// Every message on this path is a short, deliberately user-facing string
+/// the backend chose to explain what was wrong with the request — never
+/// exception internals — so unlike a 500 (always the generic message, body
+/// ignored entirely) it's safe to show as-is.
+#[derive(Deserialize)]
+struct StringDetailBody {
+    detail: String,
+}
+
+fn generic_validation_error() -> FieldError {
+    FieldError {
+        field: None,
+        message: "Invalid request".to_string(),
+    }
+}
+
+/// Parses a 422 response into field-level errors, trying both shapes the
+/// backend can send. Falls back to a single generic, field-less error only
+/// if the body matches neither (or isn't readable at all).
 async fn parse_validation_errors(response: Response) -> Vec<FieldError> {
-    match response.json::<ValidationErrorBody>().await {
-        Ok(body) => body
+    let Ok(text) = response.text().await else {
+        return vec![generic_validation_error()];
+    };
+
+    if let Ok(body) = serde_json::from_str::<ValidationErrorBody>(&text) {
+        return body
             .detail
             .into_iter()
             .map(|item| FieldError {
@@ -205,10 +227,15 @@ async fn parse_validation_errors(response: Response) -> Vec<FieldError> {
                 field: item.loc.get(1).and_then(|v| v.as_str()).map(str::to_string),
                 message: item.msg,
             })
-            .collect(),
-        Err(_) => vec![FieldError {
-            field: None,
-            message: "Invalid request".to_string(),
-        }],
+            .collect();
     }
+
+    if let Ok(body) = serde_json::from_str::<StringDetailBody>(&text) {
+        return vec![FieldError {
+            field: None,
+            message: body.detail,
+        }];
+    }
+
+    vec![generic_validation_error()]
 }
