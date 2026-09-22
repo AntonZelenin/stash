@@ -11,3 +11,9 @@ class ObjectStorage(ABC):
 
     @abstractmethod
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None: ...
+
+    @abstractmethod
+    async def generate_download_url(self, *, key: str, expires_in: int) -> str:
+        """Returns a temporary, pre-signed URL the client can fetch `key`
+        from directly, without proxying the bytes through the API."""
+        ...

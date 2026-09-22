@@ -1,7 +1,9 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.items.models import ImageMetadata, Item, ItemStatus, ItemType, TextContent
 
@@ -46,3 +48,34 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
+
+    async def list_items(
+        self,
+        *,
+        user_id: uuid.UUID,
+        limit: int,
+        cursor_created_at: datetime | None,
+        cursor_id: uuid.UUID | None,
+    ) -> list[Item]:
+        """Keyset pagination, newest first: `(cursor_created_at, cursor_id)`
+        identifies the last item of the previous page, and this returns the
+        `limit` items immediately after it in `created_at DESC, id DESC`
+        order. `id` breaks ties between items with the same `created_at` so
+        the ordering — and therefore pagination — stays stable regardless of
+        timestamp collisions."""
+        stmt = (
+            select(Item)
+            .options(selectinload(Item.text_content), selectinload(Item.image))
+            .where(Item.user_id == user_id)
+        )
+        if cursor_created_at is not None and cursor_id is not None:
+            stmt = stmt.where(
+                or_(
+                    Item.created_at < cursor_created_at,
+                    and_(Item.created_at == cursor_created_at, Item.id < cursor_id),
+                )
+            )
+        stmt = stmt.order_by(Item.created_at.desc(), Item.id.desc()).limit(limit)
+
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

@@ -8,5 +8,5 @@ mod token_store;
 
 pub use client::ApiClient;
 pub use error::{ApiError, FieldError};
-pub use models::{ItemCreated, RegisterResponse, TokenPair};
+pub use models::{ItemCreated, ListItemsResponse, ListedItem, RegisterResponse, TokenPair};
 pub use token_store::TokenStore;

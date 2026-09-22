@@ -1,11 +1,15 @@
+import base64
 import logging
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.queue.base import JobQueue, ProcessingJob
 
-from app.items.models import Item, ItemStatus
+from app.config import get_settings
+from app.items.models import Item, ItemStatus, ItemType
 from app.items.repos import ItemRepository
 from app.storage.base import ObjectStorage
 
@@ -33,6 +37,33 @@ class UnsupportedImageTypeError(Exception):
     pass
 
 
+class InvalidCursorError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class ListedItem:
+    item: Item
+    download_url: str | None
+
+
+def _encode_cursor(created_at: datetime, item_id: uuid.UUID) -> str:
+    raw = f"{created_at.isoformat()}|{item_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """`ValueError` covers every way this can be malformed: bad base64
+    padding (`binascii.Error` is a `ValueError` subclass), a missing `|`
+    separator, an unparseable timestamp, or an invalid UUID."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        created_at_str, item_id_str = raw.split("|", 1)
+        return datetime.fromisoformat(created_at_str), uuid.UUID(item_id_str)
+    except ValueError as exc:
+        raise InvalidCursorError() from exc
+
+
 def _detect_image_content_type(data: bytes) -> str | None:
     """Sniffs the actual image format from its leading bytes, ignoring the
     client-supplied content type header, which is untrusted."""
@@ -53,6 +84,40 @@ class ItemService:
         self._repo = ItemRepository(session)
         self._storage = storage
         self._queue = queue
+
+    async def list_items(
+        self, *, user_id: uuid.UUID, limit: int, cursor: str | None
+    ) -> tuple[list[ListedItem], str | None]:
+        cursor_created_at: datetime | None = None
+        cursor_id: uuid.UUID | None = None
+        if cursor is not None:
+            cursor_created_at, cursor_id = _decode_cursor(cursor)
+
+        # Fetch one extra row, purely to tell whether another page exists —
+        # it's dropped below and never appears in `items`.
+        rows = await self._repo.list_items(
+            user_id=user_id, limit=limit + 1, cursor_created_at=cursor_created_at, cursor_id=cursor_id
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        settings = get_settings()
+        listed_items = [
+            ListedItem(
+                item=row,
+                download_url=(
+                    await self._storage.generate_download_url(
+                        key=row.image.storage_key, expires_in=settings.image_download_url_ttl_seconds
+                    )
+                    if row.type == ItemType.image and row.image is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ]
+
+        next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        return listed_items, next_cursor
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
         item = await self._repo.create_text_item(user_id=user_id, text=text)

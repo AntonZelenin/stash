@@ -182,6 +182,44 @@ paths:
         "422":
           description: Invalid content (empty file, unsupported image type, or file too large)
 
+  /items:
+    get:
+      summary: List saved items
+      operationId: listItems
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination cursor from a previous response's `next_cursor`.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+
+      responses:
+        "200":
+          description: The current user's items, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListItemsResponse"
+
+        "401":
+          description: Unauthorized
+
+        "422":
+          description: Invalid cursor
+
   /search:
     post:
       summary: Search saved content
@@ -279,6 +317,60 @@ components:
             - processing
             - completed
             - failed
+
+    ListedItem:
+      type: object
+      required:
+        - id
+        - type
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - text
+            - image
+        status:
+          type: string
+          enum:
+            - pending
+            - processing
+            - completed
+            - failed
+        created_at:
+          type: string
+          format: date-time
+        text:
+          description: Set only for `type == text`.
+          type:
+            - string
+            - "null"
+        download_url:
+          description: >-
+            Temporary, pre-signed download URL. Set only for `type == image`,
+            and only valid for a limited time.
+          type:
+            - string
+            - "null"
+
+    ListItemsResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListedItem"
+        next_cursor:
+          description: Opaque cursor for the next page, or null when there is no more data.
+          type:
+            - string
+            - "null"
 
   securitySchemes:
     bearerAuth:

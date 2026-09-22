@@ -35,6 +35,9 @@ class FakeObjectStorage(ObjectStorage):
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
         self.uploads[key] = (data, content_type)
 
+    async def generate_download_url(self, *, key: str, expires_in: int) -> str:
+        return f"https://fake-storage.test/{key}?expires_in={expires_in}"
+
 
 class FakeJobQueue(JobQueue):
     """In-memory stand-in for the Valkey-backed queue, so tests never touch

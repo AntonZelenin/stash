@@ -130,41 +130,40 @@
     border-top: 1px solid var(--border);
 }
 
-/* ---- centered content ---- */
+/* ---- hero: capture only, narrow and centered ---- */
 
-.home-center {
-    flex: 1;
+.home-hero {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    /* Asymmetric padding (not transform) shifts the input bar to the
-       viewport's vertical center. A transform here would move the painted
-       and hit-tested region without reserving layout space, letting this
-       full-width block visually cover and swallow clicks on .top-bar. */
-    padding: 40px 20px 306px;
+    /* Fixed, not flex-centered: a min-height + justify-content:center here
+       stacked its own slack on top of the divider's margin below, so the
+       gap kept overshooting. Plain padding is deterministic — 40px above
+       the logo, 80px from the input down to the divider (via the
+       divider's own margin-top) — a 1:2 split, not dead center. */
+    padding: 40px 20px 0;
     text-align: center;
 }
 
-.home-center .icon-stash {
-    width: 64px;
-    height: 64px;
-    margin-bottom: 16px;
+.home-hero .icon-stash {
+    width: 36px;
+    height: 36px;
+    margin-bottom: 8px;
 }
 
 .home-title {
-    font-size: 44px;
+    font-size: 26px;
     font-weight: 700;
     letter-spacing: -0.01em;
     color: var(--text-primary);
-    margin: 0 0 12px;
+    margin: 0 0 4px;
     line-height: 1;
 }
 
 .home-tagline {
-    font-size: 17px;
+    font-size: 14px;
     color: var(--text-muted);
-    margin: 0 0 32px;
+    margin: 0 0 20px;
 }
 
 .home-input-wrap {
@@ -267,6 +266,206 @@
     margin: 16px 0 0;
     color: #dc2626;
     font-size: 14px;
+}
+
+/* ---- divider: separates "save new" (the hero) from "search existing"
+   (the workspace) so the two inputs don't read as interchangeable. Wider
+   than either the hero or the workspace's own content width — deliberately
+   its own visual element, not scoped to either side. */
+
+.home-divider {
+    width: 85%;
+    height: 0;
+    /* 80px above (to the capture input) — 40px nudged further down from
+       the previous pass — and 40px below (to search). The divider supplies
+       this spacing itself so it doesn't compound with padding on the hero
+       or workspace either side of it. */
+    margin: 80px auto 40px;
+    border: none;
+    border-top: 2px solid var(--border);
+}
+
+/* ---- search ---- */
+
+.stash-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 620px;
+    height: 48px;
+    padding: 0 18px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+
+.stash-search-wrap .icon-search {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.stash-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.stash-search-input::placeholder {
+    color: var(--placeholder);
+}
+
+/* ---- filters ---- */
+
+.stash-filters {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 620px;
+    margin: 12px 0 0;
+}
+
+.filter-chip {
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.filter-chip:hover {
+    border-color: #d8dbe2;
+    color: var(--text-primary);
+}
+
+.filter-chip-active {
+    background: var(--gradient);
+    border-color: transparent;
+    color: #fff;
+}
+
+.filter-chip-active:hover {
+    color: #fff;
+}
+
+/* ---- saved items: the page's workspace/library area ---- */
+
+/* Full width, no max-width and no background/border of its own — the
+   divider above is what marks the boundary, so this section stays visually
+   continuous with the page rather than becoming a separate colored panel.
+   flex: 1 lets it absorb whatever vertical space is left in the viewport
+   instead of shrink-wrapping to its content like a small floating card. */
+.stash-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+
+/* The centered reading width lives on this inner container, not on
+   .stash-main itself — that's what keeps the section full-bleed while its
+   content stays aligned with the hero above it, and wider (1040px vs. the
+   hero's 620px) so it can later hold a multi-column item grid. No top
+   padding: the divider already supplies the 40px gap down to search.
+   flex: 1 + flex column + align-items: center lets narrower children
+   (search, filters) stay centered while the empty state (or, later, the
+   grid) stretches to fill the section's full height. */
+.stash-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+}
+
+.stash-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    /* Same gap as search-to-filters, so the rhythm (search, filters, items)
+       reads as one consistent stack rather than the cards sitting flush
+       against the filter chips. */
+    margin: 12px 0 0;
+}
+
+@media (max-width: 860px) {
+    .stash-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 560px) {
+    .stash-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.item-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    text-align: left;
+    overflow: hidden;
+}
+
+.item-card-image {
+    display: block;
+    width: 100%;
+    height: 180px;
+    object-fit: cover;
+    border-radius: 10px;
+}
+
+.item-card-text {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    /* Clamp long notes to a handful of lines so cards stay a consistent
+       height in the grid rather than growing arbitrarily tall. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    overflow: hidden;
+}
+
+.stash-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.stash-empty .icon-stash {
+    width: 28px;
+    height: 28px;
+}
+
+.stash-empty p {
+    margin: 0;
+    max-width: 320px;
 }
 
 /* ---- staged image preview ---- */

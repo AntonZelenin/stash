@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
@@ -31,3 +32,19 @@ class CreateTextItemRequest(BaseModel):
 class ItemCreated(BaseModel):
     id: UUID
     status: ItemStatus
+
+
+class ListedItem(BaseModel):
+    id: UUID
+    type: ItemType
+    status: ItemStatus
+    created_at: datetime
+    text: str | None = None
+    # Temporary, pre-signed — set only for `type == image`, and only while
+    # the underlying object storage URL remains valid.
+    download_url: str | None = None
+
+
+class ListItemsResponse(BaseModel):
+    items: list[ListedItem]
+    next_cursor: str | None = None

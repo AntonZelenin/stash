@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    CreateTextItemRequest, ItemCreated, LoginRequest, RefreshRequest, RegisterRequest,
-    RegisterResponse, TokenPair,
+    CreateTextItemRequest, ItemCreated, ListItemsResponse, LoginRequest, RefreshRequest,
+    RegisterRequest, RegisterResponse, TokenPair,
 };
 
 #[derive(Clone)]
@@ -141,6 +141,34 @@ impl ApiClient {
 
         match response.status().as_u16() {
             202 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    pub async fn list_items(
+        &self,
+        access_token: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ListItemsResponse, ApiError> {
+        let mut params: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_string()));
+        }
+
+        let response = self
+            .authenticated(Method::GET, "/items", access_token)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,

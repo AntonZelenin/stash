@@ -1,11 +1,12 @@
+use api::ListedItem;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
 
 use crate::AuthSession;
 use crate::icons::{
-    IconArrowUp, IconClose, IconHelp, IconImage, IconLogout, IconMenu, IconSliders, IconStash,
-    IconUser,
+    IconArrowUp, IconClose, IconHelp, IconImage, IconLogout, IconMenu, IconSearch, IconSliders,
+    IconStash, IconUser,
 };
 use crate::routes::Route;
 
@@ -77,6 +78,18 @@ pub fn Home() -> Element {
             }
         });
     }
+
+    // Fetches once on mount (the closure captures no reactive state, so
+    // `use_resource` never re-runs it on its own). No refresh-after-save or
+    // pagination yet — this is just the initial "show what's already
+    // saved" load.
+    let saved_items = use_resource({
+        let session = session.clone();
+        move || {
+            let session = session.clone();
+            async move { session.list_items(None, 30).await }
+        }
+    });
 
     let mut note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
@@ -203,7 +216,7 @@ pub fn Home() -> Element {
 
             TopBar {}
 
-            div { class: "home-center",
+            div { class: "home-hero",
                 IconStash {}
                 h1 { class: "home-title", "stash" }
                 p { class: "home-tagline", "Save anything. Find anytime." }
@@ -287,6 +300,81 @@ pub fn Home() -> Element {
                 if let Some(message) = status() {
                     p { class: "home-status", "{message}" }
                 }
+            }
+
+            // Divider marks the hand-off from "save new content" (the hero
+            // above) to "search existing content" (the workspace below) —
+            // a sibling of both, not nested in either, so its width is its
+            // own rather than inherited from the narrow hero or the wider
+            // workspace container.
+            hr { class: "home-divider" }
+
+            // Full-width workspace band (a sibling of the narrow hero, not
+            // nested in it) so it can span the whole page and grow to fill
+            // the rest of the viewport, with only the content inside it
+            // kept to a centered — but wider-than-the-hero — reading width.
+            div { class: "stash-main",
+                div { class: "stash-section",
+                    // The search field and filter chips are still
+                    // presentational only — actual search/filtering isn't
+                    // wired up yet. The saved-items area below them is live.
+                    div { class: "stash-search-wrap",
+                        IconSearch {}
+                        input {
+                            class: "stash-search-input",
+                            r#type: "search",
+                            placeholder: "Search your stash...",
+                        }
+                    }
+
+                    div { class: "stash-filters",
+                        button { class: "filter-chip filter-chip-active", r#type: "button", "All" }
+                        button { class: "filter-chip", r#type: "button", "Links" }
+                        button { class: "filter-chip", r#type: "button", "Images" }
+                        button { class: "filter-chip", r#type: "button", "Notes" }
+                    }
+
+                    {match &*saved_items.read() {
+                        None => rsx! {
+                            div { class: "stash-empty",
+                                p { "Loading your stash..." }
+                            }
+                        },
+                        Some(Err(err)) => rsx! {
+                            div { class: "stash-empty",
+                                p { "Could not load your stash: {err}" }
+                            }
+                        },
+                        Some(Ok(response)) if response.items.is_empty() => rsx! {
+                            div { class: "stash-empty",
+                                IconStash {}
+                                p { "Nothing saved yet — items you capture will show up here." }
+                            }
+                        },
+                        Some(Ok(response)) => rsx! {
+                            div { class: "stash-grid",
+                                for item in response.items.clone() {
+                                    ItemCard { key: "{item.id}", item }
+                                }
+                            }
+                        },
+                    }}
+                }
+            }
+        }
+    }
+}
+
+/// One saved item in the workspace grid. Renders the image for an image
+/// item, or its text for a text item — whichever the item actually has.
+#[component]
+fn ItemCard(item: ListedItem) -> Element {
+    rsx! {
+        div { class: "item-card",
+            if let Some(url) = &item.download_url {
+                img { class: "item-card-image", src: "{url}", alt: "Saved image" }
+            } else if let Some(text) = &item.text {
+                p { class: "item-card-text", "{text}" }
             }
         }
     }
