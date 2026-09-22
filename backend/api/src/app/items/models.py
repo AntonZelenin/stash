@@ -12,6 +12,7 @@ from app.db import Base
 
 class ItemType(str, Enum):
     text = "text"
+    link = "link"
     image = "image"
 
 

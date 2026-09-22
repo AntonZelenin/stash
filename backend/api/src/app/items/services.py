@@ -3,6 +3,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
@@ -23,6 +24,34 @@ _IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
+
+_LINK_SCHEMES = {"http", "https"}
+
+# `ItemType` (Postgres/domain) and the queue's own `ItemType` are separate,
+# deliberately-duplicated enums (see the docstring on the latter) — this
+# just maps one to the other rather than assuming their members line up.
+_QUEUE_ITEM_TYPE_BY_ITEM_TYPE = {
+    ItemType.text: QueueItemType.text,
+    ItemType.link: QueueItemType.link,
+    ItemType.image: QueueItemType.image,
+}
+
+
+def _classify_text_item_type(text: str) -> ItemType:
+    """A "link" is text that is *entirely* a URL — not a note that merely
+    contains one. Rejecting whitespace is what enforces that: a real
+    single-token URL never contains a literal space, so "https://x.com
+    check this out" (or a URL with trailing punctuation typed as a
+    sentence) falls back to a plain note instead of being misread as a
+    link."""
+    if any(char.isspace() for char in text):
+        return ItemType.text
+
+    parsed = urlsplit(text)
+    if parsed.scheme in _LINK_SCHEMES and parsed.netloc:
+        return ItemType.link
+
+    return ItemType.text
 
 
 class EmptyImageError(Exception):
@@ -120,8 +149,9 @@ class ItemService:
         return listed_items, next_cursor
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
-        item = await self._repo.create_text_item(user_id=user_id, text=text)
-        await self._commit_and_enqueue(item, QueueItemType.text)
+        item_type = _classify_text_item_type(text)
+        item = await self._repo.create_text_item(user_id=user_id, text=text, item_type=item_type)
+        await self._commit_and_enqueue(item, _QUEUE_ITEM_TYPE_BY_ITEM_TYPE[item_type])
         return item
 
     async def create_image_item(self, *, user_id: uuid.UUID, data: bytes) -> Item:

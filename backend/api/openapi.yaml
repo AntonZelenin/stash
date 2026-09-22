@@ -271,6 +271,7 @@ paths:
                           type: string
                           enum:
                             - text
+                            - link
                             - image
                         text:
                           type:
@@ -333,6 +334,7 @@ components:
           type: string
           enum:
             - text
+            - link
             - image
         status:
           type: string

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class ItemType(str, Enum):
     text = "text"
+    link = "link"
     image = "image"
 
 

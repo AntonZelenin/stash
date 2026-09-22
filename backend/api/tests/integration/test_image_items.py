@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import ImageMetadata, Item, ItemType
+from app.items.services import _MAX_IMAGE_SIZE_BYTES
 from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import register_and_login
 
@@ -74,7 +75,7 @@ async def test_create_image_item_rejects_non_image_content(client: AsyncClient):
 async def test_create_image_item_rejects_oversized_file(client: AsyncClient):
     _, token = await register_and_login(client)
 
-    oversized = _PNG_BYTES[:8] + b"\x00" * (10 * 1024 * 1024 + 1)
+    oversized = _PNG_BYTES[:8] + b"\x00" * (_MAX_IMAGE_SIZE_BYTES + 1)
 
     response = await client.post(
         "/items/image",

@@ -10,6 +10,7 @@ class ItemType(str, Enum):
     layer; the job schema here is the actual contract between the two."""
 
     text = "text"
+    link = "link"
     image = "image"
 
 

@@ -12,6 +12,39 @@ use crate::routes::Route;
 
 const IMAGE_UPLOAD_INPUT_ID: &str = "home-image-upload-input";
 
+/// Which of the filter chips is active. Filtering happens purely
+/// client-side over the already-fetched page of items — there's no
+/// separate "filtered" fetch.
+#[derive(Clone, Copy, PartialEq)]
+enum ItemFilter {
+    All,
+    Links,
+    Images,
+    Notes,
+}
+
+impl ItemFilter {
+    /// `item_type` is the backend's raw `type` string (`"text"`, `"link"`,
+    /// `"image"`) — "Notes" is this UI's name for a plain `"text"` item.
+    fn matches(self, item_type: &str) -> bool {
+        match self {
+            ItemFilter::All => true,
+            ItemFilter::Links => item_type == "link",
+            ItemFilter::Images => item_type == "image",
+            ItemFilter::Notes => item_type == "text",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ItemFilter::All => "All",
+            ItemFilter::Links => "Links",
+            ItemFilter::Images => "Images",
+            ItemFilter::Notes => "Notes",
+        }
+    }
+}
+
 /// Guesses a MIME type from a file name's extension. The browser normally
 /// supplies this via the file input's `File.type`, but Dioxus's
 /// cross-platform `FileEngine` only exposes file names, so this is
@@ -91,6 +124,7 @@ pub fn Home() -> Element {
         }
     });
 
+    let mut active_filter = use_signal(|| ItemFilter::All);
     let mut note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut status = use_signal(|| None::<String>);
@@ -332,10 +366,14 @@ pub fn Home() -> Element {
                     }
 
                     div { class: "stash-filters",
-                        button { class: "filter-chip filter-chip-active", r#type: "button", "All" }
-                        button { class: "filter-chip", r#type: "button", "Links" }
-                        button { class: "filter-chip", r#type: "button", "Images" }
-                        button { class: "filter-chip", r#type: "button", "Notes" }
+                        for filter in [ItemFilter::All, ItemFilter::Links, ItemFilter::Images, ItemFilter::Notes] {
+                            button {
+                                class: if active_filter() == filter { "filter-chip filter-chip-active" } else { "filter-chip" },
+                                r#type: "button",
+                                onclick: move |_| active_filter.set(filter),
+                                "{filter.label()}"
+                            }
+                        }
                     }
 
                     {match &*saved_items.read() {
@@ -355,13 +393,31 @@ pub fn Home() -> Element {
                                 p { "Nothing saved yet — items you capture will show up here." }
                             }
                         },
-                        Some(Ok(response)) => rsx! {
-                            div { class: "stash-grid",
-                                for item in response.items.clone() {
-                                    ItemCard { key: "{item.id}", item }
+                        Some(Ok(response)) => {
+                            let filter = active_filter();
+                            let filtered: Vec<ListedItem> = response
+                                .items
+                                .iter()
+                                .filter(|item| filter.matches(&item.r#type))
+                                .cloned()
+                                .collect();
+
+                            if filtered.is_empty() {
+                                rsx! {
+                                    div { class: "stash-empty",
+                                        p { "No {filter.label().to_lowercase()} yet." }
+                                    }
+                                }
+                            } else {
+                                rsx! {
+                                    div { class: "stash-grid",
+                                        for item in filtered {
+                                            ItemCard { key: "{item.id}", item }
+                                        }
+                                    }
                                 }
                             }
-                        },
+                        }
                     }}
                 }
             }
