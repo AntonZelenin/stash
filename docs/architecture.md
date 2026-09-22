@@ -27,13 +27,19 @@ Responsible for:
 
 ### Processing Worker
 
-Processes saved content asynchronously.
+Processes saved content asynchronously. Lives in `backend/content_analyzer/`.
 
 Responsibilities:
 - Generate image descriptions.
 - Generate tags.
 - Generate embeddings.
 - Store processing results in PostgreSQL.
+
+Current implementation (MVP): consumes item-processing jobs from the queue,
+loads the item from PostgreSQL by id, and drives it through
+`pending -> processing -> completed`/`failed`. The actual analysis step is a
+placeholder no-op — description/tag/embedding generation above is not
+implemented yet.
 
 ### PostgreSQL
 
@@ -69,7 +75,13 @@ Flow:
 
 API → Queue → Worker
 
-The concrete queue technology is not decided yet.
+Backed by Valkey (Redis-protocol compatible), used as a simple list-based
+FIFO queue. The API and worker never talk to Valkey directly — both depend
+only on the `JobQueue` interface in `backend/shared/`, so the concrete
+backend can be replaced later without touching either service. There is no
+crash-redelivery or dead-lettering yet; the worker's idempotent status
+transitions and small in-process retry are what make a duplicate/redelivered
+job safe.
 
 ## Environments
 
@@ -145,7 +157,7 @@ stash/
     │   │   ├── Dockerfile
     │   │   └── src/
     │   │
-    │   ├── worker/
+    │   ├── content_analyzer/
     │   │   ├── CLAUDE.md
     │   │   ├── Dockerfile
     │   │   └── src/

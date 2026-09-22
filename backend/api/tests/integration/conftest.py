@@ -5,10 +5,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from stash_shared.queue.base import JobQueue, ProcessingJob
+
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import ImageMetadata, Item, TextContent
 from app.main import app
+from app.queue import get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -31,6 +34,23 @@ class FakeObjectStorage(ObjectStorage):
 
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
         self.uploads[key] = (data, content_type)
+
+
+class FakeJobQueue(JobQueue):
+    """In-memory stand-in for the Valkey-backed queue, so tests never touch
+    real Valkey. `fail_publish` lets a test simulate a broken queue."""
+
+    def __init__(self):
+        self.published: list[ProcessingJob] = []
+        self.fail_publish = False
+
+    async def publish(self, job: ProcessingJob) -> None:
+        if self.fail_publish:
+            raise RuntimeError("valkey is unreachable")
+        self.published.append(job)
+
+    async def receive(self, *, timeout_seconds: int) -> ProcessingJob | None:
+        raise NotImplementedError("not used by API-side tests")
 
 
 @pytest.fixture
@@ -73,7 +93,17 @@ def storage() -> FakeObjectStorage:
 
 
 @pytest.fixture
-async def client(session: AsyncSession, storage: FakeObjectStorage) -> AsyncGenerator[AsyncClient]:
+def queue() -> FakeJobQueue:
+    fake = FakeJobQueue()
+    app.dependency_overrides[get_job_queue] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_job_queue, None)
+
+
+@pytest.fixture
+async def client(
+    session: AsyncSession, storage: FakeObjectStorage, queue: FakeJobQueue
+) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

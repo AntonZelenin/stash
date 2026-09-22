@@ -76,25 +76,19 @@ services:
       minio:
         condition: service_healthy
 
-#  content_analyzer:
-#    build:
-#      context: ./backend
-#      dockerfile: content_analyzer/Dockerfile
-#    restart: unless-stopped
-#    environment:
-#      DATABASE_URL: postgresql://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
-#      VALKEY_URL: redis://valkey:6379
-#      S3_ENDPOINT_URL: http://minio:9000
-#      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-#      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-#      S3_BUCKET: ${S3_BUCKET:-stash}
-#    depends_on:
-#      postgres:
-#        condition: service_healthy
-#      valkey:
-#        condition: service_healthy
-#      minio:
-#        condition: service_healthy
+  content_analyzer:
+    build:
+      context: ./backend
+      dockerfile: content_analyzer/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
+      VALKEY_URL: redis://valkey:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
 
   frontend:
     build:

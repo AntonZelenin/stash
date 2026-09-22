@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from stash_shared.queue.base import JobQueue
 
 from app.dependencies import get_current_user
 from app.api.schemas.items import CreateTextItemRequest, ItemCreated, ItemStatus
 from app.db import get_db_session
 from app.items.services import EmptyImageError, ImageTooLargeError, ItemService, UnsupportedImageTypeError
+from app.queue import get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -28,8 +30,9 @@ async def create_text_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
 ) -> ItemCreated:
-    item = await ItemService(session, storage).create_text_item(user_id=current_user.id, text=payload.text)
+    item = await ItemService(session, storage, queue).create_text_item(user_id=current_user.id, text=payload.text)
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
 
@@ -44,10 +47,11 @@ async def create_image_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage).create_image_item(user_id=current_user.id, data=data)
+        item = await ItemService(session, storage, queue).create_image_item(user_id=current_user.id, data=data)
     except EmptyImageError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
     except ImageTooLargeError:
