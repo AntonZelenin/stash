@@ -175,14 +175,23 @@
     background: var(--gradient);
 }
 
+/* One card behind the gradient border: image previews (if any) stacked
+   above the text/attach/send row, so staging images grows this same input
+   taller instead of opening a separate block beside it. */
 .home-input-inner {
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.home-input-row {
     display: flex;
     align-items: center;
     gap: 12px;
     height: 60px;
     padding: 0 8px 0 24px;
-    background: #fff;
-    border-radius: 14px;
 }
 
 .home-input {
@@ -262,25 +271,24 @@
 
 /* ---- staged image preview ---- */
 
-.home-image-preview-list {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
+/* Exactly 3 per row — a `flex-wrap` row would pack a variable count per
+   row depending on file-name length, which reads as messier the more
+   images are staged. */
+.home-image-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     gap: 8px;
-    width: 100%;
-    max-width: 620px;
-    margin: 0 0 12px;
+    padding: 14px 14px 0;
 }
 
 .home-image-preview {
     display: flex;
     align-items: center;
     gap: 8px;
-    max-width: 220px;
+    min-width: 0;
     padding: 6px 10px;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    background: #f5f6f8;
+    border-radius: 10px;
     text-align: left;
 }
 

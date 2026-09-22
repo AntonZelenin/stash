@@ -212,33 +212,6 @@ pub fn Home() -> Element {
                     div { class: "home-drop-hint", "Drop image to upload" }
                 }
 
-                if !pending_images().is_empty() {
-                    div { class: "home-image-preview-list",
-                        for (index , image) in pending_images().into_iter().enumerate() {
-                            div {
-                                class: "home-image-preview",
-                                key: "{index}-{image.file_name}",
-                                img {
-                                    class: "home-image-preview-thumb",
-                                    src: "{image.preview_url}",
-                                    alt: "{image.file_name}",
-                                }
-                                span { class: "home-image-preview-name", "{image.file_name}" }
-                                button {
-                                    class: "home-image-preview-remove",
-                                    r#type: "button",
-                                    title: "Remove image",
-                                    disabled: is_submitting(),
-                                    onclick: move |_| {
-                                        pending_images.write().remove(index);
-                                    },
-                                    IconClose {}
-                                }
-                            }
-                        }
-                    }
-                }
-
                 form {
                     class: "home-input-wrap",
                     onsubmit: move |evt| {
@@ -246,32 +219,67 @@ pub fn Home() -> Element {
                         submit();
                     },
                     div { class: "home-input-inner",
-                        input {
-                            class: "home-input",
-                            placeholder: "Paste a link, write a note, or anything...",
-                            value: "{note}",
-                            oninput: move |evt| note.set(evt.value()),
+                        // Staged images render inside the same card as the
+                        // text row, not above or outside it — visually part
+                        // of the message that Send is about to submit,
+                        // rather than a floating block that leaves the
+                        // input looking empty. Laid out 3-per-row so a
+                        // large batch doesn't become one long scrolling
+                        // line.
+                        if !pending_images().is_empty() {
+                            div { class: "home-image-preview-grid",
+                                for (index , image) in pending_images().into_iter().enumerate() {
+                                    div {
+                                        class: "home-image-preview",
+                                        key: "{index}-{image.file_name}",
+                                        img {
+                                            class: "home-image-preview-thumb",
+                                            src: "{image.preview_url}",
+                                            alt: "{image.file_name}",
+                                        }
+                                        span { class: "home-image-preview-name", "{image.file_name}" }
+                                        button {
+                                            class: "home-image-preview-remove",
+                                            r#type: "button",
+                                            title: "Remove image",
+                                            disabled: is_submitting(),
+                                            onclick: move |_| {
+                                                pending_images.write().remove(index);
+                                            },
+                                            IconClose {}
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        input {
-                            r#type: "file",
-                            id: IMAGE_UPLOAD_INPUT_ID,
-                            class: "home-image-input",
-                            accept: "image/png,image/jpeg,image/gif,image/webp",
-                            multiple: true,
-                            disabled: is_submitting(),
-                            onchange: stage_picked_files,
-                        }
-                        label {
-                            class: "home-input-attach",
-                            r#for: IMAGE_UPLOAD_INPUT_ID,
-                            title: "Upload an image",
-                            IconImage {}
-                        }
-                        button {
-                            class: "home-input-submit",
-                            r#type: "submit",
-                            disabled: is_submitting(),
-                            IconArrowUp {}
+                        div { class: "home-input-row",
+                            input {
+                                class: "home-input",
+                                placeholder: "Paste a link, write a note, or anything...",
+                                value: "{note}",
+                                oninput: move |evt| note.set(evt.value()),
+                            }
+                            input {
+                                r#type: "file",
+                                id: IMAGE_UPLOAD_INPUT_ID,
+                                class: "home-image-input",
+                                accept: "image/png,image/jpeg,image/gif,image/webp",
+                                multiple: true,
+                                disabled: is_submitting(),
+                                onchange: stage_picked_files,
+                            }
+                            label {
+                                class: "home-input-attach",
+                                r#for: IMAGE_UPLOAD_INPUT_ID,
+                                title: "Upload an image",
+                                IconImage {}
+                            }
+                            button {
+                                class: "home-input-submit",
+                                r#type: "submit",
+                                disabled: is_submitting(),
+                                IconArrowUp {}
+                            }
                         }
                     }
                 }
