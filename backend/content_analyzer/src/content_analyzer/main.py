@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from stash_shared.queue.valkey_queue import build_valkey_job_queue
+from stash_shared.queue.factory import build_job_queue
 
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 
 async def main() -> None:
     settings = get_settings()
-    queue = build_valkey_job_queue(settings.valkey_url)
+    queue = build_job_queue(settings.queue_provider, settings)
     engine = create_engine()
 
     worker = Worker(
