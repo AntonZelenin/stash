@@ -80,10 +80,10 @@ pub fn Home() -> Element {
     }
 
     // Fetches once on mount (the closure captures no reactive state, so
-    // `use_resource` never re-runs it on its own). No refresh-after-save or
-    // pagination yet — this is just the initial "show what's already
-    // saved" load.
-    let saved_items = use_resource({
+    // `use_resource` never re-runs it on its own past that). `submit`
+    // below calls `.restart()` after a successful save so new items show
+    // up without a manual page reload. No pagination yet.
+    let mut saved_items = use_resource({
         let session = session.clone();
         move || {
             let session = session.clone();
@@ -130,6 +130,7 @@ pub fn Home() -> Element {
                         }
                     }
                     status.set(last_error);
+                    saved_items.restart();
 
                     is_submitting.set(false);
                 });
@@ -146,7 +147,10 @@ pub fn Home() -> Element {
                 status.set(None);
 
                 match session.create_text_item(note().trim()).await {
-                    Ok(_) => note.set(String::new()),
+                    Ok(_) => {
+                        note.set(String::new());
+                        saved_items.restart();
+                    }
                     Err(err) => status.set(Some(err.to_string())),
                 }
 
