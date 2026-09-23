@@ -1,5 +1,6 @@
 import base64
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +44,26 @@ def _classify_text_item_type(text: str) -> ItemType:
         return ItemType.link
 
     return ItemType.text
+
+
+_MAX_SEARCH_TERMS = 10
+_SEARCH_TERM_PATTERN = re.compile(r"\w+")
+
+
+def build_prefix_tsquery(query: str) -> str | None:
+    """Turns free-form user input into a Postgres `to_tsquery` expression
+    that matches items containing *all* the words, each as a prefix — so
+    results update sensibly while the user is still typing ("scre" already
+    finds "screenshot"). Returns None when there's nothing searchable.
+
+    Only word characters survive, so user input can never inject tsquery
+    syntax (`&`, `|`, `!`, `:`, parentheses, quotes) and make `to_tsquery`
+    raise.
+    """
+    terms = _SEARCH_TERM_PATTERN.findall(query.lower())[:_MAX_SEARCH_TERMS]
+    if not terms:
+        return None
+    return " & ".join(f"{term}:*" for term in terms)
 
 
 class EmptyImageError(Exception):
@@ -121,8 +142,21 @@ class ItemService:
         has_more = len(rows) > limit
         rows = rows[:limit]
 
+        next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        return await self._with_download_urls(rows), next_cursor
+
+    async def search_items(self, *, user_id: uuid.UUID, query: str, limit: int) -> list[ListedItem]:
+        """Full-text search over the user's item descriptions, best match
+        first. See `build_prefix_tsquery` for how `query` is interpreted."""
+        tsquery = build_prefix_tsquery(query)
+        if tsquery is None:
+            return []
+        rows = await self._repo.search_items(user_id=user_id, tsquery=tsquery, limit=limit)
+        return await self._with_download_urls(rows)
+
+    async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
         settings = get_settings()
-        listed_items = [
+        return [
             ListedItem(
                 item=row,
                 download_url=(
@@ -135,9 +169,6 @@ class ItemService:
             )
             for row in rows
         ]
-
-        next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
-        return listed_items, next_cursor
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
         item_type = _classify_text_item_type(text)

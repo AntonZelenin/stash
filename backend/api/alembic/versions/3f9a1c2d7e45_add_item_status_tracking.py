@@ -25,12 +25,6 @@ def upgrade() -> None:
         sa.Column('status_updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     )
     op.add_column('items', sa.Column('requeue_count', sa.Integer(), server_default='0', nullable=False))
-    # Existing rows have no real record of when their status last changed;
-    # `created_at` is the honest lower bound. It also means items already
-    # orphaned before this migration (stuck `pending` with no job) are
-    # picked up by the stale-item sweeper right away instead of only after
-    # a full staleness window from now.
-    op.execute("UPDATE items SET status_updated_at = created_at")
     op.create_index(
         'ix_items_unfinished_status_updated_at',
         'items',

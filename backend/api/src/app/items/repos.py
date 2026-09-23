@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -61,6 +61,28 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
+
+    async def search_items(self, *, user_id: uuid.UUID, tsquery: str, limit: int) -> list[Item]:
+        """The user's items whose description matches `tsquery` (a
+        `to_tsquery` expression), best match first, newest first among
+        equal ranks. Postgres-only: it relies on the generated
+        `item_descriptions.search_vector` column and its GIN index, which
+        the ORM deliberately doesn't map (Postgres maintains it)."""
+        # The config is a literal cast rather than a bound parameter so
+        # Postgres resolves the `to_tsquery(regconfig, text)` overload
+        # without the driver having to encode a `regconfig` value.
+        query = func.to_tsquery(literal_column("'english'::regconfig"), tsquery)
+        search_vector = literal_column("item_descriptions.search_vector")
+        stmt = (
+            select(Item)
+            .join(Description, Description.item_id == Item.id)
+            .options(selectinload(Item.text_content), selectinload(Item.image))
+            .where(Item.user_id == user_id, search_vector.op("@@")(query))
+            .order_by(func.ts_rank(search_vector, query).desc(), Item.created_at.desc(), Item.id.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def list_items(
         self,

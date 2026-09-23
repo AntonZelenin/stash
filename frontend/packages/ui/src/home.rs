@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use api::ListedItem;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
+use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::icons::{
@@ -12,6 +15,9 @@ use crate::items::ItemGrid;
 use crate::routes::Route;
 
 const IMAGE_UPLOAD_INPUT_ID: &str = "home-image-upload-input";
+/// How long typing must pause before a search request is sent.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const SEARCH_LIMIT: u32 = 50;
 
 /// Which of the filter chips is active. Filtering happens purely
 /// client-side over the already-fetched page of items — there's no
@@ -125,6 +131,29 @@ pub fn Home() -> Element {
         }
     });
 
+    // Search-as-you-type. `use_resource` re-runs whenever `search_query`
+    // changes and drops the previous, still-running future — so the delay
+    // below doubles as a debounce: only a pause in typing reaches the
+    // server, and a slow response for an outdated query can never overwrite
+    // a newer one. Resolves to `None` when the box is empty (show the
+    // regular list instead).
+    let mut search_query = use_signal(String::new);
+    let mut search_results = use_resource({
+        let session = session.clone();
+        move || {
+            let session = session.clone();
+            let query = search_query().trim().to_string();
+            async move {
+                if query.is_empty() {
+                    return None;
+                }
+                Delay::new(SEARCH_DEBOUNCE).await;
+                let result = session.search_items(query.clone(), SEARCH_LIMIT).await;
+                Some((query, result))
+            }
+        }
+    });
+
     let mut active_filter = use_signal(|| ItemFilter::All);
     let mut note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
@@ -166,6 +195,7 @@ pub fn Home() -> Element {
                     }
                     status.set(last_error);
                     saved_items.restart();
+                    search_results.restart();
 
                     is_submitting.set(false);
                 });
@@ -185,6 +215,7 @@ pub fn Home() -> Element {
                     Ok(_) => {
                         note.set(String::new());
                         saved_items.restart();
+                        search_results.restart();
                     }
                     Err(err) => status.set(Some(err.to_string())),
                 }
@@ -354,15 +385,16 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // The search field and filter chips are still
-                    // presentational only — actual search/filtering isn't
-                    // wired up yet. The saved-items area below them is live.
+                    // Typing here swaps the list below for full-text search
+                    // results; the filter chips apply to either.
                     div { class: "stash-search-wrap",
                         IconSearch {}
                         input {
                             class: "stash-search-input",
                             r#type: "search",
                             placeholder: "Search your stash...",
+                            value: "{search_query}",
+                            oninput: move |evt| search_query.set(evt.value()),
                         }
                     }
 
@@ -377,47 +409,77 @@ pub fn Home() -> Element {
                         }
                     }
 
-                    {match &*saved_items.read() {
-                        None => rsx! {
-                            div { class: "stash-empty",
-                                p { "Loading your stash..." }
-                            }
-                        },
-                        Some(Err(err)) => rsx! {
-                            div { class: "stash-empty",
-                                p { "Could not load your stash: {err}" }
-                            }
-                        },
-                        Some(Ok(response)) if response.items.is_empty() => rsx! {
-                            div { class: "stash-empty",
-                                IconStash {}
-                                p { "Nothing saved yet — items you capture will show up here." }
-                            }
-                        },
-                        Some(Ok(response)) => {
-                            let filter = active_filter();
-                            let filtered: Vec<ListedItem> = response
-                                .items
-                                .iter()
-                                .filter(|item| filter.matches(&item.r#type))
-                                .cloned()
-                                .collect();
-
-                            if filtered.is_empty() {
-                                rsx! {
-                                    div { class: "stash-empty",
-                                        p { "No {filter.label().to_lowercase()} yet." }
-                                    }
+                    if search_query().trim().is_empty() {
+                        {match &*saved_items.read() {
+                            None => rsx! {
+                                div { class: "stash-empty",
+                                    p { "Loading your stash..." }
                                 }
-                            } else {
-                                rsx! {
-                                    ItemGrid { items: filtered }
+                            },
+                            Some(Err(err)) => rsx! {
+                                div { class: "stash-empty",
+                                    p { "Could not load your stash: {err}" }
                                 }
+                            },
+                            Some(Ok(response)) if response.items.is_empty() => rsx! {
+                                div { class: "stash-empty",
+                                    IconStash {}
+                                    p { "Nothing saved yet — items you capture will show up here." }
+                                }
+                            },
+                            Some(Ok(response)) => {
+                                let filter = active_filter();
+                                filtered_items(
+                                    &response.items,
+                                    filter,
+                                    format!("No {} yet.", filter.label().to_lowercase()),
+                                )
                             }
-                        }
-                    }}
+                        }}
+                    } else {
+                        {match &*search_results.read() {
+                            Some(Some((query, Ok(response)))) => filtered_items(
+                                &response.items,
+                                active_filter(),
+                                format!("Nothing matches “{query}”."),
+                            ),
+                            Some(Some((_, Err(err)))) => rsx! {
+                                div { class: "stash-empty",
+                                    p { "Search failed: {err}" }
+                                }
+                            },
+                            // Debouncing, or the request is in flight.
+                            _ => rsx! {
+                                div { class: "stash-empty",
+                                    p { "Searching..." }
+                                }
+                            },
+                        }}
+                    }
                 }
             }
+        }
+    }
+}
+
+/// Applies the active filter chip to `items` (a list page or search
+/// results) and renders them, or `empty_message` if nothing is left.
+fn filtered_items(items: &[ListedItem], filter: ItemFilter, empty_message: String) -> Element {
+    let filtered: Vec<ListedItem> = items
+        .iter()
+        .filter(|item| filter.matches(&item.r#type))
+        .cloned()
+        .collect();
+
+    if filtered.is_empty() {
+        rsx! {
+            div { class: "stash-empty",
+                p { "{empty_message}" }
+            }
+        }
+    } else {
+        rsx! {
+            ItemGrid { items: filtered }
         }
     }
 }

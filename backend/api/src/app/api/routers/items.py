@@ -19,6 +19,7 @@ from app.items.services import (
     ItemService,
     UnsupportedImageTypeError,
 )
+from app.items.services import ListedItem as ListedItemResult
 from app.queue import get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -96,17 +97,17 @@ async def list_items(
     except InvalidCursorError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
 
-    return ListItemsResponse(
-        items=[
-            ListedItem(
-                id=listed.item.id,
-                type=ItemType(listed.item.type),
-                status=ItemStatus(listed.item.status),
-                created_at=listed.item.created_at,
-                text=listed.item.text_content.text if listed.item.text_content else None,
-                download_url=listed.download_url,
-            )
-            for listed in listed_items
-        ],
-        next_cursor=next_cursor,
+    return ListItemsResponse(items=[to_listed_item(listed) for listed in listed_items], next_cursor=next_cursor)
+
+
+def to_listed_item(listed: ListedItemResult) -> ListedItem:
+    """Response shape shared by listing and search, so the client renders
+    both with the same item cards."""
+    return ListedItem(
+        id=listed.item.id,
+        type=ItemType(listed.item.type),
+        status=ItemStatus(listed.item.status),
+        created_at=listed.item.created_at,
+        text=listed.item.text_content.text if listed.item.text_content else None,
+        download_url=listed.download_url,
     )

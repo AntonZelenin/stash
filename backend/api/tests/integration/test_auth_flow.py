@@ -57,15 +57,13 @@ async def test_login_rejects_unknown_email(client: AsyncClient):
 
 
 async def test_protected_endpoint_rejects_missing_token(client: AsyncClient):
-    response = await client.post("/search", json={"query": "foo"})
+    response = await client.get("/items")
 
     assert response.status_code == 401
 
 
 async def test_protected_endpoint_rejects_invalid_token(client: AsyncClient):
-    response = await client.post(
-        "/search", json={"query": "foo"}, headers={"Authorization": "Bearer not-a-real-token"}
-    )
+    response = await client.get("/items", headers={"Authorization": "Bearer not-a-real-token"})
 
     assert response.status_code == 401
 
@@ -75,7 +73,7 @@ async def test_protected_endpoint_accepts_valid_token(client: AsyncClient):
     login_response = await _login(client)
     token = login_response.json()["access_token"]
 
-    response = await client.post("/search", json={"query": "foo"}, headers={"Authorization": f"Bearer {token}"})
+    response = await client.get("/items", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
 
@@ -102,9 +100,7 @@ async def test_refresh_new_access_token_is_usable(client: AsyncClient):
     refresh_response = await client.post("/refresh", json={"refresh_token": refresh_token})
     new_access_token = refresh_response.json()["access_token"]
 
-    response = await client.post(
-        "/search", json={"query": "foo"}, headers={"Authorization": f"Bearer {new_access_token}"}
-    )
+    response = await client.get("/items", headers={"Authorization": f"Bearer {new_access_token}"})
 
     assert response.status_code == 200
 

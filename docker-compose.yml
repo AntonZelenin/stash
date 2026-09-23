@@ -47,6 +47,24 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: creates the bucket the API/worker use, so a fresh (or wiped)
+  # MinIO volume works without any manual setup. Idempotent.
+  minio-init:
+    # The server image ships the `mc` client (the standalone minio/mc image
+    # is no longer publicly pullable).
+    image: minio/minio:latest
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-stash}
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD
+      && mc mb --ignore-existing local/$$S3_BUCKET"
+    depends_on:
+      minio:
+        condition: service_healthy
+
   api:
     build:
       context: ./backend
@@ -73,8 +91,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   content_analyzer:
     build:
@@ -95,8 +113,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   frontend:
     build:

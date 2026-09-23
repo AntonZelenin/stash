@@ -159,6 +159,14 @@ Client → API → Object Storage
 
 Client → API → PostgreSQL hybrid search → Results
 
+Currently implemented: the full-text half. `item_descriptions.search_vector`
+is a stored, generated `tsvector` (English config, GIN-indexed) that Postgres
+keeps in sync with the description text; punctuation-split text is indexed
+too so words inside URLs match. `POST /search` turns the user's input into a
+prefix `tsquery` (every word must match, each as a prefix, so partial words
+work while typing) and returns items ranked by `ts_rank`. Vector similarity
+search is not implemented yet.
+
 ## Repository
 
 The project uses a monorepo.

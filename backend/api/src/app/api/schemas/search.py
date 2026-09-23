@@ -1,8 +1,6 @@
-from uuid import UUID
-
 from pydantic import BaseModel, Field
 
-from app.api.schemas.items import ItemType
+from app.api.schemas.items import ListedItem
 
 
 class SearchRequest(BaseModel):
@@ -10,13 +8,6 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
-class SearchResultItem(BaseModel):
-    id: UUID
-    type: ItemType
-    text: str | None = None
-    description: str | None = None
-    tags: list[str] = Field(default_factory=list)
-
-
 class SearchResponse(BaseModel):
-    items: list[SearchResultItem]
+    # Same shape as `GET /items` entries, best match first.
+    items: list[ListedItem]

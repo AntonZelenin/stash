@@ -4,7 +4,7 @@ use serde::Deserialize;
 use crate::error::{ApiError, FieldError};
 use crate::models::{
     CreateTextItemRequest, ItemCreated, ListItemsResponse, LoginRequest, RefreshRequest,
-    RegisterRequest, RegisterResponse, TokenPair,
+    RegisterRequest, RegisterResponse, SearchRequest, SearchResponse, TokenPair,
 };
 
 #[derive(Clone)]
@@ -111,6 +111,34 @@ impl ApiClient {
 
         match response.status().as_u16() {
             202 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// Full-text search over the user's item descriptions, best match
+    /// first.
+    pub async fn search_items(
+        &self,
+        access_token: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<SearchResponse, ApiError> {
+        let response = self
+            .authenticated(Method::POST, "/search", access_token)
+            .json(&SearchRequest {
+                query: query.to_string(),
+                limit,
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,

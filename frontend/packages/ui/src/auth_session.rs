@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use api::{ApiClient, ApiError, ItemCreated, ListItemsResponse, TokenPair, TokenStore};
+use api::{
+    ApiClient, ApiError, ItemCreated, ListItemsResponse, SearchResponse, TokenPair, TokenStore,
+};
 use dioxus::prelude::*;
 
 /// Shared, reactive auth state. A platform entrypoint constructs one (with
@@ -107,6 +109,20 @@ impl AuthSession {
                     .list_items(&access_token, cursor.as_deref(), limit)
                     .await
             }
+        })
+        .await
+    }
+
+    pub async fn search_items(
+        &self,
+        query: String,
+        limit: u32,
+    ) -> Result<SearchResponse, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let query = query.clone();
+            async move { client.search_items(&access_token, &query, limit).await }
         })
         .await
     }

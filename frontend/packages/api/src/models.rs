@@ -50,6 +50,18 @@ pub struct ListedItem {
     pub download_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SearchRequest {
+    pub query: String,
+    pub limit: u32,
+}
+
+/// Same item shape as `ListItemsResponse`, best match first; no paging.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SearchResponse {
+    pub items: Vec<ListedItem>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ListItemsResponse {
     pub items: Vec<ListedItem>,
