@@ -3,7 +3,6 @@ from uuid import UUID
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import Item, ItemType
 from conftest import FakeJobQueue
@@ -66,7 +65,7 @@ async def test_create_text_item_link_type_is_returned_by_list_items(client: Asyn
     assert response.json()["items"][0]["type"] == "link"
 
 
-async def test_create_text_item_link_publishes_link_processing_job(client: AsyncClient, queue: FakeJobQueue):
+async def test_create_text_item_link_does_not_publish_processing_job(client: AsyncClient, queue: FakeJobQueue):
     _, token = await register_and_login(client)
 
     response = await client.post(
@@ -74,5 +73,4 @@ async def test_create_text_item_link_publishes_link_processing_job(client: Async
     )
 
     assert response.status_code == 202
-    assert len(queue.published) == 1
-    assert queue.published[0].item_type == QueueItemType.link
+    assert queue.published == []

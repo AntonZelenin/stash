@@ -3,7 +3,6 @@ from uuid import UUID
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import Item, ItemType, TextContent
 from conftest import FakeJobQueue
@@ -19,7 +18,7 @@ async def test_create_text_item_persists_and_associates_with_user(client: AsyncC
 
     assert response.status_code == 202
     body = response.json()
-    assert body["status"] == "pending"
+    assert body["status"] == "completed"
 
     item = await session.get(Item, UUID(body["id"]))
     assert item is not None
@@ -52,25 +51,8 @@ async def test_create_text_item_rejects_missing_token(client: AsyncClient):
     assert response.status_code == 401
 
 
-async def test_create_text_item_publishes_processing_job(client: AsyncClient, queue: FakeJobQueue):
-    user_id, token = await register_and_login(client)
-
-    response = await client.post(
-        "/items/text", json={"text": "hello world"}, headers={"Authorization": f"Bearer {token}"}
-    )
-
-    assert response.status_code == 202
-    assert len(queue.published) == 1
-    job = queue.published[0]
-    assert str(job.item_id) == response.json()["id"]
-    assert str(job.user_id) == user_id
-    assert job.item_type == QueueItemType.text
-
-
-async def test_create_text_item_marked_failed_when_enqueue_fails(
-    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue
-):
-    queue.fail_publish = True
+async def test_create_text_item_does_not_publish_processing_job(client: AsyncClient, queue: FakeJobQueue):
+    """Only images are analyzed asynchronously; text is complete on save."""
     _, token = await register_and_login(client)
 
     response = await client.post(
@@ -78,8 +60,5 @@ async def test_create_text_item_marked_failed_when_enqueue_fails(
     )
 
     assert response.status_code == 202
-    assert response.json()["status"] == "failed"
-
-    item = await session.get(Item, UUID(response.json()["id"]))
-    assert item.status == "failed"
+    assert response.json()["status"] == "completed"
     assert queue.published == []

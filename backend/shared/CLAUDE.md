@@ -2,11 +2,12 @@
 
 Code shared between `api` and `content_analyzer`.
 
-Currently holds `stash_shared.queue`: the `JobQueue` interface and
+Currently holds `stash_shared.queue`: the `JobQueue` (at-least-once:
+receive / ack / retry_later) and `DeadLetterQueue` interfaces and the
 `ProcessingJob` payload used to hand item-processing work from the API to the
-worker, plus the current Valkey-backed implementation. Both services depend
-only on `JobQueue`, not on Valkey directly, so the backend can be replaced
-later without touching either.
+worker, plus the current Valkey Streams implementations. Both services depend
+only on the interfaces, not on Valkey directly, so the backend can be
+replaced later (e.g. SQS) without touching either.
 
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:

@@ -1,0 +1,116 @@
+import uuid
+
+import pytest
+from stash_shared.queue.base import ImageRef, ItemType
+
+from content_analyzer.items import start_attempt
+from content_analyzer.sweeper import StaleItemSweeper
+from conftest import FakeJobQueue, fetch_requeue_count, fetch_status, insert_item
+
+_STALE_AFTER = 1800
+
+
+@pytest.fixture
+def queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+@pytest.fixture
+def sweeper(engine, queue) -> StaleItemSweeper:
+    return StaleItemSweeper(
+        queue=queue, engine=engine, stale_after_seconds=_STALE_AFTER, max_requeues=3, interval_seconds=60
+    )
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+async def test_stale_image_item_is_republished_with_image_ref(sweeper, engine, queue, status):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status=status, age_seconds=_STALE_AFTER + 60)
+
+    await sweeper.sweep_once()
+
+    [job] = queue.published
+    assert job.item_id == item_id
+    assert job.item_type == ItemType.image
+    assert job.image == ImageRef(storage_key="images/cat.png", content_type="image/png")
+    assert await fetch_requeue_count(engine, item_id) == 1
+    assert await fetch_status(engine, item_id) == status
+
+
+async def test_requeue_resets_staleness_clock(sweeper, engine, queue):
+    """A second sweep right after must not publish the same item again."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, age_seconds=_STALE_AFTER + 60)
+
+    await sweeper.sweep_once()
+    await sweeper.sweep_once()
+
+    assert len(queue.published) == 1
+
+
+async def test_fresh_items_are_left_alone(sweeper, engine, queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", age_seconds=_STALE_AFTER - 60)
+
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+    assert await fetch_requeue_count(engine, item_id) == 0
+
+
+async def test_attempt_start_keeps_a_live_item_fresh(sweeper, engine, queue):
+    """Each processing attempt refreshes the clock, so an item whose job is
+    still being retried never looks stale."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", age_seconds=_STALE_AFTER + 60)
+
+    await start_attempt(engine, item_id)
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_finished_items_are_never_swept(sweeper, engine, queue, status):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status=status, age_seconds=_STALE_AFTER * 10)
+
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+    assert await fetch_status(engine, item_id) == status
+
+
+async def test_item_is_failed_after_max_requeues(sweeper, engine, queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, age_seconds=_STALE_AFTER + 60, requeue_count=3)
+
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+    assert await fetch_status(engine, item_id) == "failed"
+
+
+@pytest.mark.parametrize("item_type", ["text", "link"])
+async def test_non_image_items_are_never_swept(sweeper, engine, queue, item_type):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, item_type=item_type, age_seconds=_STALE_AFTER + 60)
+
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+    assert await fetch_status(engine, item_id) == "pending"
+
+
+async def test_concurrent_sweepers_publish_once(engine, queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, age_seconds=_STALE_AFTER + 60)
+    sweepers = [
+        StaleItemSweeper(queue=queue, engine=engine, stale_after_seconds=_STALE_AFTER, max_requeues=3, interval_seconds=60)
+        for _ in range(2)
+    ]
+
+    for sweeper in sweepers:
+        await sweeper.sweep_once()
+
+    assert len(queue.published) == 1

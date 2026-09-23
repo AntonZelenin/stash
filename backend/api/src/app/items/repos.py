@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,7 +13,11 @@ class ItemRepository:
         self._session = session
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str, item_type: ItemType) -> Item:
-        item = Item(user_id=user_id, type=item_type, text_content=TextContent(text=text))
+        # Nothing to analyze asynchronously for text/links, so they're
+        # finished the moment they're stored.
+        item = Item(
+            user_id=user_id, type=item_type, status=ItemStatus.completed, text_content=TextContent(text=text)
+        )
         self._session.add(item)
         await self._session.flush()
         return item
@@ -26,7 +30,9 @@ class ItemRepository:
         job (or a concurrent transition) can't race or double-apply. Returns
         whether this call actually performed the transition."""
         result = await self._session.execute(
-            update(Item).where(Item.id == item_id, Item.status == from_status).values(status=to_status)
+            update(Item)
+            .where(Item.id == item_id, Item.status == from_status)
+            .values(status=to_status, status_updated_at=func.now())
         )
         return result.rowcount == 1
 

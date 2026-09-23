@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
-from stash_shared.queue.base import JobQueue, ProcessingJob
+from stash_shared.queue.base import ImageRef, JobQueue, ProcessingJob
 
 from app.config import get_settings
 from app.items.models import Item, ItemStatus, ItemType
@@ -26,15 +26,6 @@ _IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
 }
 
 _LINK_SCHEMES = {"http", "https"}
-
-# `ItemType` (Postgres/domain) and the queue's own `ItemType` are separate,
-# deliberately-duplicated enums (see the docstring on the latter) — this
-# just maps one to the other rather than assuming their members line up.
-_QUEUE_ITEM_TYPE_BY_ITEM_TYPE = {
-    ItemType.text: QueueItemType.text,
-    ItemType.link: QueueItemType.link,
-    ItemType.image: QueueItemType.image,
-}
 
 
 def _classify_text_item_type(text: str) -> ItemType:
@@ -151,7 +142,9 @@ class ItemService:
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
         item_type = _classify_text_item_type(text)
         item = await self._repo.create_text_item(user_id=user_id, text=text, item_type=item_type)
-        await self._commit_and_enqueue(item, _QUEUE_ITEM_TYPE_BY_ITEM_TYPE[item_type])
+        # Only images go through the content analyzer; text/links are
+        # stored already `completed` and never enqueued.
+        await self._session.commit()
         return item
 
     async def create_image_item(self, *, user_id: uuid.UUID, data: bytes) -> Item:
@@ -176,11 +169,12 @@ class ItemService:
             content_type=content_type,
             size_bytes=len(data),
         )
-        await self._commit_and_enqueue(item, QueueItemType.image)
+        await self._commit_and_enqueue(item, ImageRef(storage_key=storage_key, content_type=content_type))
         return item
 
-    async def _commit_and_enqueue(self, item: Item, item_type: QueueItemType) -> None:
-        """Commits the item's creation, then publishes its processing job.
+    async def _commit_and_enqueue(self, item: Item, image: ImageRef) -> None:
+        """Commits the image item's creation, then publishes its processing
+        job.
 
         The commit must happen first: the worker looks the item up in
         Postgres on its own connection, so publishing before this row is
@@ -190,7 +184,7 @@ class ItemService:
         """
         await self._session.commit()
 
-        job = ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=item_type)
+        job = ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType.image, image=image)
         try:
             await self._queue.publish(job)
         except Exception:

@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from stash_shared.queue.base import JobQueue, ProcessingJob
+from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
@@ -52,7 +52,13 @@ class FakeJobQueue(JobQueue):
             raise RuntimeError("valkey is unreachable")
         self.published.append(job)
 
-    async def receive(self, *, timeout_seconds: int) -> ProcessingJob | None:
+    async def receive(self, *, timeout_seconds: int) -> Delivery | None:
+        raise NotImplementedError("not used by API-side tests")
+
+    async def ack(self, delivery: Delivery) -> None:
+        raise NotImplementedError("not used by API-side tests")
+
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
         raise NotImplementedError("not used by API-side tests")
 
 

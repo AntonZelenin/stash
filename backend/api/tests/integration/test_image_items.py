@@ -95,7 +95,9 @@ async def test_create_image_item_rejects_missing_token(client: AsyncClient):
     assert response.status_code == 401
 
 
-async def test_create_image_item_publishes_processing_job(client: AsyncClient, queue: FakeJobQueue):
+async def test_create_image_item_publishes_processing_job(
+    client: AsyncClient, queue: FakeJobQueue, storage: FakeObjectStorage
+):
     user_id, token = await register_and_login(client)
 
     response = await client.post(
@@ -110,3 +112,28 @@ async def test_create_image_item_publishes_processing_job(client: AsyncClient, q
     assert str(job.item_id) == response.json()["id"]
     assert str(job.user_id) == user_id
     assert job.item_type == QueueItemType.image
+    # The worker fetches the bytes from storage using this, so it must point
+    # at exactly what was uploaded.
+    assert job.image is not None
+    assert job.image.storage_key in storage.uploads
+    assert job.image.content_type == "image/png"
+
+
+async def test_create_image_item_marked_failed_when_enqueue_fails(
+    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue
+):
+    queue.fail_publish = True
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/image",
+        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "failed"
+
+    item = await session.get(Item, UUID(response.json()["id"]))
+    assert item.status == "failed"
+    assert queue.published == []

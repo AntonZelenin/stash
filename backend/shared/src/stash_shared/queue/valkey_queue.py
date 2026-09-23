@@ -1,49 +1,218 @@
 import json
+import socket
+from datetime import UTC, datetime
 from uuid import UUID
 
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
-from stash_shared.queue.base import ItemType, JobQueue, ProcessingJob
+from stash_shared.queue.base import (
+    DeadLetter,
+    DeadLetterQueue,
+    Delivery,
+    ImageRef,
+    ItemType,
+    JobQueue,
+    ProcessingJob,
+)
 
-_QUEUE_KEY = "stash:item-processing"
+_STREAM_KEY = "stash:item-processing"
+_GROUP = "content-analyzer"
+_DEAD_LETTER_STREAM_KEY = "stash:item-processing:dead-letter"
+_PAYLOAD_FIELD = "payload"
+# Acked entries stay in a stream until trimmed. Approximate trimming on
+# publish keeps it bounded; the cap is far above any healthy backlog, so it
+# never trims entries that are still waiting to be processed in practice.
+_STREAM_MAX_LEN = 100_000
+_DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
+_SOCKET_TIMEOUT_SECONDS = 60
 
 
 class ValkeyJobQueue(JobQueue):
-    """`JobQueue` backed by a Valkey list, used as a simple FIFO via
-    RPUSH/BLPOP. No redelivery-on-crash or dead-lettering yet — see
-    `content_analyzer.worker` for the idempotency/retry behavior that
-    compensates for that at the consumer side."""
+    """`JobQueue` backed by a Valkey Stream with a consumer group.
 
-    def __init__(self, client: Redis, *, queue_key: str = _QUEUE_KEY):
+    The consumer group's pending entries list (PEL) is what makes this
+    at-least-once: a message read with XREADGROUP stays pending, with a
+    per-message delivery counter, until XACKed.
+
+    Redelivery is driven by idle time, SQS-visibility-timeout style: any
+    pending message idle for longer than `visibility_timeout_seconds` is
+    reclaimed via XAUTOCLAIM (bumping its delivery count) by whichever
+    consumer next calls `receive`. That covers both crashed consumers and
+    explicit `retry_later`, which rewinds the message's idle clock (XCLAIM
+    IDLE ... JUSTID — JUSTID so the rewind itself doesn't count as a
+    delivery) so it becomes reclaimable after exactly the requested delay.
+
+    `visibility_timeout_seconds` must comfortably exceed the longest time a
+    consumer may spend on one message, or a healthy consumer's in-flight
+    message gets reclaimed and processed twice.
+    """
+
+    def __init__(
+        self,
+        client: Redis,
+        *,
+        stream_key: str = _STREAM_KEY,
+        group: str = _GROUP,
+        consumer: str | None = None,
+        visibility_timeout_seconds: int = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+    ):
         self._client = client
-        self._queue_key = queue_key
+        self._stream_key = stream_key
+        self._group = group
+        # Hostname is the container id under Docker: stable across restarts
+        # of the same container, so a restarted worker naturally owns its
+        # previous pending entries under the same consumer name.
+        self._consumer = consumer or socket.gethostname()
+        self._visibility_timeout_ms = visibility_timeout_seconds * 1000
+        self._group_ready = False
+        self._autoclaim_cursor = "0-0"
 
     async def publish(self, job: ProcessingJob) -> None:
-        await self._client.rpush(self._queue_key, json.dumps(_to_payload(job)))
+        await self._client.xadd(
+            self._stream_key,
+            {_PAYLOAD_FIELD: json.dumps(_to_payload(job))},
+            maxlen=_STREAM_MAX_LEN,
+            approximate=True,
+        )
 
-    async def receive(self, *, timeout_seconds: int) -> ProcessingJob | None:
-        result = await self._client.blpop([self._queue_key], timeout=timeout_seconds)
-        if result is None:
+    async def receive(self, *, timeout_seconds: int) -> Delivery | None:
+        await self._ensure_group()
+
+        reclaimed = await self._reclaim_one()
+        if reclaimed is not None:
+            return reclaimed
+
+        result = await self._client.xreadgroup(
+            self._group,
+            self._consumer,
+            {self._stream_key: ">"},
+            count=1,
+            block=timeout_seconds * 1000,
+        )
+        if not result:
             return None
-        _key, raw = result
-        return _from_payload(json.loads(raw))
+        _stream, entries = result[0]
+        message_id, fields = entries[0]
+        return _to_delivery(message_id, fields, delivery_count=1)
+
+    async def ack(self, delivery: Delivery) -> None:
+        await self._client.xack(self._stream_key, self._group, delivery.receipt)
+
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
+        delay_ms = min(int(delay_seconds * 1000), self._visibility_timeout_ms)
+        await self._client.xclaim(
+            self._stream_key,
+            self._group,
+            self._consumer,
+            min_idle_time=0,
+            message_ids=[delivery.receipt],
+            idle=self._visibility_timeout_ms - delay_ms,
+            justid=True,
+        )
+
+    async def _ensure_group(self) -> None:
+        if self._group_ready:
+            return
+        try:
+            # id="0" rather than "$": jobs published before the group first
+            # existed (e.g. before the worker's first ever start) still get
+            # consumed.
+            await self._client.xgroup_create(self._stream_key, self._group, id="0", mkstream=True)
+        except ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):
+                raise
+        self._group_ready = True
+
+    async def _reclaim_one(self) -> Delivery | None:
+        next_cursor, entries, *_deleted = await self._client.xautoclaim(
+            self._stream_key,
+            self._group,
+            self._consumer,
+            min_idle_time=self._visibility_timeout_ms,
+            start_id=self._autoclaim_cursor,
+            count=1,
+        )
+        # XAUTOCLAIM scans a bounded slice of the PEL per call, so keep the
+        # cursor across calls instead of rescanning from the start each time.
+        self._autoclaim_cursor = next_cursor
+        if not entries:
+            return None
+        message_id, fields = entries[0]
+
+        pending = await self._client.xpending_range(
+            self._stream_key, self._group, min=message_id, max=message_id, count=1
+        )
+        delivery_count = pending[0]["times_delivered"] if pending else 1
+        return _to_delivery(message_id, fields, delivery_count=delivery_count)
+
+
+class ValkeyDeadLetterQueue(DeadLetterQueue):
+    """Dead letters as entries in a separate Valkey stream — Valkey has no
+    native DLQ; this is its documented pattern for one. Never trimmed:
+    entries are expected to be rare and kept until someone inspects or
+    replays them."""
+
+    def __init__(self, client: Redis, *, stream_key: str = _DEAD_LETTER_STREAM_KEY):
+        self._client = client
+        self._stream_key = stream_key
+
+    async def send(self, letter: DeadLetter) -> None:
+        await self._client.xadd(
+            self._stream_key,
+            {
+                _PAYLOAD_FIELD: letter.raw_payload,
+                "reason": letter.reason,
+                "delivery_count": str(letter.delivery_count),
+                "source_id": letter.source_receipt,
+                "dead_lettered_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
+def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Delivery:
+    raw = fields.get(_PAYLOAD_FIELD, "")
+    try:
+        job = _from_payload(json.loads(raw))
+    except (ValueError, KeyError, TypeError):
+        job = None
+    return Delivery(receipt=message_id, delivery_count=delivery_count, raw_payload=raw, job=job)
 
 
 def _to_payload(job: ProcessingJob) -> dict:
-    return {
+    payload = {
         "item_id": str(job.item_id),
         "user_id": str(job.user_id),
         "item_type": job.item_type.value,
     }
+    if job.image is not None:
+        payload["image"] = {"storage_key": job.image.storage_key, "content_type": job.image.content_type}
+    return payload
 
 
 def _from_payload(data: dict) -> ProcessingJob:
+    image = data.get("image")
     return ProcessingJob(
         item_id=UUID(data["item_id"]),
         user_id=UUID(data["user_id"]),
         item_type=ItemType(data["item_type"]),
+        image=ImageRef(storage_key=image["storage_key"], content_type=image["content_type"]) if image else None,
     )
 
 
-def build_valkey_job_queue(url: str) -> ValkeyJobQueue:
-    return ValkeyJobQueue(Redis.from_url(url))
+def _client(url: str) -> Redis:
+    # socket_timeout must exceed any `receive(timeout_seconds=...)`:
+    # XREADGROUP BLOCK holds the socket silent for that long, and redis-py's
+    # default (5s) would otherwise turn every idle poll into a TimeoutError.
+    return Redis.from_url(url, decode_responses=True, socket_timeout=_SOCKET_TIMEOUT_SECONDS)
+
+
+def build_valkey_job_queue(url: str, *, visibility_timeout_seconds: int | None = None) -> ValkeyJobQueue:
+    return ValkeyJobQueue(
+        _client(url),
+        visibility_timeout_seconds=visibility_timeout_seconds or _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+    )
+
+
+def build_valkey_dead_letter_queue(url: str) -> ValkeyDeadLetterQueue:
+    return ValkeyDeadLetterQueue(_client(url))
