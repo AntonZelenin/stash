@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import JobQueue
 
@@ -58,6 +58,7 @@ async def create_text_item(
 )
 async def create_image_item(
     file: UploadFile = File(...),
+    text: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage = Depends(get_object_storage),
@@ -65,7 +66,9 @@ async def create_image_item(
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue).create_image_item(user_id=current_user.id, data=data)
+        item = await ItemService(session, storage, queue).create_image_item(
+            user_id=current_user.id, data=data, text=text
+        )
     except EmptyImageError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
     except ImageTooLargeError:

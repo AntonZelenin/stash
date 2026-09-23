@@ -172,12 +172,13 @@ pub fn Home() -> Element {
                 return;
             }
 
-            // Staged images take priority: send those, and leave the note
-            // text (if any) for the next send rather than silently dropping
-            // it.
+            // With images staged, the typed text is their caption: each image
+            // becomes one item carrying both (image above, text below), not
+            // a separate note.
             let images = std::mem::take(&mut *pending_images.write());
             if !images.is_empty() {
                 let session = session.clone();
+                let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
                 spawn(async move {
                     is_submitting.set(true);
                     status.set(None);
@@ -187,11 +188,20 @@ pub fn Home() -> Element {
                     let mut last_error = None;
                     for image in images {
                         if let Err(err) = session
-                            .create_image_item(&image.file_name, image.content_type, image.data)
+                            .create_image_item(
+                                &image.file_name,
+                                image.content_type,
+                                image.data,
+                                caption.clone(),
+                            )
                             .await
                         {
                             last_error = Some(err.to_string());
                         }
+                    }
+                    // Keep the text if anything failed, so it isn't lost.
+                    if last_error.is_none() {
+                        note.set(String::new());
                     }
                     status.set(last_error);
                     saved_items.restart();

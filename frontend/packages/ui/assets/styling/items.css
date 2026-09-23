@@ -57,22 +57,36 @@
 
 /* ---- image: natural aspect ratio, extremes cropped ---- */
 
-.item-card-image {
-    /* Placeholder tint while the image loads (it has no intrinsic height
-       until then, so min-height below is what holds the space). */
-    background: #f1f2f5;
-}
-
 .item-card-image img {
     display: block;
     width: 100%;
     height: auto;
+    /* Placeholder tint while the image loads (it has no intrinsic height
+       until then, so min-height below is what holds the space). On the
+       image itself, not the card, so it never shows behind a caption. */
+    background: #f1f2f5;
     /* height: auto keeps the real aspect ratio; these clamp the extremes
        (very tall screenshots, panoramas) and object-fit crops to fill
        rather than distorting. */
     min-height: 120px;
     max-height: 520px;
     object-fit: cover;
+}
+
+/* Same type as a note, with a shorter limit: the image is the main
+   content, the caption supports it. */
+.item-card-image-caption {
+    margin: 0;
+    padding: 12px 16px 14px;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    line-clamp: 6;
+    overflow: hidden;
 }
 
 /* ---- link: compact, one row ---- */

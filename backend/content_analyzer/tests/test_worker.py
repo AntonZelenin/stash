@@ -92,6 +92,17 @@ async def test_image_is_described_completed_and_acked(worker, engine, queue, dea
     assert dead_letters.letters == []
 
 
+async def test_caption_is_kept_alongside_generated_description(worker, engine):
+    """The description is what search reads, so the user's caption must
+    survive the generated description being written."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, caption="our cat Mochi")
+
+    await worker.handle_delivery(_delivery(_image_job(item_id)))
+
+    assert await fetch_descriptions(engine, item_id) == ["our cat Mochi\n\nA cat on a sofa."]
+
+
 async def test_stray_non_image_job_is_acked_without_touching_item(worker, engine, queue, dead_letters, describer):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, item_type="text", status="completed")

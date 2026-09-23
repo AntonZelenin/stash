@@ -77,6 +77,7 @@ impl AuthSession {
         file_name: &str,
         content_type: &str,
         data: Vec<u8>,
+        text: Option<String>,
     ) -> Result<ItemCreated, ApiError> {
         let client = self.client.clone();
         let file_name = file_name.to_string();
@@ -86,9 +87,16 @@ impl AuthSession {
             let file_name = file_name.clone();
             let content_type = content_type.clone();
             let data = data.clone();
+            let text = text.clone();
             async move {
                 client
-                    .create_image_item(&access_token, &file_name, &content_type, data)
+                    .create_image_item(
+                        &access_token,
+                        &file_name,
+                        &content_type,
+                        data,
+                        text.as_deref(),
+                    )
                     .await
             }
         })

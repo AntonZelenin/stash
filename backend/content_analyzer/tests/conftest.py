@@ -28,6 +28,7 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
             )
         )
         await conn.execute(text("CREATE TABLE item_descriptions (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
+        await conn.execute(text("CREATE TABLE item_text_contents (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(
             text("CREATE TABLE item_images (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, content_type TEXT NOT NULL)")
         )
@@ -44,9 +45,11 @@ async def insert_item(
     age_seconds: float = 0,
     requeue_count: int = 0,
     storage_key: str | None = "images/cat.png",
+    caption: str | None = None,
 ) -> None:
     """`age_seconds` backdates `status_updated_at`. Image items also get an
-    `item_images` row unless `storage_key` is None."""
+    `item_images` row unless `storage_key` is None, and an
+    `item_text_contents` row if `caption` is given."""
     updated_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
     async with engine.begin() as conn:
         await conn.execute(
@@ -67,6 +70,11 @@ async def insert_item(
             await conn.execute(
                 text("INSERT INTO item_images (item_id, storage_key, content_type) VALUES (:id, :key, 'image/png')"),
                 {"id": str(item_id), "key": storage_key},
+            )
+        if caption is not None:
+            await conn.execute(
+                text("INSERT INTO item_text_contents (item_id, text) VALUES (:id, :text)"),
+                {"id": str(item_id), "text": caption},
             )
 
 

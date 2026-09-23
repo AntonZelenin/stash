@@ -51,6 +51,7 @@ class ItemRepository:
         storage_key: str,
         content_type: str,
         size_bytes: int,
+        text: str | None = None,
     ) -> Item:
         item = Item(
             id=item_id,
@@ -58,6 +59,12 @@ class ItemRepository:
             type=ItemType.image,
             image=ImageMetadata(storage_key=storage_key, content_type=content_type, size_bytes=size_bytes),
         )
+        if text is not None:
+            # The user's caption. Also seeded as the description so the
+            # image is searchable by it right away; the content analyzer
+            # later replaces that with caption + generated description.
+            item.text_content = TextContent(text=text)
+            item.description = Description(text=text)
         self._session.add(item)
         await self._session.flush()
         return item

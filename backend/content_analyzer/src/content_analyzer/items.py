@@ -55,8 +55,8 @@ async def start_attempt(engine: AsyncEngine, item_id: UUID) -> None:
 
 
 async def complete_item(engine: AsyncEngine, item_id: UUID, *, description: str | None) -> bool:
-    """Atomically stores the analysis result and moves the item to
-    `completed`. Returns whether this call did it; if the item was already
+    """Atomically stores the analysis result (prefixed with the item's
+    caption, if it has one) and moves the item to `completed`. Returns whether this call did it; if the item was already
     finished (by a concurrent duplicate delivery), nothing is written.
 
     The status UPDATE runs first so that on Postgres it row-locks the item:
@@ -72,6 +72,17 @@ async def complete_item(engine: AsyncEngine, item_id: UUID, *, description: str 
         if result.rowcount != 1:
             return False
         if description is not None:
+            # `item_descriptions` is the single text source search reads
+            # from, so an image's user caption (if any) goes in alongside
+            # the generated description rather than being replaced by it.
+            caption = (
+                await conn.execute(
+                    text("SELECT text FROM item_text_contents WHERE item_id = :item_id"),
+                    {"item_id": str(item_id)},
+                )
+            ).scalar_one_or_none()
+            if caption:
+                description = f"{caption}\n\n{description}"
             await conn.execute(
                 text(
                     "INSERT INTO item_descriptions (item_id, text) VALUES (:item_id, :text) "

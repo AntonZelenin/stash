@@ -153,12 +153,17 @@ impl ApiClient {
         file_name: &str,
         content_type: &str,
         data: Vec<u8>,
+        text: Option<&str>,
     ) -> Result<ItemCreated, ApiError> {
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(file_name.to_string())
             .mime_str(content_type)
             .map_err(|_| ApiError::Server)?;
-        let form = reqwest::multipart::Form::new().part("file", part);
+        let mut form = reqwest::multipart::Form::new().part("file", part);
+        // Optional caption, stored on the same item as the image.
+        if let Some(text) = text {
+            form = form.text("text", text.to_string());
+        }
 
         let response = self
             .authenticated(Method::POST, "/items/image", access_token)

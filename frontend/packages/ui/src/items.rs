@@ -69,8 +69,8 @@ pub fn ItemGrid(items: Vec<ListedItem>) -> Element {
 #[component]
 fn ItemCard(item: ListedItem) -> Element {
     match (item.r#type.as_str(), &item.download_url, &item.text) {
-        ("image", Some(url), _) => rsx! {
-            ImageCard { url: url.clone() }
+        ("image", Some(url), caption) => rsx! {
+            ImageCard { url: url.clone(), caption: caption.clone() }
         },
         ("link", _, Some(url)) => rsx! {
             LinkCard { url: url.clone() }
@@ -96,12 +96,16 @@ fn NoteCard(text: String) -> Element {
 /// Edge-to-edge image at its natural aspect ratio. Extreme ratios are
 /// cropped (not squashed) to the min/max heights in items.css, so a very
 /// tall screenshot can't take over a column and a panorama doesn't shrink
-/// to a sliver.
+/// to a sliver. The user's caption, if any, sits below the image in the
+/// same card.
 #[component]
-fn ImageCard(url: String) -> Element {
+fn ImageCard(url: String, caption: Option<String>) -> Element {
     rsx! {
         div { class: "item-card item-card-image",
             img { src: "{url}", alt: "Saved image", loading: "lazy" }
+            if let Some(caption) = caption {
+                p { class: "item-card-image-caption", "{caption}" }
+            }
         }
     }
 }

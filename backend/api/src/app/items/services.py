@@ -178,7 +178,12 @@ class ItemService:
         await self._session.commit()
         return item
 
-    async def create_image_item(self, *, user_id: uuid.UUID, data: bytes) -> Item:
+    async def create_image_item(self, *, user_id: uuid.UUID, data: bytes, text: str | None = None) -> Item:
+        """`text` is an optional caption stored on the same item; blank is
+        treated as none."""
+        text = text.strip() if text is not None else None
+        text = text or None
+
         if not data:
             raise EmptyImageError()
         if len(data) > _MAX_IMAGE_SIZE_BYTES:
@@ -199,6 +204,7 @@ class ItemService:
             storage_key=storage_key,
             content_type=content_type,
             size_bytes=len(data),
+            text=text,
         )
         await self._commit_and_enqueue(item, ImageRef(storage_key=storage_key, content_type=content_type))
         return item

@@ -4,7 +4,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
 
-from app.items.models import ImageMetadata, Item, ItemType
+from app.items.models import Description, ImageMetadata, Item, ItemType, TextContent
 from app.items.services import _MAX_IMAGE_SIZE_BYTES
 from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import register_and_login
@@ -137,3 +137,43 @@ async def test_create_image_item_marked_failed_when_enqueue_fails(
     item = await session.get(Item, UUID(response.json()["id"]))
     assert item.status == "failed"
     assert queue.published == []
+
+
+async def test_create_image_item_with_caption_stores_it_on_the_same_item(
+    client: AsyncClient, session: AsyncSession
+):
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/image",
+        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
+        data={"text": "  our cat Mochi  "},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    item_id = UUID(response.json()["id"])
+    assert (await session.get(TextContent, item_id)).text == "our cat Mochi"
+    # Searchable by the caption right away, before analysis finishes.
+    assert (await session.get(Description, item_id)).text == "our cat Mochi"
+
+    listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
+    assert listed[0]["type"] == "image"
+    assert listed[0]["text"] == "our cat Mochi"
+    assert listed[0]["download_url"] is not None
+
+
+async def test_create_image_item_ignores_blank_caption(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/image",
+        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
+        data={"text": "   "},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    item_id = UUID(response.json()["id"])
+    assert await session.get(TextContent, item_id) is None
+    assert await session.get(Description, item_id) is None
