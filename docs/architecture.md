@@ -75,7 +75,9 @@ Stores:
 - Items.
 - Text content.
 - Image metadata.
-- Descriptions.
+- Descriptions — one per item, the single text source search reads from:
+  AI-generated for images (by the worker), the item's own text for
+  notes/links (written by the API on save).
 - Tags.
 - Embeddings.
 - Processing status.

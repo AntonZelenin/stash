@@ -8,6 +8,7 @@ use crate::icons::{
     IconArrowUp, IconClose, IconHelp, IconImage, IconLogout, IconMenu, IconSearch, IconSliders,
     IconStash, IconUser,
 };
+use crate::items::ItemGrid;
 use crate::routes::Route;
 
 const IMAGE_UPLOAD_INPUT_ID: &str = "home-image-upload-input";
@@ -410,31 +411,12 @@ pub fn Home() -> Element {
                                 }
                             } else {
                                 rsx! {
-                                    div { class: "stash-grid",
-                                        for item in filtered {
-                                            ItemCard { key: "{item.id}", item }
-                                        }
-                                    }
+                                    ItemGrid { items: filtered }
                                 }
                             }
                         }
                     }}
                 }
-            }
-        }
-    }
-}
-
-/// One saved item in the workspace grid. Renders the image for an image
-/// item, or its text for a text item — whichever the item actually has.
-#[component]
-fn ItemCard(item: ListedItem) -> Element {
-    rsx! {
-        div { class: "item-card",
-            if let Some(url) = &item.download_url {
-                img { class: "item-card-image", src: "{url}", alt: "Saved image" }
-            } else if let Some(text) = &item.text {
-                p { class: "item-card-text", "{text}" }
             }
         }
     }

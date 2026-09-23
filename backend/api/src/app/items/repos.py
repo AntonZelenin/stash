@@ -5,7 +5,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.items.models import ImageMetadata, Item, ItemStatus, ItemType, TextContent
+from app.items.models import Description, ImageMetadata, Item, ItemStatus, ItemType, TextContent
 
 
 class ItemRepository:
@@ -14,9 +14,16 @@ class ItemRepository:
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str, item_type: ItemType) -> Item:
         # Nothing to analyze asynchronously for text/links, so they're
-        # finished the moment they're stored.
+        # finished the moment they're stored. The text itself doubles as the
+        # item's description: `item_descriptions` is the single place search
+        # reads from for every item type (images get theirs from the
+        # content analyzer).
         item = Item(
-            user_id=user_id, type=item_type, status=ItemStatus.completed, text_content=TextContent(text=text)
+            user_id=user_id,
+            type=item_type,
+            status=ItemStatus.completed,
+            text_content=TextContent(text=text),
+            description=Description(text=text),
         )
         self._session.add(item)
         await self._session.flush()

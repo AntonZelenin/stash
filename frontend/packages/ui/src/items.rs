@@ -1,0 +1,186 @@
+use api::ListedItem;
+use dioxus::prelude::*;
+
+use crate::icons::IconLink;
+
+const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
+
+/// Narrowest a column is allowed to get before the grid drops to one fewer
+/// column. Measured against the grid's own width, not the viewport, so the
+/// grid adapts to wherever it's placed.
+const MIN_COLUMN_WIDTH_PX: f64 = 240.0;
+const MAX_COLUMNS: usize = 3;
+/// Must match `.item-grid`'s `gap` in items.css.
+const COLUMN_GAP_PX: f64 = 20.0;
+
+fn column_count(grid_width: f64) -> usize {
+    // n columns fit when n * min + (n - 1) * gap <= width.
+    let fitting = ((grid_width + COLUMN_GAP_PX) / (MIN_COLUMN_WIDTH_PX + COLUMN_GAP_PX)).floor();
+    (fitting as usize).clamp(1, MAX_COLUMNS)
+}
+
+/// Masonry layout: equal-width columns, each an independent vertical stack,
+/// so a card starts right below the previous card in its column instead of
+/// waiting for the tallest card in its row.
+///
+/// Items are dealt into columns round-robin (item i goes to column
+/// i % columns), not via CSS `columns`: that fills column 1 top-to-bottom
+/// first, which for a newest-first feed would put the newest items all down
+/// the left edge and reshuffle every column whenever an item is added.
+/// Round-robin keeps the reading order row-by-row, like the old grid.
+///
+/// The column count comes from the grid's measured width (`onresize`),
+/// since the number of column elements is decided here, not in CSS.
+#[component]
+pub fn ItemGrid(items: Vec<ListedItem>) -> Element {
+    let mut columns = use_signal(|| MAX_COLUMNS);
+
+    let current_columns = columns();
+    let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
+    for (index, item) in items.into_iter().enumerate() {
+        stacks[index % current_columns].push(item);
+    }
+
+    rsx! {
+        document::Link { rel: "stylesheet", href: ITEMS_CSS }
+
+        div {
+            class: "item-grid",
+            onresize: move |evt| {
+                if let Ok(size) = evt.get_content_box_size() {
+                    let count = column_count(size.width);
+                    if count != columns() {
+                        columns.set(count);
+                    }
+                }
+            },
+            for (index , stack) in stacks.into_iter().enumerate() {
+                div { class: "item-grid-column", key: "{index}",
+                    for item in stack {
+                        ItemCard { key: "{item.id}", item }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One saved item, rendered according to its type.
+#[component]
+fn ItemCard(item: ListedItem) -> Element {
+    match (item.r#type.as_str(), &item.download_url, &item.text) {
+        ("image", Some(url), _) => rsx! {
+            ImageCard { url: url.clone() }
+        },
+        ("link", _, Some(url)) => rsx! {
+            LinkCard { url: url.clone() }
+        },
+        (_, _, Some(text)) => rsx! {
+            NoteCard { text: text.clone() }
+        },
+        // e.g. an image whose download URL couldn't be produced.
+        _ => rsx! {},
+    }
+}
+
+/// Grows with its text up to a line limit, then truncates with an ellipsis.
+#[component]
+fn NoteCard(text: String) -> Element {
+    rsx! {
+        div { class: "item-card item-card-note",
+            p { class: "item-card-note-text", "{text}" }
+        }
+    }
+}
+
+/// Edge-to-edge image at its natural aspect ratio. Extreme ratios are
+/// cropped (not squashed) to the min/max heights in items.css, so a very
+/// tall screenshot can't take over a column and a panorama doesn't shrink
+/// to a sliver.
+#[component]
+fn ImageCard(url: String) -> Element {
+    rsx! {
+        div { class: "item-card item-card-image",
+            img { src: "{url}", alt: "Saved image", loading: "lazy" }
+        }
+    }
+}
+
+/// Compact link card. The API only stores the URL itself (no page title or
+/// preview image yet), so the domain stands in as the title and the rest of
+/// the URL as the subtitle.
+#[component]
+fn LinkCard(url: String) -> Element {
+    let (domain, rest) = split_url(&url);
+
+    rsx! {
+        a {
+            class: "item-card item-card-link",
+            href: "{url}",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            span { class: "item-card-link-icon", IconLink {} }
+            span { class: "item-card-link-body",
+                span { class: "item-card-link-title", "{domain}" }
+                if let Some(rest) = rest {
+                    span { class: "item-card-link-path", "{rest}" }
+                }
+            }
+        }
+    }
+}
+
+/// Splits `https://www.example.com/a/b?q=1` into `("example.com",
+/// Some("/a/b?q=1"))`. Hand-rolled rather than pulling a URL crate into
+/// `ui` for display-only formatting; the backend has already validated that
+/// link items are http(s) URLs.
+fn split_url(url: &str) -> (String, Option<String>) {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host_end = without_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(without_scheme.len());
+    let (host, rest) = without_scheme.split_at(host_end);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+
+    let rest = rest.trim_end_matches('/');
+    let rest = (!rest.is_empty()).then(|| rest.to_string());
+    (host.to_string(), rest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn column_count_follows_available_width() {
+        assert_eq!(column_count(200.0), 1);
+        assert_eq!(column_count(499.0), 1);
+        assert_eq!(column_count(500.0), 2);
+        assert_eq!(column_count(759.0), 2);
+        assert_eq!(column_count(760.0), 3);
+        assert_eq!(column_count(5000.0), 3);
+    }
+
+    #[test]
+    fn split_url_extracts_domain_and_rest() {
+        assert_eq!(
+            split_url("https://www.example.com/a/b?q=1"),
+            ("example.com".to_string(), Some("/a/b?q=1".to_string()))
+        );
+        assert_eq!(
+            split_url("http://example.com/"),
+            ("example.com".to_string(), None)
+        );
+        assert_eq!(
+            split_url("https://example.com"),
+            ("example.com".to_string(), None)
+        );
+        assert_eq!(
+            split_url("https://sub.example.com:8080?x"),
+            ("sub.example.com:8080".to_string(), Some("?x".to_string()))
+        );
+    }
+}

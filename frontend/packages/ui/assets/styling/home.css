@@ -395,57 +395,7 @@
     padding: 0 20px 40px;
 }
 
-.stash-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-    /* Same gap as search-to-filters, so the rhythm (search, filters, items)
-       reads as one consistent stack rather than the cards sitting flush
-       against the filter chips. */
-    margin: 12px 0 0;
-}
-
-@media (max-width: 860px) {
-    .stash-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-@media (max-width: 560px) {
-    .stash-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-.item-card {
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 14px;
-    text-align: left;
-    overflow: hidden;
-}
-
-.item-card-image {
-    display: block;
-    width: 100%;
-    height: 180px;
-    object-fit: cover;
-    border-radius: 10px;
-}
-
-.item-card-text {
-    margin: 0;
-    color: var(--text-primary);
-    font-size: 14px;
-    line-height: 1.5;
-    /* Clamp long notes to a handful of lines so cards stay a consistent
-       height in the grid rather than growing arbitrarily tall. */
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 6;
-    overflow: hidden;
-}
+/* The item grid and cards themselves are styled in items.css. */
 
 .stash-empty {
     flex: 1;

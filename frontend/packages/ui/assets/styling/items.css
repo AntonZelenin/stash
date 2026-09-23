@@ -1,0 +1,133 @@
+/* ---- saved items: masonry grid ----
+   Colors (--text-primary, --border, ...) come from `.home`, which this grid
+   is rendered inside. */
+
+/* Equal-width columns laid out side by side; each column is its own
+   vertical stack (see `ItemGrid` in items.rs for why the columns are real
+   elements rather than CSS `columns`). align-items: flex-start keeps each
+   column only as tall as its own content. */
+.item-grid {
+    display: flex;
+    align-items: flex-start;
+    /* Must match COLUMN_GAP_PX in items.rs. */
+    gap: 20px;
+    width: 100%;
+    /* Same gap as search-to-filters, so search, filters and items read as
+       one consistent stack. */
+    margin: 12px 0 0;
+}
+
+.item-grid-column {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.item-card {
+    display: block;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    text-align: left;
+    overflow: hidden;
+}
+
+/* ---- note: height follows the text, up to a limit ---- */
+
+.item-card-note {
+    padding: 14px 16px;
+}
+
+.item-card-note-text {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    /* Past this many lines the card stops growing and truncates, so one
+       long note can't dominate a column. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 12;
+    line-clamp: 12;
+    overflow: hidden;
+}
+
+/* ---- image: natural aspect ratio, extremes cropped ---- */
+
+.item-card-image {
+    /* Placeholder tint while the image loads (it has no intrinsic height
+       until then, so min-height below is what holds the space). */
+    background: #f1f2f5;
+}
+
+.item-card-image img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* height: auto keeps the real aspect ratio; these clamp the extremes
+       (very tall screenshots, panoramas) and object-fit crops to fill
+       rather than distorting. */
+    min-height: 120px;
+    max-height: 520px;
+    object-fit: cover;
+}
+
+/* ---- link: compact, one row ---- */
+
+.item-card-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    color: inherit;
+    text-decoration: none;
+}
+
+.item-card-link:hover {
+    border-color: #d8dbe2;
+    box-shadow: 0 6px 16px rgba(20, 22, 27, 0.06);
+}
+
+.item-card-link-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: #f1f2f5;
+    color: var(--text-muted);
+}
+
+.item-card-link-icon .icon {
+    width: 18px;
+    height: 18px;
+}
+
+.item-card-link-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.item-card-link-title {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.item-card-link-path {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.items.models import Item, ItemType
+from app.items.models import Description, Item, ItemType
 from conftest import FakeJobQueue
 from helpers import register_and_login
 
@@ -27,6 +27,9 @@ async def test_create_text_item_classifies_bare_url_as_link(client: AsyncClient,
     assert response.status_code == 202
     item = await session.get(Item, UUID(response.json()["id"]))
     assert item.type == ItemType.link
+    # A link's description is the URL itself, same as a note's is its text.
+    description = await session.get(Description, item.id)
+    assert description.text == text
 
 
 @pytest.mark.parametrize(

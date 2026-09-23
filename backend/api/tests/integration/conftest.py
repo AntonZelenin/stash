@@ -9,7 +9,7 @@ from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
-from app.items.models import ImageMetadata, Item, TextContent
+from app.items.models import Description, ImageMetadata, Item, TextContent
 from app.main import app
 from app.queue import get_job_queue
 from app.storage.base import ObjectStorage
@@ -23,6 +23,7 @@ _TEST_TABLES = [
     Item.__table__,
     TextContent.__table__,
     ImageMetadata.__table__,
+    Description.__table__,
 ]
 
 
