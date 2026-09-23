@@ -119,6 +119,23 @@ impl ApiClient {
         }
     }
 
+    /// Permanently deletes an item. A 404 counts as success: either way the
+    /// item is gone, which is all the caller asked for (e.g. it was already
+    /// deleted from another tab).
+    pub async fn delete_item(&self, access_token: &str, item_id: &str) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(Method::DELETE, &format!("/items/{item_id}"), access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 | 404 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
     /// Full-text search over the user's item descriptions, best match
     /// first.
     pub async fn search_items(

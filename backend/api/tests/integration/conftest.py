@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -35,6 +36,9 @@ class FakeObjectStorage(ObjectStorage):
 
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
         self.uploads[key] = (data, content_type)
+
+    async def delete(self, *, key: str) -> None:
+        self.uploads.pop(key, None)
 
     async def generate_download_url(self, *, key: str, expires_in: int) -> str:
         return f"https://fake-storage.test/{key}?expires_in={expires_in}"
@@ -71,6 +75,13 @@ async def session() -> AsyncGenerator[AsyncSession]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    # SQLite ignores foreign keys unless asked, and item deletion relies on
+    # `ON DELETE CASCADE` to remove an item's child rows, as on Postgres.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     async with engine.begin() as conn:
         await conn.run_sync(User.metadata.create_all, tables=_TEST_TABLES)
 

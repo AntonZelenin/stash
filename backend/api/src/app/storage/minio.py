@@ -59,6 +59,10 @@ class MinioStorage(ObjectStorage):
             ContentType=content_type,
         )
 
+    async def delete(self, *, key: str) -> None:
+        # S3 DeleteObject already succeeds for a missing key.
+        await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
+
     async def generate_download_url(self, *, key: str, expires_in: int) -> str:
         return await asyncio.to_thread(
             self._public_client.generate_presigned_url,

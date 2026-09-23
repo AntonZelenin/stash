@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import JobQueue
 
@@ -16,6 +18,7 @@ from app.items.services import (
     EmptyImageError,
     ImageTooLargeError,
     InvalidCursorError,
+    ItemNotFoundError,
     ItemService,
     UnsupportedImageTypeError,
 )
@@ -101,6 +104,25 @@ async def list_items(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
 
     return ListItemsResponse(items=[to_listed_item(listed) for listed in listed_items], next_cursor=next_cursor)
+
+
+@router.delete(
+    "/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
+)
+async def delete_item(
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
+) -> Response:
+    try:
+        await ItemService(session, storage, queue).delete_item(user_id=current_user.id, item_id=item_id)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def to_listed_item(listed: ListedItemResult) -> ListedItem:

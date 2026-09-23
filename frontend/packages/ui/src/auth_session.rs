@@ -121,6 +121,16 @@ impl AuthSession {
         .await
     }
 
+    pub async fn delete_item(&self, item_id: String) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            async move { client.delete_item(&access_token, &item_id).await }
+        })
+        .await
+    }
+
     pub async fn search_items(
         &self,
         query: String,

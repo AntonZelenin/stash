@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from sqlalchemy import text
 from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
@@ -187,6 +188,25 @@ async def test_missing_storage_object_is_permanent(worker, engine, queue, dead_l
     assert await fetch_status(engine, item_id) == "failed"
     assert describer.calls == 0
     assert len(dead_letters.letters) == 1
+
+
+async def test_item_deleted_mid_processing_is_dropped_not_dead_lettered(
+    worker, engine, queue, dead_letters, describer
+):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+
+    async def _delete_then_fail(image, *, content_type):
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM items WHERE id = :id"), {"id": str(item_id)})
+        raise PermanentProcessingError("object not found")
+
+    describer.describe = _delete_then_fail
+
+    await worker.handle_delivery(_delivery(_image_job(item_id)))
+
+    assert len(queue.acked) == 1
+    assert dead_letters.letters == []
 
 
 async def test_exhausted_deliveries_dead_letter_without_processing(worker, engine, queue, dead_letters, describer):

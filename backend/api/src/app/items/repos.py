@@ -1,11 +1,19 @@
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, func, literal_column, or_, select, update
+from sqlalchemy import and_, delete, func, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.items.models import Description, ImageMetadata, Item, ItemStatus, ItemType, TextContent
+
+
+@dataclass(frozen=True)
+class DeletedItem:
+    # Where the item's image lived in object storage, for the caller to
+    # clean up once the delete is committed; None for non-image items.
+    storage_key: str | None
 
 
 class ItemRepository:
@@ -68,6 +76,23 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
+
+    async def delete_item(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> DeletedItem | None:
+        """Deletes the user's item and, via `ON DELETE CASCADE`, every row
+        hanging off it. Returns None if there's no such item *owned by this
+        user* — someone else's item is indistinguishable from a missing one.
+        """
+        row = (
+            await self._session.execute(
+                select(Item.id, ImageMetadata.storage_key)
+                .outerjoin(ImageMetadata, ImageMetadata.item_id == Item.id)
+                .where(Item.id == item_id, Item.user_id == user_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        await self._session.execute(delete(Item).where(Item.id == item_id))
+        return DeletedItem(storage_key=row.storage_key)
 
     async def search_items(self, *, user_id: uuid.UUID, tsquery: str, limit: int) -> list[Item]:
         """The user's items whose description matches `tsquery` (a

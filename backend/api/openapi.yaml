@@ -187,6 +187,38 @@ paths:
         "422":
           description: Invalid content (empty file, unsupported image type, or file too large)
 
+  /items/{item_id}:
+    delete:
+      summary: Delete an item
+      description: >-
+        Permanently deletes the item, everything stored with it (text,
+        caption, description, image file), and removes it from search.
+      operationId: deleteItem
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "204":
+          description: Item deleted
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+        "422":
+          description: Invalid item id
+
   /items:
     get:
       summary: List saved items

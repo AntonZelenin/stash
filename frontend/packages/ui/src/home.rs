@@ -165,6 +165,24 @@ pub fn Home() -> Element {
     let mut drag_depth = use_signal(|| 0i32);
     let mut pending_images = use_signal(Vec::<PendingImage>::new);
 
+    // Deletes from a card's menu, then refetches whichever view is showing
+    // (list and search), so the card disappears from both.
+    let delete_item = use_callback({
+        let session = session.clone();
+        move |item_id: String| {
+            let session = session.clone();
+            spawn(async move {
+                match session.delete_item(item_id).await {
+                    Ok(()) => {
+                        saved_items.restart();
+                        search_results.restart();
+                    }
+                    Err(err) => status.set(Some(format!("Could not delete the item: {err}"))),
+                }
+            });
+        }
+    });
+
     let mut submit = {
         let session = session.clone();
         move || {
@@ -443,6 +461,7 @@ pub fn Home() -> Element {
                                     &response.items,
                                     filter,
                                     format!("No {} yet.", filter.label().to_lowercase()),
+                                    delete_item,
                                 )
                             }
                         }}
@@ -452,6 +471,7 @@ pub fn Home() -> Element {
                                 &response.items,
                                 active_filter(),
                                 format!("Nothing matches “{query}”."),
+                                delete_item,
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
@@ -474,7 +494,12 @@ pub fn Home() -> Element {
 
 /// Applies the active filter chip to `items` (a list page or search
 /// results) and renders them, or `empty_message` if nothing is left.
-fn filtered_items(items: &[ListedItem], filter: ItemFilter, empty_message: String) -> Element {
+fn filtered_items(
+    items: &[ListedItem],
+    filter: ItemFilter,
+    empty_message: String,
+    on_delete: Callback<String>,
+) -> Element {
     let filtered: Vec<ListedItem> = items
         .iter()
         .filter(|item| filter.matches(&item.r#type))
@@ -489,7 +514,7 @@ fn filtered_items(items: &[ListedItem], filter: ItemFilter, empty_message: Strin
         }
     } else {
         rsx! {
-            ItemGrid { items: filtered }
+            ItemGrid { items: filtered, on_delete }
         }
     }
 }

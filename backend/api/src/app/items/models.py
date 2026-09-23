@@ -50,7 +50,7 @@ class Item(Base):
 class TextContent(Base):
     __tablename__ = "item_text_contents"
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id"), primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     text: Mapped[str] = mapped_column(String)
 
     item: Mapped[Item] = relationship(back_populates="text_content")
@@ -59,7 +59,7 @@ class TextContent(Base):
 class ImageMetadata(Base):
     __tablename__ = "item_images"
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id"), primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     storage_key: Mapped[str] = mapped_column(String)
     content_type: Mapped[str] = mapped_column(String)
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -70,7 +70,7 @@ class ImageMetadata(Base):
 class Description(Base):
     __tablename__ = "item_descriptions"
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id"), primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     text: Mapped[str] = mapped_column(String)
 
     item: Mapped[Item] = relationship(back_populates="description")
@@ -79,7 +79,7 @@ class Description(Base):
 class ItemTag(Base):
     __tablename__ = "item_tags"
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id"), primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     tag: Mapped[str] = mapped_column(String, primary_key=True)
 
     item: Mapped[Item] = relationship(back_populates="tags")
@@ -88,7 +88,7 @@ class ItemTag(Base):
 class Embedding(Base):
     __tablename__ = "item_embeddings"
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id"), primary_key=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     vector: Mapped[list[float]] = mapped_column(ARRAY(Float))
 
     item: Mapped[Item] = relationship(back_populates="embedding")

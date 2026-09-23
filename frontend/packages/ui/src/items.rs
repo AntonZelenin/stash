@@ -1,7 +1,7 @@
 use api::ListedItem;
 use dioxus::prelude::*;
 
-use crate::icons::IconLink;
+use crate::icons::{IconLink, IconMoreHorizontal, IconTrash};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 
@@ -31,8 +31,11 @@ fn column_count(grid_width: f64) -> usize {
 ///
 /// The column count comes from the grid's measured width (`onresize`),
 /// since the number of column elements is decided here, not in CSS.
+///
+/// `on_delete` receives the id of an item the user chose to delete from
+/// its card menu; the caller performs the deletion and refreshes `items`.
 #[component]
-pub fn ItemGrid(items: Vec<ListedItem>) -> Element {
+pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Element {
     let mut columns = use_signal(|| MAX_COLUMNS);
 
     let current_columns = columns();
@@ -57,7 +60,7 @@ pub fn ItemGrid(items: Vec<ListedItem>) -> Element {
             for (index , stack) in stacks.into_iter().enumerate() {
                 div { class: "item-grid-column", key: "{index}",
                     for item in stack {
-                        ItemCard { key: "{item.id}", item }
+                        ItemCard { key: "{item.id}", item, on_delete }
                     }
                 }
             }
@@ -65,10 +68,15 @@ pub fn ItemGrid(items: Vec<ListedItem>) -> Element {
     }
 }
 
-/// One saved item, rendered according to its type.
+/// One saved item, rendered according to its type, with its actions menu.
+///
+/// The menu sits in a wrapper *beside* the card rather than inside it: the
+/// card clips its content to its rounded corners (which would cut the
+/// dropdown off on short cards), and a link card is itself an `<a>`, where a
+/// nested button would also follow the link.
 #[component]
-fn ItemCard(item: ListedItem) -> Element {
-    match (item.r#type.as_str(), &item.download_url, &item.text) {
+fn ItemCard(item: ListedItem, on_delete: EventHandler<String>) -> Element {
+    let body = match (item.r#type.as_str(), &item.download_url, &item.text) {
         ("image", Some(url), caption) => rsx! {
             ImageCard { url: url.clone(), caption: caption.clone() }
         },
@@ -79,7 +87,54 @@ fn ItemCard(item: ListedItem) -> Element {
             NoteCard { text: text.clone() }
         },
         // e.g. an image whose download URL couldn't be produced.
-        _ => rsx! {},
+        _ => return rsx! {},
+    };
+
+    let item_id = item.id.clone();
+    rsx! {
+        div { class: "item-card-shell",
+            {body}
+            ItemMenu { on_delete: move |_| on_delete.call(item_id.clone()) }
+        }
+    }
+}
+
+/// "⋯" button in a card's top-right corner, opening a small actions menu.
+/// Shown on hover (always on touch screens, which can't hover).
+#[component]
+fn ItemMenu(on_delete: EventHandler<()>) -> Element {
+    let mut open = use_signal(|| false);
+
+    rsx! {
+        div { class: if open() { "item-menu item-menu-open" } else { "item-menu" },
+            button {
+                class: "item-menu-button",
+                r#type: "button",
+                title: "More actions",
+                onclick: move |_| open.toggle(),
+                IconMoreHorizontal {}
+            }
+            if open() {
+                // Invisible full-screen layer under the dropdown: clicking
+                // anywhere outside the menu lands here and closes it.
+                div {
+                    class: "item-menu-backdrop",
+                    onclick: move |_| open.set(false),
+                }
+                div { class: "item-menu-dropdown",
+                    button {
+                        class: "item-menu-entry item-menu-entry-danger",
+                        r#type: "button",
+                        onclick: move |_| {
+                            open.set(false);
+                            on_delete.call(());
+                        },
+                        IconTrash {}
+                        "Delete"
+                    }
+                }
+            }
+        }
     }
 }
 

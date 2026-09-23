@@ -82,6 +82,10 @@ class InvalidCursorError(Exception):
     pass
 
 
+class ItemNotFoundError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class ListedItem:
     item: Item
@@ -153,6 +157,26 @@ class ItemService:
             return []
         rows = await self._repo.search_items(user_id=user_id, tsquery=tsquery, limit=limit)
         return await self._with_download_urls(rows)
+
+    async def delete_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
+        """Deletes the item (all its rows) and then its image file, if any.
+
+        The database delete is committed first: it's what the user sees, and
+        it's atomic. Removing the file afterwards is best-effort — if it
+        fails, the only cost is an orphaned object in storage, never an item
+        pointing at a missing file. A job still queued for the item finds it
+        gone and is dropped by the worker.
+        """
+        deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
+        if deleted is None:
+            raise ItemNotFoundError()
+        await self._session.commit()
+
+        if deleted.storage_key is not None:
+            try:
+                await self._storage.delete(key=deleted.storage_key)
+            except Exception:
+                logger.exception("Failed to delete %s from storage for deleted item %s", deleted.storage_key, item_id)
 
     async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
         settings = get_settings()

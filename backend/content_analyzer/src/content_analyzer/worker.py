@@ -115,6 +115,12 @@ class Worker:
             result = await self._processor.process(job)
             await complete_item(self._engine, job.item_id, description=result.description)
         except PermanentProcessingError as exc:
+            if await get_item_status(self._engine, job.item_id) is None:
+                # Deleted by the user mid-processing (which also removes its
+                # image, hence the error) — nothing left to fail or report.
+                logger.info("Item %s was deleted during processing; dropping job", job.item_id)
+                await self._queue.ack(delivery)
+                return
             logger.warning("Item %s failed permanently: %s", job.item_id, exc)
             await self._dead_letter(delivery, reason=str(exc))
             return
