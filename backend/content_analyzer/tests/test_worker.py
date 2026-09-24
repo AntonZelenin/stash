@@ -89,7 +89,7 @@ async def test_image_is_described_completed_and_acked(worker, engine, queue, dea
     await insert_item(engine, item_id)
     delivery = _delivery(_image_job(item_id))
 
-    await worker.handle_delivery(delivery)
+    await worker.process_message(delivery)
 
     assert await fetch_status(engine, item_id) == "completed"
     assert await fetch_descriptions(engine, item_id) == ["A cat on a sofa."]
@@ -104,7 +104,7 @@ async def test_caption_is_kept_alongside_generated_description(worker, engine):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, caption="our cat Mochi")
 
-    await worker.handle_delivery(_delivery(_image_job(item_id)))
+    await worker.process_message(_delivery(_image_job(item_id)))
 
     assert await fetch_descriptions(engine, item_id) == ["our cat Mochi\n\nA cat on a sofa."]
 
@@ -114,7 +114,7 @@ async def test_stray_non_image_job_is_acked_without_touching_item(worker, engine
     await insert_item(engine, item_id, item_type="text", status="completed")
     job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.text)
 
-    await worker.handle_delivery(_delivery(job))
+    await worker.process_message(_delivery(job))
 
     assert await fetch_status(engine, item_id) == "completed"
     assert describer.calls == 0
@@ -128,7 +128,7 @@ async def test_transient_error_schedules_retry_without_ack(worker, engine, queue
     describer.errors = [RuntimeError("429 rate limited")]
     delivery = _delivery(_image_job(item_id), delivery_count=2)
 
-    await worker.handle_delivery(delivery)
+    await worker.process_message(delivery)
 
     assert await fetch_status(engine, item_id) == "processing"
     assert queue.acked == []
@@ -145,7 +145,7 @@ async def test_retry_of_processing_item_completes(worker, engine, queue):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
 
-    await worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=3))
+    await worker.process_message(_delivery(_image_job(item_id), delivery_count=3))
 
     assert await fetch_status(engine, item_id) == "completed"
     assert await fetch_descriptions(engine, item_id) == ["A cat on a sofa."]
@@ -158,7 +158,7 @@ async def test_transient_error_on_last_attempt_dead_letters(worker, engine, queu
     describer.errors = [RuntimeError("503")]
     delivery = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS, raw_payload='{"x": 1}')
 
-    await worker.handle_delivery(delivery)
+    await worker.process_message(delivery)
 
     assert await fetch_status(engine, item_id) == "failed"
     assert queue.retried == []
@@ -174,7 +174,7 @@ async def test_permanent_error_dead_letters_on_first_attempt(worker, engine, que
     await insert_item(engine, item_id)
     describer.errors = [PermanentProcessingError("corrupt image")]
 
-    await worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=1))
+    await worker.process_message(_delivery(_image_job(item_id), delivery_count=1))
 
     assert await fetch_status(engine, item_id) == "failed"
     assert describer.calls == 1
@@ -188,7 +188,7 @@ async def test_missing_storage_object_is_permanent(worker, engine, queue, dead_l
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await worker.handle_delivery(_delivery(_image_job(item_id, storage_key="images/gone.png")))
+    await worker.process_message(_delivery(_image_job(item_id, storage_key="images/gone.png")))
 
     assert await fetch_status(engine, item_id) == "failed"
     assert describer.calls == 0
@@ -208,7 +208,7 @@ async def test_item_deleted_mid_processing_is_dropped_not_dead_lettered(
 
     describer.describe = _delete_then_fail
 
-    await worker.handle_delivery(_delivery(_image_job(item_id)))
+    await worker.process_message(_delivery(_image_job(item_id)))
 
     assert len(queue.acked) == 1
     assert dead_letters.letters == []
@@ -220,7 +220,7 @@ async def test_exhausted_deliveries_dead_letter_without_processing(worker, engin
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
 
-    await worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS + 1))
+    await worker.process_message(_delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS + 1))
 
     assert describer.calls == 0
     assert await fetch_status(engine, item_id) == "failed"
@@ -235,7 +235,7 @@ async def test_redelivery_of_finished_item_is_acked_and_skipped(
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status=status)
 
-    await worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=2))
+    await worker.process_message(_delivery(_image_job(item_id), delivery_count=2))
 
     assert await fetch_status(engine, item_id) == status
     assert describer.calls == 0
@@ -244,7 +244,7 @@ async def test_redelivery_of_finished_item_is_acked_and_skipped(
 
 
 async def test_missing_item_is_acked(worker, queue, dead_letters):
-    await worker.handle_delivery(_delivery(_image_job(uuid.uuid4())))
+    await worker.process_message(_delivery(_image_job(uuid.uuid4())))
 
     assert len(queue.acked) == 1
     assert dead_letters.letters == []
@@ -253,7 +253,7 @@ async def test_missing_item_is_acked(worker, queue, dead_letters):
 async def test_malformed_payload_is_dead_lettered(worker, queue, dead_letters):
     delivery = _delivery(None, raw_payload="not json")
 
-    await worker.handle_delivery(delivery)
+    await worker.process_message(delivery)
 
     assert queue.acked == [delivery]
     [letter] = dead_letters.letters
@@ -290,7 +290,7 @@ async def test_platform_dead_lettered_job_is_left_unacked(platform_worker, engin
     describer.errors = [PermanentProcessingError("corrupt image")]
     delivery = _delivery(_image_job(item_id))
 
-    await platform_worker.handle_delivery(delivery)
+    await platform_worker.process_message(delivery)
 
     assert await fetch_status(engine, item_id) == "failed"
     assert platform_queue.abandoned == [delivery]
@@ -304,7 +304,7 @@ async def test_platform_dead_letters_exhausted_retries_unacked(platform_worker, 
     describer.errors = [RuntimeError("503")]
     delivery = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS)
 
-    await platform_worker.handle_delivery(delivery)
+    await platform_worker.process_message(delivery)
 
     assert await fetch_status(engine, item_id) == "failed"
     assert platform_queue.abandoned == [delivery]
@@ -314,7 +314,7 @@ async def test_platform_dead_letters_exhausted_retries_unacked(platform_worker, 
 async def test_platform_dead_letters_malformed_payload_unacked(platform_worker, platform_queue):
     delivery = _delivery(None, raw_payload="not json")
 
-    await platform_worker.handle_delivery(delivery)
+    await platform_worker.process_message(delivery)
 
     assert platform_queue.abandoned == [delivery]
     assert platform_queue.acked == []
@@ -329,7 +329,7 @@ async def test_platform_redelivery_of_failed_item_stays_on_its_way_to_the_dlq(
     await insert_item(engine, item_id, status="failed")
     delivery = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS + 1)
 
-    await platform_worker.handle_delivery(delivery)
+    await platform_worker.process_message(delivery)
 
     assert describer.calls == 0
     assert platform_queue.abandoned == [delivery]
@@ -340,7 +340,7 @@ async def test_platform_redelivery_of_completed_item_is_acked(platform_worker, e
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="completed")
 
-    await platform_worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=2))
+    await platform_worker.process_message(_delivery(_image_job(item_id), delivery_count=2))
 
     assert describer.calls == 0
     assert len(platform_queue.acked) == 1
@@ -351,7 +351,7 @@ async def test_platform_successful_job_is_acked(platform_worker, engine, platfor
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await platform_worker.handle_delivery(_delivery(_image_job(item_id)))
+    await platform_worker.process_message(_delivery(_image_job(item_id)))
 
     assert await fetch_status(engine, item_id) == "completed"
     assert len(platform_queue.acked) == 1

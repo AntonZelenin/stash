@@ -62,7 +62,10 @@ The item is `processing` across both stages. Clients display the thumbnail
 stages share the same `Worker` (status handling, retries, dead-lettering,
 acking) with a stage-specific handler, and each stage is idempotent, so a
 redelivered job — including a duplicate hand-off between stages — never
-causes duplicate or incorrect state.
+causes duplicate or incorrect state. Each delivery is processed by
+`Worker.process_message`, whatever runtime received it; locally that's
+`Worker.run_forever`, a long-running consumer loop, and another runtime
+(e.g. one invoked per batch of messages) can call the same method.
 
 Failure handling:
 - Each attempt is one queue delivery; nothing is retried in-process.
@@ -330,7 +333,7 @@ Namespace `Stash` (`METRICS_NAMESPACE`):
 | `JobFailures` | Count | `queue` | `Worker`, a handler run that raised |
 | `JobRetries` | Count | `queue` | `Worker`, a failure sent back to the queue |
 | `JobsDeadLettered` | Count | `queue` | `Worker`, for any reason |
-| `QueueBacklog` | Count | `queue` | `Worker`, sampled every 30 s |
+| `QueueBacklog` | Count | `queue` | `Worker.run_forever`, sampled every 30 s (Valkey only; SQS publishes its own) |
 | `QueueOldestMessageAge` | Seconds | `queue` | same |
 | `ExternalCalls`, `ExternalCallErrors` | Count | `operation` | `logged_call` (OpenAI), the storage wrappers |
 | `ExternalCallDuration` | Milliseconds | `operation` | same |

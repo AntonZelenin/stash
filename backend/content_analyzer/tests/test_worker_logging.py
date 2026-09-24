@@ -69,7 +69,7 @@ async def test_successful_job_logs_start_and_completion_with_job_context(engine,
     item_id, user_id = uuid.uuid4(), uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(_delivery(item_id, user_id, attempt=1))
+    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id, user_id, attempt=1))
 
     [started] = _records(caplog, "Job started")
     [completed] = _records(caplog, "Job completed")
@@ -91,8 +91,8 @@ async def test_retry_then_dead_letter_is_traceable(engine, caplog):
     await insert_item(engine, item_id)
     worker = _worker(engine, _FlakyDescriber([TimeoutError("slow"), TimeoutError("slow")]))
 
-    await worker.handle_delivery(_delivery(item_id, user_id, attempt=1))
-    await worker.handle_delivery(_delivery(item_id, user_id, attempt=2))
+    await worker.process_message(_delivery(item_id, user_id, attempt=1))
+    await worker.process_message(_delivery(item_id, user_id, attempt=2))
 
     [retry] = _records(caplog, "Job attempt failed; retrying")
     assert retry.levelno == logging.WARNING
@@ -116,7 +116,7 @@ async def test_permanent_error_is_dead_lettered_with_its_reason(engine, caplog):
     await insert_item(engine, item_id)
     describer = _FlakyDescriber([PermanentProcessingError("OpenAI rejected the image")])
 
-    await _worker(engine, describer).handle_delivery(_delivery(item_id, uuid.uuid4(), attempt=1))
+    await _worker(engine, describer).process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
 
     [dead] = _records(caplog, "Job moved to dead-letter queue")
     assert _fields(dead)["permanent"] is True
@@ -128,7 +128,7 @@ async def test_context_does_not_leak_past_the_delivery(engine, caplog):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(_delivery(item_id, uuid.uuid4(), attempt=1))
+    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
     logging.getLogger("elsewhere").info("after")
 
     [after] = _records(caplog, "after")

@@ -206,11 +206,11 @@ async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, an
         ),
     )
 
-    await thumbnail_worker.handle_delivery(_delivery(_job(item_id)))
+    await thumbnail_worker.process_message(_delivery(_job(item_id)))
     # Between stages the item is still in flight, not finished.
     assert await fetch_status(engine, item_id) == "processing"
     [analysis_job] = analysis_queue.published
-    await analysis_worker.handle_delivery(_delivery(analysis_job))
+    await analysis_worker.process_message(_delivery(analysis_job))
 
     [(sent_bytes, sent_type)] = describer.received
     assert sent_bytes == storage.objects[thumbnail_key(item_id)]
@@ -243,7 +243,7 @@ async def test_corrupt_upload_fails_item_at_thumbnail_stage(engine, analysis_que
         ),
     )
 
-    await worker.handle_delivery(_delivery(_job(item_id)))
+    await worker.process_message(_delivery(_job(item_id)))
 
     # Straight to failed + dead letter, no retries, never reaches OpenAI.
     assert await fetch_status(engine, item_id) == "failed"

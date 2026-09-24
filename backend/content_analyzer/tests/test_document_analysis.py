@@ -93,7 +93,7 @@ async def test_describes_document_and_completes_item(engine, storage, describer,
     await _insert_file_item(engine, item_id, caption="for Saturday")
     embedding_queue = FakeJobQueue()
 
-    await _worker(engine, storage, describer, queue, dead_letters, embedding_queue=embedding_queue).handle_delivery(
+    await _worker(engine, storage, describer, queue, dead_letters, embedding_queue=embedding_queue).process_message(
         _delivery(_job(item_id))
     )
 
@@ -116,7 +116,7 @@ async def test_large_document_sends_excerpts_within_limit(engine, describer, que
     long_text = " ".join(f"word{i}" for i in range(100_000))
     storage = FakeObjectStore({_KEY: long_text.encode()})
 
-    await _worker(engine, storage, describer, queue, dead_letters, max_chars=2_000).handle_delivery(
+    await _worker(engine, storage, describer, queue, dead_letters, max_chars=2_000).process_message(
         _delivery(_job(item_id))
     )
 
@@ -142,7 +142,7 @@ async def test_unusable_documents_fail_immediately_without_retry(
     await _insert_file_item(engine, item_id)
     storage = FakeObjectStore({_KEY: data})
 
-    await _worker(engine, storage, describer, queue, dead_letters).handle_delivery(
+    await _worker(engine, storage, describer, queue, dead_letters).process_message(
         _delivery(_job(item_id, content_type=content_type))
     )
 
@@ -161,12 +161,12 @@ async def test_openai_outage_is_retried_then_dead_lettered_on_fifth_attempt(engi
     worker = _worker(engine, storage, describer, queue, dead_letters)
 
     for attempt in range(1, 5):
-        await worker.handle_delivery(_delivery(_job(item_id), delivery_count=attempt))
+        await worker.process_message(_delivery(_job(item_id), delivery_count=attempt))
         assert await fetch_status(engine, item_id) == "processing"
     assert len(queue.retried) == 4
     assert queue.acked == []
 
-    await worker.handle_delivery(_delivery(_job(item_id), delivery_count=5))
+    await worker.process_message(_delivery(_job(item_id), delivery_count=5))
 
     assert await fetch_status(engine, item_id) == "failed"
     assert len(dead_letters.letters) == 1
@@ -180,7 +180,7 @@ async def test_image_job_on_document_queue_is_ignored(engine, storage, describer
         item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image, image=ImageRef("images/x.png", "image/png")
     )
 
-    await _worker(engine, storage, describer, queue, dead_letters).handle_delivery(_delivery(job))
+    await _worker(engine, storage, describer, queue, dead_letters).process_message(_delivery(job))
 
     assert describer.calls == []
     assert await fetch_status(engine, item_id) == "pending"

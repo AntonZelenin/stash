@@ -124,6 +124,10 @@ class Worker:
         self._retry_max_delay_seconds = retry_max_delay_seconds
 
     async def run_forever(self) -> None:
+        """The long-running consumer: receives deliveries one at a time and
+        hands each to `process_message`, until cancelled. Only the
+        lifecycle lives here — polling, pausing after errors, sampling the
+        queue's stats; everything about a message is `process_message`'s."""
         logger.info(
             "Worker started",
             queue=self._queue_name,
@@ -134,21 +138,19 @@ class Worker:
         stats_reporter = asyncio.create_task(self._report_queue_stats_forever()) if metrics.is_enabled() else None
         try:
             while True:
-                delivery = None
                 try:
                     delivery = await self._queue.receive(timeout_seconds=_RECEIVE_TIMEOUT_SECONDS)
-                    if delivery is not None:
-                        await self.handle_delivery(delivery)
                 except Exception:
-                    # Whatever delivery was in hand stays unacked and is
-                    # redelivered after the queue's visibility timeout.
-                    if delivery is None:
-                        logger.exception("Failed to receive from queue", queue=self._queue_name)
-                    else:
-                        logger.exception(
-                            "Job handling failed; it will be redelivered after the visibility timeout",
-                            **self._delivery_fields(delivery),
-                        )
+                    logger.exception("Failed to receive from queue", queue=self._queue_name)
+                    await asyncio.sleep(_LOOP_ERROR_PAUSE_SECONDS)
+                    continue
+                if delivery is None:
+                    continue
+                try:
+                    await self.process_message(delivery)
+                except Exception:
+                    # Already logged by `process_message`; the delivery
+                    # stays unacked and is redelivered.
                     await asyncio.sleep(_LOOP_ERROR_PAUSE_SECONDS)
         finally:
             if stats_reporter is not None:
@@ -183,7 +185,18 @@ class Worker:
     def _queue_label(self) -> str:
         return self._queue_name or "jobs"
 
-    async def handle_delivery(self, delivery: Delivery) -> None:
+    async def process_message(self, delivery: Delivery) -> None:
+        """Processes one received delivery, whatever received it (this
+        worker's `run_forever`, or any other runtime): runs the stage's
+        handler and settles the delivery — ack, `retry_later` or
+        dead-letter + `abandon` — with the logs, span and metrics of the
+        attempt. Needs nothing from `run_forever`.
+
+        Raises only if the delivery couldn't be settled at all (e.g.
+        Postgres or the queue unreachable): that's logged here, and the
+        delivery is left unacked to be redelivered after the queue's
+        visibility timeout, so the caller decides only what to do next
+        (the loop pauses before polling again)."""
         # Everything logged while handling it — here, in the handler, in
         # storage/OpenAI calls — carries the job's identifiers, and the
         # trace/span ids of this delivery's span.
@@ -203,7 +216,12 @@ class Worker:
             log_context(**fields),
         ):
             tracing.set_attributes(span, **fields, max_attempts=self._max_attempts)
-            await self._handle_delivery(delivery)
+            try:
+                await self._handle_delivery(delivery)
+            except Exception:
+                # Re-raised, so the span also records it as an error.
+                logger.exception("Job handling failed; it will be redelivered after the visibility timeout")
+                raise
 
     def _delivery_fields(self, delivery: Delivery) -> dict:
         fields: dict = {"queue": self._queue_name, "job_id": delivery.message_id, "attempt": delivery.delivery_count}

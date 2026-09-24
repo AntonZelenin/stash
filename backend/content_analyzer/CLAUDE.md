@@ -51,6 +51,11 @@ Layout:
 - `worker.Worker` — stage-agnostic delivery handling: status checks,
   retry/backoff, dead-lettering, ack ordering. See its docstring for the
   guarantees. Takes a `JobHandler` with the stage's actual work.
+  `process_message(delivery)` is the complete processing of one delivery
+  (span, log context, metrics, settling it) and must stay usable by any
+  runtime; `run_forever()` is only the long-running consumer around it
+  (receive, call `process_message`, pause after errors, sample queue
+  stats). Put per-message behaviour in the former, never the latter.
 - `thumbnails.ThumbnailHandler` / `analysis.ContentAnalysisHandler` — the
   two stages' handlers. Each makes its outcome durable before returning
   (Worker acks right after) and must be safe to re-run; see their

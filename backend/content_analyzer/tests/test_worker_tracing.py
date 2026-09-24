@@ -93,7 +93,7 @@ async def test_delivery_span_continues_the_publishers_trace(engine, spans, caplo
     await insert_item(engine, item_id)
     delivery, upstream = _published_delivery(item_id)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(delivery)
+    await _worker(engine, _FlakyDescriber([])).process_message(delivery)
 
     [span] = _process_spans(spans)
     assert span.kind == SpanKind.CONSUMER
@@ -121,7 +121,7 @@ async def test_next_stage_job_is_published_inside_the_delivery_span(engine, span
             published_from.append(trace.get_current_span().get_span_context())
             await super().publish(job)
 
-    await _worker(engine, _FlakyDescriber([]), embedding_queue=_RecordingQueue()).handle_delivery(delivery)
+    await _worker(engine, _FlakyDescriber([]), embedding_queue=_RecordingQueue()).process_message(delivery)
 
     [span] = _process_spans(spans)
     [context] = published_from
@@ -144,8 +144,8 @@ async def test_each_attempt_is_a_span_in_the_same_trace(engine, spans):
         trace_context=first.trace_context,
     )
 
-    await worker.handle_delivery(first)
-    await worker.handle_delivery(second)
+    await worker.process_message(first)
+    await worker.process_message(second)
 
     retry, dead = _process_spans(spans)
     assert {retry.context.trace_id, dead.context.trace_id} == {upstream.trace_id}
@@ -167,7 +167,7 @@ async def test_permanent_error_is_recorded_on_the_delivery_span(engine, spans):
     await insert_item(engine, item_id)
     delivery, _upstream = _published_delivery(item_id)
 
-    await _worker(engine, _FlakyDescriber([PermanentProcessingError("bad image")])).handle_delivery(delivery)
+    await _worker(engine, _FlakyDescriber([PermanentProcessingError("bad image")])).process_message(delivery)
 
     [span] = _process_spans(spans)
     assert span.attributes["outcome"] == "dead_lettered"
@@ -179,7 +179,7 @@ async def test_permanent_error_is_recorded_on_the_delivery_span(engine, spans):
 async def test_skipped_job_says_why(engine, spans):
     delivery, _upstream = _published_delivery(uuid.uuid4())  # no such item
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(delivery)
+    await _worker(engine, _FlakyDescriber([])).process_message(delivery)
 
     [span] = _process_spans(spans)
     assert (span.attributes["outcome"], span.attributes["skip_reason"]) == ("skipped", "item_not_found")
@@ -191,7 +191,7 @@ async def test_delivery_without_trace_context_starts_a_new_trace(engine, spans):
     delivery, _upstream = _published_delivery(item_id)
     untraced = Delivery(message_id="7-0", receipt="7-0", delivery_count=1, raw_payload="{}", job=delivery.job)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(untraced)
+    await _worker(engine, _FlakyDescriber([])).process_message(untraced)
 
     [span] = _process_spans(spans)
     assert span.parent is None

@@ -76,7 +76,7 @@ async def test_completed_job(engine, recorded):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(_delivery(item_id))
+    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id))
 
     assert recorded.counts() == {"JobDuration": 1, "JobsCompleted": 1}
     # Job metrics are per queue only: no item, user or job ids.
@@ -91,7 +91,7 @@ async def test_failed_attempt_that_is_retried(engine, recorded):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([TimeoutError()])).handle_delivery(_delivery(item_id))
+    await _worker(engine, _FlakyDescriber([TimeoutError()])).process_message(_delivery(item_id))
 
     assert recorded.counts() == {"JobDuration": 1, "JobFailures": 1, "JobRetries": 1}
 
@@ -100,7 +100,7 @@ async def test_last_failed_attempt_is_dead_lettered(engine, recorded):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([TimeoutError()])).handle_delivery(_delivery(item_id, attempt=2))
+    await _worker(engine, _FlakyDescriber([TimeoutError()])).process_message(_delivery(item_id, attempt=2))
 
     assert recorded.counts() == {"JobDuration": 1, "JobFailures": 1, "JobsDeadLettered": 1}
 
@@ -109,7 +109,7 @@ async def test_permanent_failure_is_dead_lettered(engine, recorded):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([PermanentProcessingError("bad image")])).handle_delivery(_delivery(item_id))
+    await _worker(engine, _FlakyDescriber([PermanentProcessingError("bad image")])).process_message(_delivery(item_id))
 
     assert recorded.counts() == {"JobDuration": 1, "JobFailures": 1, "JobsDeadLettered": 1}
 
@@ -117,7 +117,7 @@ async def test_permanent_failure_is_dead_lettered(engine, recorded):
 async def test_malformed_payload_is_dead_lettered_without_running_the_handler(engine, recorded):
     delivery = Delivery(message_id="7-0", receipt="7-0", delivery_count=1, raw_payload="not json", job=None)
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(delivery)
+    await _worker(engine, _FlakyDescriber([])).process_message(delivery)
 
     assert recorded.counts() == {"JobsDeadLettered": 1}
 
@@ -126,7 +126,7 @@ async def test_skipped_job_is_not_counted(engine, recorded):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="completed")
 
-    await _worker(engine, _FlakyDescriber([])).handle_delivery(_delivery(item_id))
+    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id))
 
     assert recorded.counts() == {}
 

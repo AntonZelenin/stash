@@ -90,7 +90,7 @@ async def test_embeds_current_description_of_finished_item(engine, queue, dead_l
     await _set_description(engine, item_id, "our cat Mochi")
     embedder = _FakeEmbedder()
 
-    await _worker(engine, embedder, queue, dead_letters).handle_delivery(_delivery(item_id, item_type))
+    await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, item_type))
 
     assert embedder.texts == ["our cat Mochi"]
     assert await _embedding_hash(engine, item_id) == description_hash("our cat Mochi")
@@ -105,8 +105,8 @@ async def test_unchanged_text_is_not_embedded_again(engine, queue, dead_letters)
     embedder = _FakeEmbedder()
     worker = _worker(engine, embedder, queue, dead_letters)
 
-    await worker.handle_delivery(_delivery(item_id))
-    await worker.handle_delivery(_delivery(item_id))
+    await worker.process_message(_delivery(item_id))
+    await worker.process_message(_delivery(item_id))
 
     assert embedder.texts == ["call mom"]
     assert len(queue.acked) == 2
@@ -121,9 +121,9 @@ async def test_changed_text_replaces_embedding(engine, queue, dead_letters):
     worker = _worker(engine, embedder, queue, dead_letters)
 
     await _set_description(engine, item_id, "our cat")
-    await worker.handle_delivery(_delivery(item_id, ItemType.image))
+    await worker.process_message(_delivery(item_id, ItemType.image))
     await _set_description(engine, item_id, "our cat\n\nA grey cat asleep on a sofa.")
-    await worker.handle_delivery(_delivery(item_id, ItemType.image))
+    await worker.process_message(_delivery(item_id, ItemType.image))
 
     assert embedder.texts == ["our cat", "our cat\n\nA grey cat asleep on a sofa."]
     assert await _embedding_hash(engine, item_id) == description_hash("our cat\n\nA grey cat asleep on a sofa.")
@@ -142,7 +142,7 @@ async def test_text_changed_while_embedding_is_not_overwritten_by_stale_vector(e
 
     embedder = _FakeEmbedder(on_embed=description_changes_meanwhile)
 
-    await _worker(engine, embedder, queue, dead_letters).handle_delivery(_delivery(item_id, ItemType.image))
+    await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
 
     # The vector for "our cat" was dropped; the newer text's own job will
     # embed it (or the sweeper will).
@@ -155,7 +155,7 @@ async def test_item_without_description_is_skipped(engine, queue, dead_letters):
     await insert_item(engine, item_id, status="failed")
     embedder = _FakeEmbedder()
 
-    await _worker(engine, embedder, queue, dead_letters).handle_delivery(_delivery(item_id, ItemType.image))
+    await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
 
     assert embedder.texts == []
     assert len(queue.acked) == 1
@@ -174,10 +174,10 @@ async def test_outage_is_retried_then_dead_lettered_without_failing_the_item(eng
     worker = _worker(engine, embedder, queue, dead_letters)
 
     for attempt in range(1, 5):
-        await worker.handle_delivery(_delivery(item_id, delivery_count=attempt))
+        await worker.process_message(_delivery(item_id, delivery_count=attempt))
     assert len(queue.retried) == 4
 
-    await worker.handle_delivery(_delivery(item_id, delivery_count=5))
+    await worker.process_message(_delivery(item_id, delivery_count=5))
 
     assert len(dead_letters.letters) == 1
     assert len(queue.acked) == 1
@@ -192,7 +192,7 @@ async def test_rejected_input_is_dead_lettered_immediately(engine, queue, dead_l
     request = httpx.Request("POST", "https://api.openai.test/v1/embeddings")
     rejection = openai.BadRequestError("bad input", response=httpx.Response(400, request=request), body=None)
 
-    await _worker(engine, _FakeEmbedder(errors=[rejection]), queue, dead_letters).handle_delivery(_delivery(item_id))
+    await _worker(engine, _FakeEmbedder(errors=[rejection]), queue, dead_letters).process_message(_delivery(item_id))
 
     assert queue.retried == []
     assert len(dead_letters.letters) == 1
