@@ -9,6 +9,11 @@ worker, plus the current Valkey Streams implementations. Both services depend
 only on the interfaces, not on Valkey directly, so the backend can be
 replaced later (e.g. SQS) without touching either.
 
+Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
+API (search queries) and the embedding worker (item text), so both always
+use the same model and vector size (`EMBEDDING_DIMENSIONS`, which must
+match the `item_embeddings.embedding` column).
+
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before

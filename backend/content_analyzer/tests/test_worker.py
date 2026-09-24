@@ -70,7 +70,10 @@ def worker(engine, queue, dead_letters, describer) -> Worker:
         dead_letters=dead_letters,
         engine=engine,
         handler=ContentAnalysisHandler(
-            storage=FakeObjectStore({"images/cat.png": b"png-bytes"}), describer=describer, engine=engine
+            storage=FakeObjectStore({"images/cat.png": b"png-bytes"}),
+            describer=describer,
+            engine=engine,
+            embedding_queue=FakeJobQueue(),
         ),
         max_attempts=_MAX_ATTEMPTS,
         retry_base_delay_seconds=2.0,

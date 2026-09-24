@@ -1,6 +1,5 @@
 import base64
 import logging
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,6 +7,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
+from stash_shared.embeddings import Embedder
 from stash_shared.queue.base import FileRef, ImageRef, JobQueue, ProcessingJob
 
 from app.config import get_settings
@@ -49,26 +49,6 @@ def _classify_text_item_type(text: str) -> ItemType:
     return ItemType.text
 
 
-_MAX_SEARCH_TERMS = 10
-_SEARCH_TERM_PATTERN = re.compile(r"\w+")
-
-
-def build_prefix_tsquery(query: str) -> str | None:
-    """Turns free-form user input into a Postgres `to_tsquery` expression
-    that matches items containing *all* the words, each as a prefix — so
-    results update sensibly while the user is still typing ("scre" already
-    finds "screenshot"). Returns None when there's nothing searchable.
-
-    Only word characters survive, so user input can never inject tsquery
-    syntax (`&`, `|`, `!`, `:`, parentheses, quotes) and make `to_tsquery`
-    raise.
-    """
-    terms = _SEARCH_TERM_PATTERN.findall(query.lower())[:_MAX_SEARCH_TERMS]
-    if not terms:
-        return None
-    return " & ".join(f"{term}:*" for term in terms)
-
-
 class EmptyImageError(Exception):
     pass
 
@@ -91,6 +71,10 @@ class FileTooLargeError(Exception):
 
 class InvalidCursorError(Exception):
     pass
+
+
+class SearchUnavailableError(Exception):
+    """The search query couldn't be embedded (e.g. OpenAI unreachable)."""
 
 
 class ItemNotFoundError(Exception):
@@ -142,15 +126,19 @@ class ItemService:
         storage: ObjectStorage,
         queue: JobQueue,
         document_queue: JobQueue | None = None,
+        embedding_queue: JobQueue | None = None,
     ):
         """`queue` is where new images go (the image pipeline's first
-        stage); `document_queue` is where analyzable files go, and is only
-        needed by `create_file_item`."""
+        stage); `document_queue` is where analyzable files go (needed by
+        `create_file_item`); `embedding_queue` is where items whose
+        searchable text this service wrote go (needed by the `create_*`
+        methods)."""
         self._session = session
         self._repo = ItemRepository(session)
         self._storage = storage
         self._queue = queue
         self._document_queue = document_queue
+        self._embedding_queue = embedding_queue
 
     async def list_items(
         self, *, user_id: uuid.UUID, limit: int, cursor: str | None
@@ -171,13 +159,22 @@ class ItemService:
         next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
         return await self._with_download_urls(rows), next_cursor
 
-    async def search_items(self, *, user_id: uuid.UUID, query: str, limit: int) -> list[ListedItem]:
-        """Full-text search over the user's item descriptions, best match
-        first. See `build_prefix_tsquery` for how `query` is interpreted."""
-        tsquery = build_prefix_tsquery(query)
-        if tsquery is None:
-            return []
-        rows = await self._repo.search_items(user_id=user_id, tsquery=tsquery, limit=limit)
+    async def search_items(
+        self, *, user_id: uuid.UUID, query: str, limit: int, embedder: Embedder
+    ) -> list[ListedItem]:
+        """Semantic search: the user's items whose description embedding is
+        closest in meaning to `query`, most similar first."""
+        try:
+            query_embedding = await embedder.embed(query)
+        except Exception as exc:
+            logger.exception("Failed to embed search query")
+            raise SearchUnavailableError() from exc
+        rows = await self._repo.search_items(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=limit,
+            max_distance=get_settings().search_max_cosine_distance,
+        )
         return await self._with_download_urls(rows)
 
     async def delete_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
@@ -233,9 +230,10 @@ class ItemService:
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
         item_type = _classify_text_item_type(text)
         item = await self._repo.create_text_item(user_id=user_id, text=text, item_type=item_type)
-        # Only images go through the content analyzer; text/links are
-        # stored already `completed` and never enqueued.
+        # No analysis for text/links (stored already `completed`); their
+        # text is their description, so it goes straight to embedding.
         await self._session.commit()
+        await self._publish_embedding_job(item)
         return item
 
     async def create_image_item(self, *, user_id: uuid.UUID, data: bytes, text: str | None = None) -> Item:
@@ -273,6 +271,9 @@ class ItemService:
             image=ImageRef(storage_key=storage_key, content_type=content_type),
         )
         await self._commit_and_enqueue(item, job, self._queue)
+        if text is not None:
+            # Searchable by its caption now, not only once analysis is done.
+            await self._publish_embedding_job(item)
         return item
 
     async def create_file_item(
@@ -311,6 +312,8 @@ class ItemService:
         )
         if not classified.analyzable:
             await self._session.commit()
+            if text is not None:
+                await self._publish_embedding_job(item)
             return item
 
         assert self._document_queue is not None, "create_file_item needs a document_queue"
@@ -321,7 +324,21 @@ class ItemService:
             file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
         )
         await self._commit_and_enqueue(item, job, self._document_queue)
+        if text is not None:
+            await self._publish_embedding_job(item)
         return item
+
+    async def _publish_embedding_job(self, item: Item) -> None:
+        """Asks the embedding worker to (re)embed the item's description,
+        after it's committed. Best effort: the item is saved regardless, and
+        if publishing fails the content analyzer's sweeper finds the missing
+        embedding and publishes it later."""
+        assert self._embedding_queue is not None, "creating items needs an embedding_queue"
+        job = ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType(item.type.value))
+        try:
+            await self._embedding_queue.publish(job)
+        except Exception:
+            logger.exception("Failed to enqueue embedding job for item %s", item.id)
 
     async def _commit_and_enqueue(self, item: Item, job: ProcessingJob, queue: JobQueue) -> None:
         """Commits the item's creation, then publishes its processing job

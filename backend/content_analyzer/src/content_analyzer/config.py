@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
+from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
 class Settings(BaseSettings):
@@ -42,6 +43,13 @@ class Settings(BaseSettings):
     # excerpts (see `content_analyzer.documents.excerpt`). Independent of
     # the upload size limit.
     document_analysis_max_chars: int = 24_000
+
+    # Must match the API's EMBEDDING_MODEL (queries and items have to be
+    # embedded by the same model to be comparable).
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    # How long after an item's last status change the sweeper waits before
+    # treating a missing/stale embedding as lost (rather than in flight).
+    embedding_settle_seconds: float = 600.0
 
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"

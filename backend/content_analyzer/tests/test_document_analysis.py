@@ -63,12 +63,20 @@ def dead_letters() -> FakeDeadLetterQueue:
     return FakeDeadLetterQueue()
 
 
-def _worker(engine, storage, describer, queue, dead_letters, *, max_chars: int = 24_000) -> Worker:
+def _worker(
+    engine, storage, describer, queue, dead_letters, *, max_chars: int = 24_000, embedding_queue=None
+) -> Worker:
     return Worker(
         queue=queue,
         dead_letters=dead_letters,
         engine=engine,
-        handler=DocumentAnalysisHandler(storage=storage, describer=describer, engine=engine, max_chars=max_chars),
+        handler=DocumentAnalysisHandler(
+            storage=storage,
+            describer=describer,
+            engine=engine,
+            max_chars=max_chars,
+            embedding_queue=embedding_queue if embedding_queue is not None else FakeJobQueue(),
+        ),
         item_type=ItemType.file,
         max_attempts=5,
         retry_base_delay_seconds=0,
@@ -83,8 +91,11 @@ async def _insert_file_item(engine, item_id, **kwargs):
 async def test_describes_document_and_completes_item(engine, storage, describer, queue, dead_letters):
     item_id = uuid.uuid4()
     await _insert_file_item(engine, item_id, caption="for Saturday")
+    embedding_queue = FakeJobQueue()
 
-    await _worker(engine, storage, describer, queue, dead_letters).handle_delivery(_delivery(_job(item_id)))
+    await _worker(engine, storage, describer, queue, dead_letters, embedding_queue=embedding_queue).handle_delivery(
+        _delivery(_job(item_id))
+    )
 
     [call] = describer.calls
     assert call == {"filename": "groceries.txt", "text": "Milk, bread, eggs\n\nand cheese", "is_partial": False}
@@ -93,6 +104,10 @@ async def test_describes_document_and_completes_item(engine, storage, describer,
     assert await fetch_descriptions(engine, item_id) == ["for Saturday\n\nA shopping list for the week."]
     assert len(queue.acked) == 1
     assert dead_letters.letters == []
+    # Description saved -> handed on for embedding (never embedded here).
+    [embedding_job] = embedding_queue.published
+    assert embedding_job.item_id == item_id
+    assert embedding_job.item_type == ItemType.file
 
 
 async def test_large_document_sends_excerpts_within_limit(engine, describer, queue, dead_letters):

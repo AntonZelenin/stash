@@ -17,6 +17,13 @@ CONTENT_ANALYSIS_JOBS = "content_analysis_jobs"
 # Carries a `ProcessingJob` whose `file` points at the stored upload.
 DOCUMENT_ANALYSIS_JOBS = "document_analysis_jobs"
 
+# Items whose searchable text (their `item_descriptions` row) changed:
+#   API (text items, captions) / content analyzers -> EMBEDDING_JOBS
+#       -> embedding worker
+# Carries a `ProcessingJob` identifying the item only; the worker reads the
+# current text from the database.
+EMBEDDING_JOBS = "embedding_jobs"
+
 
 class ItemType(str, Enum):
     """Mirrors `app.items.models.ItemType` on the API side. Duplicated

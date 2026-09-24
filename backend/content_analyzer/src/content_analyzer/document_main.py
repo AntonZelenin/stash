@@ -4,13 +4,13 @@ them via OpenAI."""
 
 import asyncio
 
-from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, ItemType
+from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, EMBEDDING_JOBS, ItemType
 
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
 from content_analyzer.documents.analysis import DocumentAnalysisHandler
 from content_analyzer.documents.describer import OpenAIDocumentDescriber
-from content_analyzer.runtime import build_object_store, build_stage_worker, configure_logging
+from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
 
 configure_logging()
 
@@ -35,6 +35,7 @@ async def main() -> None:
             ),
             engine=engine,
             max_chars=settings.document_analysis_max_chars,
+            embedding_queue=build_queue(settings, EMBEDDING_JOBS),
         ),
     )
     await worker.run_forever()

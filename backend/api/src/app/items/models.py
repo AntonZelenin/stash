@@ -2,12 +2,28 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, func
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import UserDefinedType
+from stash_shared.embeddings import EMBEDDING_DIMENSIONS
 
 from app.db import Base
+
+
+class Vector(UserDefinedType):
+    """pgvector's `vector(n)` column type. The API never reads or writes
+    vectors through the ORM (search binds the query vector as text and casts
+    it in SQL; the embedding worker writes rows), so no value conversion is
+    needed — just the DDL/type."""
+
+    cache_ok = True
+
+    def __init__(self, dimensions: int):
+        self.dimensions = dimensions
+
+    def get_col_spec(self, **kw) -> str:
+        return f"VECTOR({self.dimensions})"
 
 
 class ItemType(str, Enum):
@@ -109,6 +125,10 @@ class Embedding(Base):
     __tablename__ = "item_embeddings"
 
     item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
-    vector: Mapped[list[float]] = mapped_column(ARRAY(Float))
+    # Embedding of the item's description (see `stash_shared.embeddings`),
+    # written by the embedding worker; searched by cosine distance.
+    embedding: Mapped[str] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
+    # Hash of the exact description text `embedding` was made from.
+    content_hash: Mapped[str] = mapped_column(String)
 
     item: Mapped[Item] = relationship(back_populates="embedding")

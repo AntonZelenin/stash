@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: postgres:16
+    # PostgreSQL 16 with the pgvector extension (semantic search).
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-stash}
@@ -78,6 +79,10 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-stash}
+      # Search queries are embedded with the same model as item text.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      SEARCH_MAX_COSINE_DISTANCE: ${SEARCH_MAX_COSINE_DISTANCE:-0.8}
     ports:
       - "${API_PORT:-8000}:8000"
     healthcheck:
@@ -144,6 +149,25 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+
+  # Turns items' searchable text into embeddings for semantic search.
+  # Same image/package as content_analyzer, different entrypoint.
+  embedding_worker:
+    build:
+      context: ./backend
+      dockerfile: content_analyzer/Dockerfile
+    command: ["python", "-m", "content_analyzer.embedding_main"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
+      VALKEY_URL: redis://valkey:6379
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
 
   content_analyzer:
     build:

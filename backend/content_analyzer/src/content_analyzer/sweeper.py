@@ -4,7 +4,13 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared.queue.base import FileRef, ImageRef, ItemType, JobQueue, ProcessingJob
 
-from content_analyzer.items import StaleItem, claim_for_requeue, fail_stale_item, find_stale_items
+from content_analyzer.items import (
+    StaleItem,
+    claim_for_requeue,
+    fail_stale_item,
+    find_items_needing_embedding,
+    find_stale_items,
+)
 from content_analyzer.thumbnails import THUMBNAIL_CONTENT_TYPE
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,15 @@ class StaleItemSweeper:
     recorded, the thumbnail stage otherwise; for a file, document analysis. Re-publishing a job that turns out to still
     exist is harmless: every stage is idempotent, and a duplicate that finds
     the item finished is acked/skipped.
+
+    It also re-publishes embedding jobs for items whose embedding is missing
+    or was made from different text than their current description, once
+    they've had `embedding_settle_seconds` to be embedded normally. That
+    covers an embedding event lost between an analyzer saving a description
+    and publishing (a crash there leaves the item finished, so the stage
+    never runs again) or an outage outlasting the embedding worker's
+    retries. It doesn't count requeues: embedding is idempotent, and the
+    only way it keeps failing is OpenAI staying unreachable.
     """
 
     def __init__(
@@ -41,14 +56,18 @@ class StaleItemSweeper:
         thumbnail_queue: JobQueue,
         analysis_queue: JobQueue,
         document_queue: JobQueue,
+        embedding_queue: JobQueue,
         engine: AsyncEngine,
         stale_after_seconds: float,
+        embedding_settle_seconds: float,
         max_requeues: int,
         interval_seconds: float,
     ):
         self._thumbnail_queue = thumbnail_queue
         self._analysis_queue = analysis_queue
         self._document_queue = document_queue
+        self._embedding_queue = embedding_queue
+        self._embedding_settle_seconds = embedding_settle_seconds
         self._engine = engine
         self._stale_after_seconds = stale_after_seconds
         self._max_requeues = max_requeues
@@ -63,6 +82,21 @@ class StaleItemSweeper:
             await asyncio.sleep(self._interval_seconds)
 
     async def sweep_once(self) -> None:
+        await self._sweep_stale_items()
+        await self._sweep_embeddings()
+
+    async def _sweep_embeddings(self) -> None:
+        items = await find_items_needing_embedding(
+            self._engine, settled_for_seconds=self._embedding_settle_seconds, limit=_BATCH_SIZE
+        )
+        for item in items:
+            await self._embedding_queue.publish(
+                ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=ItemType(item.type))
+            )
+        if items:
+            logger.warning("Re-published embedding jobs for %d items with a missing or stale embedding", len(items))
+
+    async def _sweep_stale_items(self) -> None:
         stale_items = await find_stale_items(
             self._engine, stale_after_seconds=self._stale_after_seconds, limit=_BATCH_SIZE
         )

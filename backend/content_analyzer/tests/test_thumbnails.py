@@ -191,6 +191,7 @@ async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, an
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, storage_key=_ORIGINAL_KEY)
     thumbnail_queue = FakeJobQueue()
+    embedding_queue = FakeJobQueue()
     describer = _RecordingDescriber()
 
     thumbnail_worker = Worker(
@@ -200,7 +201,9 @@ async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, an
         queue=analysis_queue,
         dead_letters=FakeDeadLetterQueue(),
         engine=engine,
-        handler=ContentAnalysisHandler(storage=storage, describer=describer, engine=engine),
+        handler=ContentAnalysisHandler(
+            storage=storage, describer=describer, engine=engine, embedding_queue=embedding_queue
+        ),
     )
 
     await thumbnail_worker.handle_delivery(_delivery(_job(item_id)))
@@ -217,6 +220,9 @@ async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, an
     assert await fetch_descriptions(engine, item_id) == ["A teal rectangle."]
     assert len(thumbnail_queue.acked) == 1
     assert len(analysis_queue.acked) == 1
+    # Description saved -> handed on for embedding (never embedded here).
+    [embedding_job] = embedding_queue.published
+    assert embedding_job.item_id == item_id
 
 
 async def test_corrupt_upload_fails_item_at_thumbnail_stage(engine, analysis_queue):

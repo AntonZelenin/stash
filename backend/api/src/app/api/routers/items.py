@@ -26,7 +26,7 @@ from app.items.services import (
     UnsupportedImageTypeError,
 )
 from app.items.services import ListedItem as ListedItemResult
-from app.queue import get_document_analysis_queue, get_job_queue
+from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -51,8 +51,9 @@ async def create_text_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
+    embedding_queue: JobQueue = Depends(get_embedding_queue),
 ) -> ItemCreated:
-    item = await ItemService(session, storage, queue).create_text_item(user_id=current_user.id, text=payload.text)
+    item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_text_item(user_id=current_user.id, text=payload.text)
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
 
@@ -69,10 +70,11 @@ async def create_image_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
+    embedding_queue: JobQueue = Depends(get_embedding_queue),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue).create_image_item(
+        item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_image_item(
             user_id=current_user.id, data=data, text=text
         )
     except EmptyImageError:
@@ -98,11 +100,12 @@ async def create_file_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
+    embedding_queue: JobQueue = Depends(get_embedding_queue),
     document_queue: JobQueue = Depends(get_document_analysis_queue),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue, document_queue).create_file_item(
+        item = await ItemService(session, storage, queue, document_queue, embedding_queue).create_file_item(
             user_id=current_user.id, filename=file.filename, data=data, text=text
         )
     except EmptyFileError:

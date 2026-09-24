@@ -1,7 +1,7 @@
 import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import ProcessingJob
+from stash_shared.queue.base import JobQueue, ProcessingJob
 
 from content_analyzer.documents.describer import DocumentDescriber
 from content_analyzer.documents.excerpt import select_excerpt
@@ -24,13 +24,25 @@ class DocumentAnalysisHandler:
 
     Safe to re-run: `complete_item` only writes if the item isn't finished
     yet, so a redelivered job costs at most a repeated OpenAI call.
+
+    Its job ends with the description: it then publishes to
+    `embedding_queue` for the embedding worker, and never embeds itself.
     """
 
-    def __init__(self, *, storage: ObjectStore, describer: DocumentDescriber, engine: AsyncEngine, max_chars: int):
+    def __init__(
+        self,
+        *,
+        storage: ObjectStore,
+        describer: DocumentDescriber,
+        engine: AsyncEngine,
+        max_chars: int,
+        embedding_queue: JobQueue,
+    ):
         self._storage = storage
         self._describer = describer
         self._engine = engine
         self._max_chars = max_chars
+        self._embedding_queue = embedding_queue
 
     async def handle(self, job: ProcessingJob) -> None:
         if job.file is None:
@@ -54,3 +66,6 @@ class DocumentAnalysisHandler:
             filename=job.file.filename, text=excerpt.text, is_partial=excerpt.is_partial
         )
         await complete_item(self._engine, job.item_id, description=description)
+        await self._embedding_queue.publish(
+            ProcessingJob(item_id=job.item_id, user_id=job.user_id, item_type=job.item_type)
+        )

@@ -17,7 +17,8 @@ The MVP supports:
 - Semantic and keyword-based search across saved content.
 - Searching by tags and generated descriptions.
 
-Search uses a hybrid approach combining full-text search and vector similarity search.
+Search is semantic: items and queries are embedded with OpenAI embeddings and matched by vector
+similarity (pgvector).
 
 ## Components
 
@@ -208,15 +209,35 @@ Client → API → Object Storage
 
 ### Search
 
-Client → API → PostgreSQL hybrid search → Results
+Client → API → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search → Results
 
-Currently implemented: the full-text half. `item_descriptions.search_vector`
-is a stored, generated `tsvector` (English config, GIN-indexed) that Postgres
-keeps in sync with the description text; punctuation-split text is indexed
-too so words inside URLs match. `POST /search` turns the user's input into a
-prefix `tsquery` (every word must match, each as a prefix, so partial words
-work while typing) and returns items ranked by `ts_rank`. Vector similarity
-search is not implemented yet.
+What's embedded is each item's `item_descriptions` text — the single
+searchable text per item (a note's/link's text, a caption, a generated
+image/document description, or caption + description). Embedding is its own
+asynchronous stage, separate from content analysis:
+
+    text/link item created, or upload with a caption → API ─┐
+    image/document description saved → content analyzer ───┴→ embedding_jobs
+        → embedding_worker → OpenAI Embeddings → item_embeddings
+
+Events carry only the item id; the embedding worker reads the current
+description when it runs. `item_embeddings` holds one `vector(1536)` per
+item (`text-embedding-3-small` by default, `EMBEDDING_MODEL`; the API and
+worker must use the same model) plus the MD5 of the text it was made from:
+unchanged text isn't re-embedded, and a vector is only saved if the
+description hasn't changed meanwhile. The embedding worker uses the same
+`Worker` as the other stages (retries, 5 attempts, dead-letter queue) but
+never changes an item's status. The content-analyzer's sweeper re-publishes
+embedding jobs for items whose embedding is missing or stale after
+`EMBEDDING_SETTLE_SECONDS`, covering events lost between saving a
+description and publishing.
+
+`POST /search` embeds the query with the same model and returns the user's
+items by cosine distance (`<=>`), nearest first, via an HNSW index
+(`vector_cosine_ops`; iterative scan so the per-user filter doesn't truncate
+results). Items further than `SEARCH_MAX_COSINE_DISTANCE` (default 0.8) are
+left out, so unrelated items aren't returned. Items without an embedding
+yet aren't searchable.
 
 ## Repository
 

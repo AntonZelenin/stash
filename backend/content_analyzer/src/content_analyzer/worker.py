@@ -63,6 +63,12 @@ class Worker:
     any point means redelivery, never loss. Redelivery is safe because every
     status write is guarded (see `content_analyzer.items`) and an item
     already `completed`/`failed` is simply acked and skipped.
+
+    A stage that works on items *after* they're finished (embeddings) sets
+    `manages_item_status=False`: it runs for items in any status, and never
+    changes it — a failure there is dead-lettered like anywhere else, but
+    doesn't turn a finished item into a failed one. Retries, backoff,
+    dead-lettering and ack ordering are the same.
     """
 
     def __init__(
@@ -75,11 +81,13 @@ class Worker:
         max_attempts: int = 5,
         retry_base_delay_seconds: float = 2.0,
         retry_max_delay_seconds: float = 120.0,
-        item_type: ItemType = ItemType.image,
+        item_type: ItemType | None = ItemType.image,
+        manages_item_status: bool = True,
     ):
-        """`item_type` is the kind of item this stage processes; jobs for
-        any other kind are dropped."""
+        """`item_type` is the kind of item this stage processes (None: any);
+        jobs for any other kind are dropped."""
         self._item_type = item_type
+        self._manages_item_status = manages_item_status
         self._queue = queue
         self._dead_letters = dead_letters
         self._engine = engine
@@ -105,7 +113,7 @@ class Worker:
         if job is None:
             await self._dead_letter(delivery, reason="Malformed job payload")
             return
-        if job.item_type != self._item_type:
+        if self._item_type is not None and job.item_type != self._item_type:
             # Each queue only ever gets its stage's kind of item (text/links
             # are never enqueued at all). Anything else is stray, so drop it
             # without touching the item.
@@ -123,7 +131,7 @@ class Worker:
             logger.warning("Item %s not found; dropping job", job.item_id)
             await self._queue.ack(delivery)
             return
-        if status in (_STATUS_COMPLETED, _STATUS_FAILED):
+        if self._manages_item_status and status in (_STATUS_COMPLETED, _STATUS_FAILED):
             # A duplicate/redelivery of a job whose outcome is already
             # durable (e.g. the worker crashed between commit and ack).
             logger.info("Item %s is already %s; skipping", job.item_id, status)
@@ -135,7 +143,8 @@ class Worker:
             await self._dead_letter(delivery, reason=f"Exceeded {self._max_attempts} delivery attempts")
             return
 
-        await start_attempt(self._engine, job.item_id)
+        if self._manages_item_status:
+            await start_attempt(self._engine, job.item_id)
 
         try:
             await self._handler.handle(job)
@@ -187,6 +196,6 @@ class Worker:
                 source_receipt=delivery.receipt,
             )
         )
-        if delivery.job is not None:
+        if delivery.job is not None and self._manages_item_status:
             await fail_item(self._engine, delivery.job.item_id)
         await self._queue.ack(delivery)

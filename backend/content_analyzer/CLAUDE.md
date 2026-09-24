@@ -10,7 +10,7 @@ Processes saved content asynchronously. Responsibilities:
 
 ## Current implementation
 
-This package holds the processing workers. It runs as three services from
+This package holds the processing workers. It runs as four services from
 the same Docker image, each consuming its own queue from `backend/shared`
 (currently Valkey Streams). Two form the image pipeline:
 
@@ -30,6 +30,16 @@ And one analyzes documents:
    `content_analyzer.documents` (`parsers` — one `DocumentParser` per
    content type, add formats there; `excerpt` — what part of a long text is
    sent; `describer`; `analysis` — the stage handler).
+
+And one turns searchable text into vectors:
+
+4. `content_analyzer.embedding_main` (compose service `embedding_worker`):
+   consumes `EMBEDDING_JOBS`, published by the API (text items, captions)
+   and by the two analyzers once they've saved a description — analyzers
+   never call the Embeddings API themselves. Embeds the item's current
+   description and stores it in `item_embeddings` (`embeddings.EmbeddingHandler`).
+   Runs with `manages_item_status=False`: items are already finished, and a
+   failed embedding must not mark them failed.
 
 Each stage looks up the item's status in Postgres by id and drives
 `pending -> processing -> completed`/`failed` (for images, `processing` spans
@@ -52,7 +62,8 @@ Layout:
 - `storage` — small S3 object store (download/upload/delete).
 - `sweeper.StaleItemSweeper` — re-publishes jobs for items stuck
   `pending`/`processing` (by `status_updated_at`) whose job was lost, to the
-  stage they got stuck before, and fails them after too many requeues.
+  stage they got stuck before, and fails them after too many requeues; also
+  re-publishes embedding jobs for items whose embedding is missing or stale.
 - `items` — the guarded SQL status/result writes. Every status write stamps
   `status_updated_at`; keep it that way or the sweeper will misjudge items.
 - `runtime` — wiring shared by the entrypoints.

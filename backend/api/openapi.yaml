@@ -339,9 +339,11 @@ paths:
       responses:
         "200":
           description: >-
-            The current user's items whose description matches every word of
-            `query` (each word also matching as a prefix, so partial words
-            work), best match first. Same item shape as `GET /items`.
+            Semantic search: the current user's items closest in meaning to
+            `query` (by embedding cosine similarity, across languages),
+            most similar first; clearly unrelated items are left out. Items
+            whose content hasn't been embedded yet (a few seconds after
+            saving/analysis) aren't found. Same item shape as `GET /items`.
           content:
             application/json:
               schema:
@@ -359,6 +361,9 @@ paths:
 
         "422":
           description: Invalid request
+
+        "503":
+          description: Search is temporarily unavailable (the query couldn't be embedded)
 
 components:
   schemas:

@@ -8,6 +8,7 @@ from content_analyzer.sweeper import StaleItemSweeper
 from conftest import FakeJobQueue, fetch_requeue_count, fetch_status, insert_item
 
 _STALE_AFTER = 1800
+_EMBEDDING_SETTLE = 600
 
 
 @pytest.fixture
@@ -27,13 +28,15 @@ def document_queue() -> FakeJobQueue:
     return FakeJobQueue()
 
 
-def _sweeper(engine, queue, analysis_queue, document_queue=None) -> StaleItemSweeper:
+def _sweeper(engine, queue, analysis_queue, document_queue=None, embedding_queue=None) -> StaleItemSweeper:
     return StaleItemSweeper(
         thumbnail_queue=queue,
         analysis_queue=analysis_queue,
         document_queue=document_queue or FakeJobQueue(),
+        embedding_queue=embedding_queue if embedding_queue is not None else FakeJobQueue(),
         engine=engine,
         stale_after_seconds=_STALE_AFTER,
+        embedding_settle_seconds=_EMBEDDING_SETTLE,
         max_requeues=3,
         interval_seconds=60,
     )

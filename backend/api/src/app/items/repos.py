@@ -2,18 +2,21 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import and_, delete, func, literal_column, or_, select, update
+from sqlalchemy import Float, String, and_, bindparam, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 
 from app.items.models import (
     Description,
+    Embedding,
     FileMetadata,
     ImageMetadata,
     Item,
     ItemStatus,
     ItemType,
     TextContent,
+    Vector,
 )
 
 
@@ -141,25 +144,41 @@ class ItemRepository:
         keys = (row.storage_key, row.thumbnail_key, row.file_key)
         return DeletedItem(storage_keys=[key for key in keys if key is not None])
 
-    async def search_items(self, *, user_id: uuid.UUID, tsquery: str, limit: int) -> list[Item]:
-        """The user's items whose description matches `tsquery` (a
-        `to_tsquery` expression), best match first, newest first among
-        equal ranks. Postgres-only: it relies on the generated
-        `item_descriptions.search_vector` column and its GIN index, which
-        the ORM deliberately doesn't map (Postgres maintains it)."""
-        # The config is a literal cast rather than a bound parameter so
-        # Postgres resolves the `to_tsquery(regconfig, text)` overload
-        # without the driver having to encode a `regconfig` value.
-        query = func.to_tsquery(literal_column("'english'::regconfig"), tsquery)
-        search_vector = literal_column("item_descriptions.search_vector")
+    async def search_items(
+        self,
+        *,
+        user_id: uuid.UUID,
+        query_embedding: list[float],
+        limit: int,
+        max_distance: float | None = None,
+    ) -> list[Item]:
+        """The user's items nearest to `query_embedding` by cosine distance,
+        nearest first (ties by id, for a stable order). Items without an
+        embedding yet aren't searchable. Postgres + pgvector only.
+
+        Uses the HNSW index (`vector_cosine_ops`). By default an HNSW scan
+        yields only `hnsw.ef_search` candidates *before* the `user_id`
+        filter is applied, so with other users' items interleaved it could
+        return fewer than `limit` results; iterative scanning keeps going
+        until enough rows pass the filter, in exact distance order.
+        """
+        await self._session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+        await self._session.execute(text(f"SET LOCAL hnsw.ef_search = {max(40, 2 * int(limit))}"))
+
+        query_vector = cast(
+            bindparam("query_embedding", to_pgvector(query_embedding), type_=String), Vector(EMBEDDING_DIMENSIONS)
+        )
+        distance = Embedding.embedding.op("<=>", return_type=Float)(query_vector)
         stmt = (
             select(Item)
-            .join(Description, Description.item_id == Item.id)
+            .join(Embedding, Embedding.item_id == Item.id)
             .options(selectinload(Item.text_content), selectinload(Item.image), selectinload(Item.file))
-            .where(Item.user_id == user_id, search_vector.op("@@")(query))
-            .order_by(func.ts_rank(search_vector, query).desc(), Item.created_at.desc(), Item.id.desc())
+            .where(Item.user_id == user_id)
+            .order_by(distance, Item.id)
             .limit(limit)
         )
+        if max_distance is not None:
+            stmt = stmt.where(distance <= max_distance)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 

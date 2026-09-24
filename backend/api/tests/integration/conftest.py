@@ -6,13 +6,15 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
 from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import Description, FileMetadata, ImageMetadata, Item, TextContent
 from app.main import app
-from app.queue import get_document_analysis_queue, get_job_queue
+from app.embeddings import get_embedder
+from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -138,11 +140,44 @@ def document_queue() -> FakeJobQueue:
 
 
 @pytest.fixture
+def embedding_queue() -> FakeJobQueue:
+    fake = FakeJobQueue()
+    app.dependency_overrides[get_embedding_queue] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_embedding_queue, None)
+
+
+class FakeEmbedder(Embedder):
+    """Stands in for OpenAI, so tests never call it. `fail` simulates an
+    outage."""
+
+    def __init__(self):
+        self.queries: list[str] = []
+        self.fail = False
+
+    async def embed(self, text: str) -> list[float]:
+        if self.fail:
+            raise ConnectionError("openai is unreachable")
+        self.queries.append(text)
+        return [0.0] * EMBEDDING_DIMENSIONS
+
+
+@pytest.fixture
+def embedder() -> FakeEmbedder:
+    fake = FakeEmbedder()
+    app.dependency_overrides[get_embedder] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_embedder, None)
+
+
+@pytest.fixture
 async def client(
     session: AsyncSession,
     storage: FakeObjectStorage,
     queue: FakeJobQueue,
     document_queue: FakeJobQueue,
+    embedding_queue: FakeJobQueue,
+    embedder: FakeEmbedder,
 ) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

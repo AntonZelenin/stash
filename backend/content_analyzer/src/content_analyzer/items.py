@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -198,3 +199,87 @@ async def fail_stale_item(engine: AsyncEngine, item_id: UUID, *, stale_after_sec
 
 def _cutoff(stale_after_seconds: float) -> datetime:
     return datetime.fromtimestamp(_now().timestamp() - stale_after_seconds, UTC)
+
+
+# ---- embeddings (see `content_analyzer.embeddings`) ----
+
+
+def description_hash(text: str) -> str:
+    """Identifies the exact text an embedding was made from. MD5 because
+    Postgres can compute it too (`md5(text)`), letting SQL compare stored
+    hashes against current descriptions; it's a change detector, not a
+    security measure."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+async def get_description_and_embedding_hash(engine: AsyncEngine, item_id: UUID) -> tuple[str | None, str | None]:
+    """The item's current description text and the hash of the text its
+    stored embedding was made from (either may be None)."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT d.text, e.content_hash FROM item_descriptions d "
+                "LEFT JOIN item_embeddings e ON e.item_id = d.item_id WHERE d.item_id = :item_id"
+            ),
+            {"item_id": str(item_id)},
+        )
+        row = result.first()
+        return (row[0], row[1]) if row else (None, None)
+
+
+async def save_embedding(engine: AsyncEngine, item_id: UUID, *, embedding: str, content_hash: str) -> bool:
+    """Stores (or replaces) the item's embedding — but only if its
+    description still hashes to `content_hash`, i.e. is the text that was
+    embedded. If the description changed meanwhile, nothing is written: a
+    newer job for the new text is on its way, and a stale vector must not
+    overwrite (or outlive) it. Returns whether it wrote.
+
+    `embedding` is in pgvector's text format (`stash_shared.embeddings.to_pgvector`).
+    """
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text(
+                # :content_hash is used twice; the explicit casts give both
+                # uses one type (asyncpg rejects a parameter Postgres infers
+                # as varchar in one place and text in the other).
+                "INSERT INTO item_embeddings (item_id, embedding, content_hash) "
+                "SELECT d.item_id, CAST(:embedding AS vector), CAST(:content_hash AS text) FROM item_descriptions d "
+                "WHERE d.item_id = :item_id AND md5(d.text) = CAST(:content_hash AS text) "
+                "ON CONFLICT (item_id) DO UPDATE "
+                "SET embedding = excluded.embedding, content_hash = excluded.content_hash"
+            ),
+            {"item_id": str(item_id), "embedding": embedding, "content_hash": content_hash},
+        )
+        return result.rowcount == 1
+
+
+@dataclass(frozen=True)
+class ItemNeedingEmbedding:
+    id: UUID
+    user_id: UUID
+    type: str
+
+
+async def find_items_needing_embedding(
+    engine: AsyncEngine, *, settled_for_seconds: float, limit: int
+) -> list[ItemNeedingEmbedding]:
+    """Items with a description whose embedding is missing or was made from
+    different text, and whose status hasn't changed for
+    `settled_for_seconds` — enough time for the embedding event published
+    alongside that change to have been handled normally."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            _sql(
+                "SELECT i.id, i.user_id, i.type FROM items i "
+                "JOIN item_descriptions d ON d.item_id = i.id "
+                "LEFT JOIN item_embeddings e ON e.item_id = i.id "
+                "WHERE (e.item_id IS NULL OR e.content_hash <> md5(d.text)) "
+                "AND i.status_updated_at < :cutoff "
+                "ORDER BY i.status_updated_at LIMIT :limit"
+            ),
+            {"cutoff": _cutoff(settled_for_seconds), "limit": limit},
+        )
+        return [
+            ItemNeedingEmbedding(id=UUID(str(row.id)), user_id=UUID(str(row.user_id)), type=row.type)
+            for row in result
+        ]

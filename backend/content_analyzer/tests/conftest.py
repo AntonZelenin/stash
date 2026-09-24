@@ -2,8 +2,10 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import hashlib
+
 import pytest
-from sqlalchemy import DateTime, bindparam, text
+from sqlalchemy import DateTime, bindparam, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob
@@ -22,6 +24,13 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # Postgres has md5() built in; the embedding queries rely on it.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _add_md5(dbapi_connection, _record):
+        dbapi_connection.create_function(
+            "md5", 1, lambda value: hashlib.md5(value.encode("utf-8")).hexdigest(), deterministic=True
+        )
+
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -31,6 +40,11 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
         )
         await conn.execute(text("CREATE TABLE item_descriptions (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(text("CREATE TABLE item_text_contents (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
+        # `embedding` is vector(1536) on Postgres; SQLite just keeps whatever
+        # CAST(... AS vector) yields, which tests don't inspect.
+        await conn.execute(
+            text("CREATE TABLE item_embeddings (item_id TEXT PRIMARY KEY, embedding, content_hash TEXT NOT NULL)")
+        )
         await conn.execute(
             text(
                 "CREATE TABLE item_files (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "

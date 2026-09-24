@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
+from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,17 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "stash"
     image_download_url_ttl_seconds: int = 3600
+    # Search queries are embedded with this; it must be the model the
+    # embedding worker uses for item text.
+    openai_api_key: str = ""
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    # Results further than this cosine distance from the query (0 = same
+    # direction, 1 = unrelated, 2 = opposite) are left out, so a search
+    # doesn't return the whole library ranked; None returns everything.
+    # Measured with text-embedding-3-small on short notes: real matches
+    # scored ~0.55-0.66, loosely related items ~0.72-0.8, unrelated ones
+    # mostly 0.83+. Retune if the model changes.
+    search_max_cosine_distance: float | None = 0.8
 
 
 @lru_cache
