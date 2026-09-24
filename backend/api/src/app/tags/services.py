@@ -24,9 +24,12 @@ class TagService:
         user's existing tag of that name (ignoring case) or creating it.
         Assigning an already-assigned tag is a no-op. Returns the tag.
 
-        Two concurrent requests can both miss an existing tag and try to
-        create it (or both link it): the unique indexes let only one win,
-        and the other retries once, now finding what the first created.
+        The tag is locked until the link is committed, so orphan cleanup
+        can't delete it in between (see `get_or_create_for_linking`). Two
+        concurrent requests can both link the same tag to the same item:
+        the primary key lets only one win, and the other retries once, now
+        finding it assigned. The retry also covers an item deleted between
+        the ownership check and the link.
         """
         name = normalize_tag_name(name)
         for attempt in range(2):
@@ -41,9 +44,7 @@ class TagService:
     async def _assign(self, *, user_id: uuid.UUID, item_id: uuid.UUID, name: str) -> Tag:
         if not await self._repo.item_belongs_to_user(item_id=item_id, user_id=user_id):
             raise ItemNotFoundError()
-        tag = await self._repo.find_by_name(user_id=user_id, name=name)
-        if tag is None:
-            tag = await self._repo.create(user_id=user_id, name=name)
+        [tag] = await self._repo.get_or_create_for_linking(user_id=user_id, names=[name])
         if not await self._repo.is_assigned(item_id=item_id, tag_id=tag.id):
             await self._repo.assign(item_id=item_id, tag_id=tag.id)
         await self._session.commit()
@@ -51,8 +52,10 @@ class TagService:
 
     async def remove_tag(self, *, user_id: uuid.UUID, item_id: uuid.UUID, tag_id: uuid.UUID) -> None:
         """Removes the tag from the user's item (a no-op if it wasn't
-        assigned). The tag itself stays in the user's tag list."""
+        assigned). If no other item uses the tag, it's deleted too, in the
+        same transaction."""
         if not await self._repo.item_belongs_to_user(item_id=item_id, user_id=user_id):
             raise ItemNotFoundError()
-        await self._repo.unassign(item_id=item_id, tag_id=tag_id)
+        if await self._repo.unassign(item_id=item_id, tag_id=tag_id):
+            await self._repo.delete_orphans(user_id=user_id, tag_ids=[tag_id])
         await self._session.commit()

@@ -59,6 +59,8 @@ class DeletedItem:
     # Objects the item had in storage (original image, thumbnail, uploaded
     # file), for the caller to clean up once the delete is committed.
     storage_keys: list[str]
+    # Tags the item had, which may now be unused.
+    tag_ids: list[uuid.UUID]
 
 
 class ItemRepository:
@@ -205,6 +207,11 @@ class ItemRepository:
         """Deletes the user's item and, via `ON DELETE CASCADE`, every row
         hanging off it. Returns None if there's no such item *owned by this
         user* — someone else's item is indistinguishable from a missing one.
+
+        The item row is locked first. Linking a tag to it needs a lock that
+        conflicts with this one, so no tag can be linked between reading the
+        item's tags here and the delete. The returned `tag_ids` are
+        therefore every link the delete removes.
         """
         row = (
             await self._session.execute(
@@ -217,13 +224,17 @@ class ItemRepository:
                 .outerjoin(ImageMetadata, ImageMetadata.item_id == Item.id)
                 .outerjoin(FileMetadata, FileMetadata.item_id == Item.id)
                 .where(Item.id == item_id, Item.user_id == user_id)
+                .with_for_update(of=Item)
             )
         ).first()
         if row is None:
             return None
+        tag_ids = list(
+            (await self._session.execute(select(item_tags.c.tag_id).where(item_tags.c.item_id == item_id))).scalars()
+        )
         await self._session.execute(delete(Item).where(Item.id == item_id))
         keys = (row.storage_key, row.thumbnail_key, row.file_key)
-        return DeletedItem(storage_keys=[key for key in keys if key is not None])
+        return DeletedItem(storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids)
 
     async def search_items(
         self,

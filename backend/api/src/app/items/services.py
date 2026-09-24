@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared import descriptions
 from stash_shared.queue.base import ItemType as QueueItemType
@@ -320,11 +319,13 @@ class ItemService:
         it's atomic. Removing the file afterwards is best-effort — if it
         fails, the only cost is an orphaned object in storage, never an item
         pointing at a missing file. A job still queued for the item finds it
-        gone and is dropped by the worker.
+        gone and is dropped by the worker. Tags no other item uses are
+        deleted with it, in the same transaction.
         """
         deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
         if deleted is None:
             raise ItemNotFoundError()
+        await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=deleted.tag_ids)
         await self._session.commit()
 
         for key in deleted.storage_keys:
@@ -364,8 +365,8 @@ class ItemService:
         )
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str, tags: list[str] = ()) -> Item:
-        """`tags` are tag names to put on the new item (see `_resolve_tags`)."""
-        resolved_tags = await self._resolve_tags(user_id, tags)
+        """`tags` are tag names to put on the new item (see `_link_tags`)."""
+        resolved_tags = await self._link_tags(user_id, normalize_tag_names(list(tags)))
         item_type = _classify_text_item_type(text)
         item = await self._repo.create_text_item(
             user_id=user_id, text=text, item_type=item_type, tags=resolved_tags
@@ -392,13 +393,14 @@ class ItemService:
         content_type = _detect_image_content_type(data)
         if content_type is None:
             raise UnsupportedImageTypeError()
-        resolved_tags = await self._resolve_tags(user_id, tags)
+        tag_names = normalize_tag_names(list(tags))
 
         item_id = uuid.uuid4()
         storage_key = f"images/{item_id}{_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type]}"
 
         await self._storage.upload(key=storage_key, data=data, content_type=content_type)
 
+        resolved_tags = await self._link_tags(user_id, tag_names)
         item = await self._repo.create_image_item(
             item_id=item_id,
             user_id=user_id,
@@ -442,7 +444,7 @@ class ItemService:
             raise EmptyFileError()
         if len(data) > _MAX_FILE_SIZE_BYTES:
             raise FileTooLargeError()
-        resolved_tags = await self._resolve_tags(user_id, tags)
+        tag_names = normalize_tag_names(list(tags))
 
         filename = files.clean_filename(filename)
         classified = files.classify(filename, data)
@@ -451,6 +453,7 @@ class ItemService:
         storage_key = f"files/{item_id}{classified.extension}"
         await self._storage.upload(key=storage_key, data=data, content_type=classified.content_type)
 
+        resolved_tags = await self._link_tags(user_id, tag_names)
         item = await self._repo.create_file_item(
             item_id=item_id,
             user_id=user_id,
@@ -480,37 +483,21 @@ class ItemService:
             await self._publish_embedding_job(item)
         return item
 
-    async def _resolve_tags(self, user_id: uuid.UUID, raw_names: list[str]) -> list[Tag]:
-        """The user's tags with these names — existing ones reused
-        (case-insensitively), missing ones created — for linking to a new
-        item as it's saved, so it's never stored half-tagged.
+    async def _link_tags(self, user_id: uuid.UUID, names: list[str]) -> list[Tag]:
+        """The user's tags with these names (already normalized, see
+        `normalize_tag_names`), existing ones reused and missing ones
+        created, to link to a new item as it's saved.
 
-        Runs first, and commits the tags on their own: the item's own
-        commit then links them atomically with the item, and a failure
-        after this point leaves at most an unused tag behind. If a
-        concurrent request creates one of the same tags first, the unique
-        index rejects the duplicate and this retries once, now finding it.
-
-        Raises `InvalidTagNameError` for a bad name, before anything is
-        stored.
+        Nothing is committed here: the tags are created, and existing ones
+        locked, in the item's own transaction, so the item is never stored
+        half-tagged and orphan cleanup can't delete a tag before the item
+        links it (see `TagRepository.get_or_create_for_linking`). Called
+        right before the item is created, after any upload, so the locks
+        are held only briefly.
         """
-        names = normalize_tag_names(list(raw_names))
         if not names:
             return []
-        tag_repo = TagRepository(self._session)
-        for attempt in range(2):
-            try:
-                tags = []
-                for name in names:
-                    tag = await tag_repo.find_by_name(user_id=user_id, name=name)
-                    tags.append(tag or await tag_repo.create(user_id=user_id, name=name))
-                await self._session.commit()
-                return tags
-            except IntegrityError:
-                await self._session.rollback()
-                if attempt:
-                    raise
-        raise AssertionError("unreachable")
+        return await TagRepository(self._session).get_or_create_for_linking(user_id=user_id, names=names)
 
     async def _publish_embedding_job(self, item: Item) -> None:
         """Asks the embedding worker to (re)embed the item's description,

@@ -244,11 +244,26 @@ yet aren't searchable.
 Users label items with their own tags (`tags`: one row per user and name,
 unique per user case-insensitively; `item_tags`: the many-to-many link).
 Tags are private to their owner. Assigning by name reuses the user's
-existing tag of that name or creates it; removing a tag from an item keeps
-the tag. Listing (`GET /items`) and semantic search (`POST /search`) share
-the same server-side filters: an item type, any number of tags (an item
-must carry all of them), and favorites only (`items.is_favorite`, toggled
-per item).
+existing tag of that name or creates it. Listing (`GET /items`) and
+semantic search (`POST /search`) share the same server-side filters: an
+item type, any number of tags (an item must carry all of them), and
+favorites only (`items.is_favorite`, toggled per item).
+
+A tag exists only while some item uses it. Removing a tag from an item, or
+deleting an item, also deletes each affected tag that no item uses any more,
+in the same transaction. Row locks keep this safe against concurrent
+tagging (`app.tags.repos.TagRepository`):
+
+- Cleanup locks the tags `FOR UPDATE` before checking for remaining links.
+- Linking a tag (tagging an item, or saving a new item with tags) locks it
+  `FOR KEY SHARE` in the same transaction as the link, and creates it if
+  it's gone. New items' tags are linked in the item's own transaction for
+  this reason.
+- Deleting an item locks the item first, so no tag can be linked to it
+  after its tags were read.
+
+Each side therefore waits for the other to commit. A tag is never deleted
+while a link to it exists or is being made.
 
 ### Editing items
 

@@ -97,7 +97,11 @@ async def test_invalid_tag_names_are_rejected(client: AsyncClient, name):
     assert response.status_code == 422
 
 
-async def test_remove_tag_from_item_keeps_the_tag(client: AsyncClient):
+async def _tag_list(client: AsyncClient, token: str) -> list[dict]:
+    return (await client.get("/tags", headers=_auth(token))).json()["tags"]
+
+
+async def test_removing_a_tags_last_use_deletes_the_tag(client: AsyncClient):
     _, token = await register_and_login(client)
     item_id = await _note(client, token, "one")
     tag = (await _tag(client, token, item_id, "Books")).json()
@@ -107,8 +111,45 @@ async def test_remove_tag_from_item_keeps_the_tag(client: AsyncClient):
     assert response.status_code == 204
     [item] = await _listed(client, token)
     assert item["tags"] == []
-    # Still in the user's tag list, ready to reuse.
-    assert (await client.get("/tags", headers=_auth(token))).json()["tags"] == [tag]
+    assert await _tag_list(client, token) == []
+
+
+async def test_removing_a_tag_still_used_elsewhere_keeps_it(client: AsyncClient):
+    _, token = await register_and_login(client)
+    first = await _note(client, token, "one")
+    second = await _note(client, token, "two")
+    tag = (await _tag(client, token, first, "Books")).json()
+    await _tag(client, token, second, "Books")
+
+    await client.delete(f"/items/{first}/tags/{tag['id']}", headers=_auth(token))
+
+    assert await _tag_list(client, token) == [tag]
+    assert [item["id"] for item in await _listed(client, token, tag_id=tag["id"])] == [second]
+
+
+async def test_a_cleaned_up_tag_name_can_be_used_again(client: AsyncClient):
+    _, token = await register_and_login(client)
+    item_id = await _note(client, token, "one")
+    old = (await _tag(client, token, item_id, "Books")).json()
+    await client.delete(f"/items/{item_id}/tags/{old['id']}", headers=_auth(token))
+
+    response = await _tag(client, token, item_id, "Books")
+
+    assert response.status_code == 200
+    assert await _tag_list(client, token) == [response.json()]
+
+
+async def test_removing_a_tag_that_is_not_on_the_item_deletes_nothing(client: AsyncClient):
+    _, alice = await register_and_login(client, email="alice@example.com")
+    _, bob = await register_and_login(client, email="bob@example.com")
+    alices_item = await _note(client, alice, "alice's")
+    alices_tag = (await _tag(client, alice, alices_item, "Books")).json()
+    bobs_item = await _note(client, bob, "bob's")
+
+    response = await client.delete(f"/items/{bobs_item}/tags/{alices_tag['id']}", headers=_auth(bob))
+
+    assert response.status_code == 204
+    assert await _tag_list(client, alice) == [alices_tag]
 
 
 async def test_deleting_an_item_removes_its_tag_links(client: AsyncClient):
@@ -122,6 +163,21 @@ async def test_deleting_an_item_removes_its_tag_links(client: AsyncClient):
 
     listed = await _listed(client, token, tag_id=tag["id"])
     assert [item["id"] for item in listed] == [kept]
+    # Still used by `kept`.
+    assert await _tag_list(client, token) == [tag]
+
+
+async def test_deleting_an_item_deletes_tags_only_it_used(client: AsyncClient):
+    _, token = await register_and_login(client)
+    doomed = await _note(client, token, "doomed")
+    kept = await _note(client, token, "kept")
+    for name in ["Only here", "Shared"]:
+        await _tag(client, token, doomed, name)
+    shared = (await _tag(client, token, kept, "Shared")).json()
+
+    assert (await client.delete(f"/items/{doomed}", headers=_auth(token))).status_code == 204
+
+    assert await _tag_list(client, token) == [shared]
 
 
 async def test_requires_token(client: AsyncClient):

@@ -415,8 +415,8 @@ paths:
     delete:
       summary: Remove a tag from an item
       description: >-
-        Removes the tag from the item (a no-op if it wasn't assigned). The
-        tag itself stays in the user's tag list.
+        Removes the tag from the item (a no-op if it wasn't assigned). If no
+        other item uses the tag any more, the tag itself is deleted too.
       operationId: removeTag
       tags: [tags]
 
@@ -507,7 +507,8 @@ paths:
       summary: Delete an item
       description: >-
         Permanently deletes the item, everything stored with it (text,
-        caption, description, image file), and removes it from search.
+        caption, description, image file), and removes it from search. Its
+        tags that no other item uses are deleted too.
       operationId: deleteItem
 
       security:
