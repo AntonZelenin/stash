@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::filters::TAG_SEARCH_DEBOUNCE;
+use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::icons::{
     IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
     IconTrash,
@@ -13,9 +13,6 @@ use crate::icons::{
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
 const TAGS_CSS: Asset = asset!("/assets/styling/tags.css");
-
-/// Existing tags suggested below the "Add tag" input.
-const TAG_SUGGESTION_LIMIT: u32 = 8;
 
 /// Narrowest a column is allowed to get before the grid drops to one fewer
 /// column. Measured against the grid's own width, not the viewport, so the
@@ -723,7 +720,7 @@ pub(crate) fn TagPicker(
             if !query.is_empty() {
                 Delay::new(TAG_SEARCH_DEBOUNCE).await;
             }
-            session.list_tags(query, TAG_SUGGESTION_LIMIT).await
+            session.list_tags(query, TAG_LIST_LIMIT).await
         }
     });
 

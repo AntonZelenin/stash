@@ -16,7 +16,9 @@ pub(crate) const TAG_SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 /// Selected tags shown as chips in the closed Tags control before the rest
 /// collapse into "+N".
 const MAX_VISIBLE_TAG_CHIPS: usize = 2;
-const TAG_FILTER_LIST_LIMIT: u32 = 50;
+/// How many of the user's tags a tag list asks for: the Tags filter's and
+/// the one under an item's "Add tag" input. Both lists scroll.
+pub(crate) const TAG_LIST_LIMIT: u32 = 50;
 
 /// The item-type filter. Applied by the server, to listing and search alike.
 #[derive(Clone, Copy, PartialEq)]
@@ -215,7 +217,7 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
             if !query.is_empty() {
                 Delay::new(TAG_SEARCH_DEBOUNCE).await;
             }
-            session.list_tags(query, TAG_FILTER_LIST_LIMIT).await
+            session.list_tags(query, TAG_LIST_LIMIT).await
         }
     });
 
