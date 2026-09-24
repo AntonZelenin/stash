@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # over OTLP/HTTP to this collector (Jaeger locally).
     tracing_enabled: bool = False
     tracing_otlp_endpoint: str = "http://localhost:4318"
+    # Metrics (see `stash_shared.metrics`): published to CloudWatch, under
+    # this namespace, only when `platform` is "aws"; a no-op elsewhere.
+    metrics_namespace: str = "Stash"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14

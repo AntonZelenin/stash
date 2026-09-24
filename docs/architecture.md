@@ -248,6 +248,83 @@ The same content rules as for logs apply to span attributes: no user
 content, only ids, sizes, types and outcomes. SQL spans carry the
 statement text with bind-parameter placeholders, never the values.
 
+## Metrics
+
+Operational metrics go through one abstraction, `stash_shared.metrics`
+(`metrics.count`, `metrics.record_duration`, `metrics.gauge`,
+`metrics.external_call`). Each process calls `configure_metrics(service=...,
+platform=PLATFORM, environment=ENVIRONMENT, namespace=METRICS_NAMESPACE)`
+once, next to logging and tracing, and `PLATFORM` alone picks the
+implementation:
+
+- `aws`: CloudWatch, as Embedded Metric Format (EMF) JSON lines on stdout,
+  serialized by AWS Lambda Powertools Metrics (the `stash-shared[aws]`
+  extra, as for logging). CloudWatch Logs extracts the metrics, so the
+  service needs no CloudWatch API calls, only its stdout shipped to
+  CloudWatch Logs (e.g. the ECS `awslogs` driver). Data points are buffered
+  and written every 10 seconds, and at exit.
+- anything else (`local`, `digitalocean`...): a no-op. There is no local
+  metrics backend.
+
+Application code never checks which one is active, and recording never
+raises or changes behaviour.
+
+Every metric carries `service` and `environment` dimensions and is also
+published aggregated to just those two, so there is always a service-wide
+series next to the per-route/per-queue ones. Percentiles can't be combined
+after the fact. Durations are published as individual values, so CloudWatch
+computes p50/p95/p99 itself. Counts are summed per flush: read them with
+the Sum statistic. Dimensions are low-cardinality only: never user, item,
+request or trace ids or storage keys.
+
+Namespace `Stash` (`METRICS_NAMESPACE`):
+
+| Metric | Unit | Dimensions | Recorded by |
+|---|---|---|---|
+| `Requests` | Count | `route`, `method` | API middleware (`app.request_metrics`), every request but `/health` |
+| `Requests4xx`, `Requests5xx` | Count | `route`, `method` | same; an unhandled exception is a 5xx |
+| `RequestDuration` | Milliseconds | `route`, `method` | same |
+| `JobsCompleted` | Count | `queue` | `Worker` (all stages) |
+| `JobDuration` | Milliseconds | `queue` | `Worker`, every handler run, whatever its outcome |
+| `JobFailures` | Count | `queue` | `Worker`, a handler run that raised |
+| `JobRetries` | Count | `queue` | `Worker`, a failure sent back to the queue |
+| `JobsDeadLettered` | Count | `queue` | `Worker`, for any reason |
+| `QueueBacklog` | Count | `queue` | `Worker`, sampled every 30 s |
+| `QueueOldestMessageAge` | Seconds | `queue` | same |
+| `ExternalCalls`, `ExternalCallErrors` | Count | `operation` | `logged_call` (OpenAI), the storage wrappers |
+| `ExternalCallDuration` | Milliseconds | `operation` | same |
+
+`route` is the route template (`/items/{item_id}`), or `unmatched` when no
+route matched. `method` is the HTTP method, or `OTHER` for a non-standard
+one. `operation` is `openai.responses`, `openai.embeddings`,
+`storage.upload`, `storage.download` or `storage.delete`. Any exception
+counts as an external-call error, including a storage key that doesn't
+exist or an input OpenAI rejects.
+
+Reading them:
+- API: RPS = Sum(`Requests`) / period; latency = p50/p95/p99 of
+  `RequestDuration`; error rates = `Requests5xx` / `Requests` and
+  `Requests4xx` / `Requests` (FILL the missing error series with 0).
+- Workers: throughput = Sum(`JobsCompleted`) / period; duration =
+  p50/p95/p99 of `JobDuration`; failure rate = `JobFailures` /
+  (`JobsCompleted` + `JobFailures`); retries and dead letters as Sums.
+- Queues: `QueueBacklog` is messages not yet acked: waiting, in flight or
+  waiting for a retry, from the consumer group's `lag` + `pending`.
+  `QueueOldestMessageAge` is how long ago the oldest of them was
+  published, retries included. Every replica of a stage samples the same
+  queue, so read both with Maximum. They come from `JobQueue.stats()`: a
+  backend whose platform already publishes these (an SQS queue's
+  `ApproximateNumberOfMessagesVisible`/`ApproximateAgeOfOldestMessage`)
+  returns None and relies on those instead.
+- External dependencies: rate, p50/p95/p99 and error rate by `operation`,
+  as for the API.
+
+Deliberately not recorded here, because AWS publishes them natively:
+compute CPU/memory, Lambda invocations/errors/throttles/concurrency/
+duration, load balancer request counts, RDS connections and resources,
+ElastiCache and SQS metrics. Application metrics complement these. Nor are
+product counts (items created...), which say nothing about health.
+
 ## Environments
 
 ### Local

@@ -50,7 +50,7 @@ from uuid import UUID
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-from stash_shared import tracing
+from stash_shared import metrics, tracing
 
 # Field names used across services. Not enforced — a log carries whichever
 # apply — but use these spellings rather than inventing synonyms.
@@ -176,10 +176,15 @@ def logged_call(
 
     Also traces it: a client span named `operation`, with `fields` and the
     result fields as attributes, marked failed with the exception on error.
+    And measures it (`stash_shared.metrics.external_call`): calls, errors
+    and duration by `operation`.
 
     Yields a dict the block can put result fields in (e.g. output size)."""
     result: dict[str, Any] = {}
-    with _tracer.start_as_current_span(operation, kind=SpanKind.CLIENT) as span:
+    with (
+        _tracer.start_as_current_span(operation, kind=SpanKind.CLIENT) as span,
+        metrics.external_call(operation),
+    ):
         tracing.set_attributes(span, **fields)
         started = time.perf_counter()
         logger.debug("External call started", operation=operation, **fields)

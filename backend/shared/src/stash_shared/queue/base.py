@@ -95,6 +95,17 @@ class Delivery:
     trace_context: Mapping[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class QueueStats:
+    """How far behind a queue's consumers are. `backlog`: messages not yet
+    acked (waiting, in flight, or waiting for a retry).
+    `oldest_message_age_seconds`: how long ago the oldest of those was
+    published (0 when there are none). Either is None if unknown."""
+
+    backlog: int | None
+    oldest_message_age_seconds: float | None
+
+
 class JobQueue(ABC):
     """At-least-once queue of item-processing jobs between the API
     (producer) and the content-analyzer worker (consumer). Callers depend
@@ -132,6 +143,12 @@ class JobQueue(ABC):
         """Releases the delivery so it is redelivered no sooner than
         `delay_seconds` from now (best effort; backends may clamp it)."""
         ...
+
+    async def stats(self) -> QueueStats | None:
+        """The queue's backlog, for metrics. None when the backend doesn't
+        report it — e.g. one whose platform already publishes it (SQS's
+        own CloudWatch metrics)."""
+        return None
 
 
 @dataclass(frozen=True)

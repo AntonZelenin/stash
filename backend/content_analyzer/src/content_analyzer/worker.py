@@ -6,7 +6,7 @@ from typing import Protocol
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared import tracing
+from stash_shared import metrics, tracing
 from stash_shared.log import get_logger, log_context
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob
 
@@ -23,6 +23,8 @@ _RECEIVE_TIMEOUT_SECONDS = 5
 # Pause after an unexpected error in the loop itself (e.g. Valkey or
 # Postgres unreachable), so an outage doesn't turn into a hot spin.
 _LOOP_ERROR_PAUSE_SECONDS = 2
+# How often the queue's backlog is sampled for metrics (when they're on).
+_QUEUE_STATS_INTERVAL_SECONDS = 30
 
 
 def backoff_delay(delivery_count: int, *, base_seconds: float, max_seconds: float) -> float:
@@ -76,6 +78,14 @@ class Worker:
     `outcome` (completed, retry, dead_lettered, skipped); failed attempts
     are marked as errors with their exception.
 
+    Metrics (`stash_shared.metrics`, by `queue`), for every stage alike:
+    `JobDuration` of every handler run; `JobsCompleted`; `JobFailures` (a
+    handler run that raised) and of those `JobRetries` (sent back to the
+    queue); `JobsDeadLettered` (any reason, malformed payloads included).
+    While running, it also samples its queue's `QueueBacklog` and
+    `QueueOldestMessageAge` (`JobQueue.stats`). Like tracing, metrics
+    never change processing.
+
     A stage that works on items *after* they're finished (embeddings) sets
     `manages_item_status=False`: it runs for items in any status, and never
     changes it — a failure there is dead-lettered like anywhere else, but
@@ -119,30 +129,64 @@ class Worker:
             max_attempts=self._max_attempts,
             manages_item_status=self._manages_item_status,
         )
+        stats_reporter = asyncio.create_task(self._report_queue_stats_forever()) if metrics.is_enabled() else None
+        try:
+            while True:
+                delivery = None
+                try:
+                    delivery = await self._queue.receive(timeout_seconds=_RECEIVE_TIMEOUT_SECONDS)
+                    if delivery is not None:
+                        await self.handle_delivery(delivery)
+                except Exception:
+                    # Whatever delivery was in hand stays unacked and is
+                    # redelivered after the queue's visibility timeout.
+                    if delivery is None:
+                        logger.exception("Failed to receive from queue", queue=self._queue_name)
+                    else:
+                        logger.exception(
+                            "Job handling failed; it will be redelivered after the visibility timeout",
+                            **self._delivery_fields(delivery),
+                        )
+                    await asyncio.sleep(_LOOP_ERROR_PAUSE_SECONDS)
+        finally:
+            if stats_reporter is not None:
+                stats_reporter.cancel()
+
+    async def report_queue_stats(self) -> None:
+        """Records the queue's backlog and oldest-message age, if its
+        backend reports them. Every replica of a stage reports the same
+        queue, hence Maximum as the statistic to read them with."""
+        stats = await self._queue.stats()
+        if stats is None:
+            return
+        if stats.backlog is not None:
+            metrics.gauge("QueueBacklog", stats.backlog, unit=metrics.Unit.COUNT, queue=self._queue_label)
+        if stats.oldest_message_age_seconds is not None:
+            metrics.gauge(
+                "QueueOldestMessageAge",
+                stats.oldest_message_age_seconds,
+                unit=metrics.Unit.SECONDS,
+                queue=self._queue_label,
+            )
+
+    async def _report_queue_stats_forever(self) -> None:
         while True:
-            delivery = None
             try:
-                delivery = await self._queue.receive(timeout_seconds=_RECEIVE_TIMEOUT_SECONDS)
-                if delivery is not None:
-                    await self.handle_delivery(delivery)
+                await self.report_queue_stats()
             except Exception:
-                # Whatever delivery was in hand stays unacked and is
-                # redelivered after the queue's visibility timeout.
-                if delivery is None:
-                    logger.exception("Failed to receive from queue", queue=self._queue_name)
-                else:
-                    logger.exception(
-                        "Job handling failed; it will be redelivered after the visibility timeout",
-                        **self._delivery_fields(delivery),
-                    )
-                await asyncio.sleep(_LOOP_ERROR_PAUSE_SECONDS)
+                logger.warning("Failed to sample queue stats", exc_info=True, queue=self._queue_name)
+            await asyncio.sleep(_QUEUE_STATS_INTERVAL_SECONDS)
+
+    @property
+    def _queue_label(self) -> str:
+        return self._queue_name or "jobs"
 
     async def handle_delivery(self, delivery: Delivery) -> None:
         # Everything logged while handling it — here, in the handler, in
         # storage/OpenAI calls — carries the job's identifiers, and the
         # trace/span ids of this delivery's span.
         fields = self._delivery_fields(delivery)
-        queue = self._queue_name or "jobs"
+        queue = self._queue_label
         with (
             _tracer.start_as_current_span(
                 f"process {queue}",
@@ -210,12 +254,15 @@ class Worker:
                 # Deleted by the user mid-processing (which also removes its
                 # image, hence the error) — nothing left to fail or report.
                 logger.info("Item was deleted during processing; dropping job", duration_ms=_elapsed_ms(started))
+                self._record_attempt(started)
                 _set_outcome("skipped", skip_reason="item_deleted")
                 await self._queue.ack(delivery)
                 return
+            self._record_attempt(started, failed=True)
             await self._dead_letter(delivery, reason=str(exc), error=exc, duration_ms=_elapsed_ms(started))
             return
         except Exception as exc:
+            self._record_attempt(started, failed=True)
             if delivery.delivery_count >= self._max_attempts:
                 await self._dead_letter(
                     delivery,
@@ -240,9 +287,12 @@ class Worker:
             tracing.mark_failed(span, f"Attempt failed; retrying: {exc!r}", error=exc)
             _set_outcome("retry", retry_delay_seconds=delay)
             await self._queue.retry_later(delivery, delay_seconds=delay)
+            metrics.count("JobRetries", queue=self._queue_label)
             return
 
+        self._record_attempt(started)
         await self._queue.ack(delivery)
+        metrics.count("JobsCompleted", queue=self._queue_label)
         _set_outcome("completed")
         logger.info("Job completed", duration_ms=_elapsed_ms(started))
 
@@ -270,6 +320,7 @@ class Worker:
         if delivery.job is not None and self._manages_item_status:
             marked_failed = await fail_item(self._engine, delivery.job.item_id)
         await self._queue.ack(delivery)
+        metrics.count("JobsDeadLettered", queue=self._queue_label)
         tracing.mark_failed(trace.get_current_span(), reason, error=error)
         _set_outcome(
             "dead_lettered",
@@ -286,6 +337,12 @@ class Worker:
             duration_ms=duration_ms,
             item_status=_STATUS_FAILED if marked_failed else None,
         )
+
+    def _record_attempt(self, started: float, *, failed: bool = False) -> None:
+        """How long the handler ran, and whether it failed."""
+        metrics.record_duration("JobDuration", _elapsed_ms(started), queue=self._queue_label)
+        if failed:
+            metrics.count("JobFailures", queue=self._queue_label)
 
 
 def _set_outcome(outcome: str, **attributes) -> None:

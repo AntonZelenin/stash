@@ -5,6 +5,7 @@ from urllib.parse import quote
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
+from stash_shared import metrics
 from stash_shared.log import get_logger
 
 from app.config import get_settings
@@ -57,13 +58,14 @@ class MinioStorage(ObjectStorage):
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
         # boto3 is synchronous; run it off the event loop thread.
         try:
-            await asyncio.to_thread(
-                self._client.put_object,
-                Bucket=self._bucket,
-                Key=key,
-                Body=data,
-                ContentType=content_type,
-            )
+            with metrics.external_call("storage.upload"):
+                await asyncio.to_thread(
+                    self._client.put_object,
+                    Bucket=self._bucket,
+                    Key=key,
+                    Body=data,
+                    ContentType=content_type,
+                )
         except Exception as exc:
             # Re-raised: the request fails. Logged here for the key and the
             # S3 error code, which the request's own error log lacks.
@@ -79,7 +81,8 @@ class MinioStorage(ObjectStorage):
 
     async def delete(self, *, key: str) -> None:
         # S3 DeleteObject already succeeds for a missing key.
-        await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
+        with metrics.external_call("storage.delete"):
+            await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
 
     async def generate_download_url(
         self, *, key: str, expires_in: int, filename: str | None = None, inline: bool = True

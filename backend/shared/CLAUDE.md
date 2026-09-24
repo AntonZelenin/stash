@@ -28,6 +28,15 @@ trace-context propagation the queue uses (`inject_context` on publish,
 plain OpenTelemetry API (`trace.get_tracer(__name__)`), only for
 meaningful operations. See "Tracing" in the architecture doc.
 
+Also holds `stash_shared.metrics`: operational metrics (`count`,
+`record_duration`, `gauge`, `external_call`) and the one place that picks
+the backend (`configure_metrics`: CloudWatch via Powertools EMF when
+`PLATFORM=aws`, a no-op otherwise). Application code never imports
+Powertools or checks the platform. Dimensions must be low-cardinality (never
+user/item/request/trace ids or storage keys). Add a metric only if it says
+whether something is healthy, slow, failing or falling behind, and AWS
+doesn't already publish it. See "Metrics" in the architecture doc.
+
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before

@@ -20,6 +20,7 @@ from stash_shared.queue.base import (
     ItemType,
     JobQueue,
     ProcessingJob,
+    QueueStats,
 )
 
 # One consumer group per stream: each stream has exactly one kind of consumer
@@ -133,6 +134,37 @@ class ValkeyJobQueue(JobQueue):
             idle=self._visibility_timeout_ms - delay_ms,
             justid=True,
         )
+
+    async def stats(self) -> QueueStats:
+        """From the consumer group's bookkeeping: `lag` (entries not yet
+        delivered to the group) plus `pending` (delivered, not acked —
+        in flight or waiting for a retry) is the backlog. The oldest of
+        them is the oldest pending entry or the first undelivered one;
+        stream ids start with their publish time in ms, compared against
+        Valkey's own clock."""
+        await self._ensure_group()
+        groups = await self._client.xinfo_groups(self._stream_key)
+        group = next(group for group in groups if group["name"] == self._group)
+        pending = int(group["pending"])
+        # None when Valkey can't tell (e.g. entries deleted mid-stream).
+        lag = group.get("lag")
+        backlog = pending + int(lag) if lag is not None else None
+
+        oldest_ids = []
+        if pending:
+            oldest_ids.append((await self._client.xpending(self._stream_key, self._group))["min"])
+        undelivered = await self._client.xrange(
+            self._stream_key, min=f"({group['last-delivered-id']}", max="+", count=1
+        )
+        if undelivered:
+            oldest_ids.append(undelivered[0][0])
+        if not oldest_ids:
+            return QueueStats(backlog=backlog, oldest_message_age_seconds=0.0)
+
+        seconds, microseconds = await self._client.time()
+        now_ms = seconds * 1000 + microseconds / 1000
+        oldest_ms = min(int(message_id.split("-")[0]) for message_id in oldest_ids)
+        return QueueStats(backlog=backlog, oldest_message_age_seconds=max(0.0, (now_ms - oldest_ms) / 1000))
 
     async def _ensure_group(self) -> None:
         if self._group_ready:

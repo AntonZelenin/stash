@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from stash_shared import tracing
+from stash_shared import metrics, tracing
 from stash_shared.log import configure_logging
 
 from app.api.routers import auth, items, search, tags, users
 from app.config import get_settings
 from app.db import engine
 from app.request_logging import RequestLoggingMiddleware
+from app.request_metrics import RequestMetricsMiddleware
 
 configure_logging(
     service=get_settings().service_name,
@@ -21,6 +22,12 @@ tracing.configure_tracing(
     otlp_endpoint=get_settings().tracing_otlp_endpoint,
 )
 tracing.instrument_sqlalchemy(engine)
+metrics.configure_metrics(
+    service=get_settings().service_name,
+    platform=get_settings().platform,
+    environment=get_settings().environment,
+    namespace=get_settings().metrics_namespace,
+)
 
 app = FastAPI(
     title="Stash API",
@@ -41,6 +48,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added after CORS so requests it answers itself (preflights) are counted
+# too.
+app.add_middleware(RequestMetricsMiddleware)
 # Added last so it's outermost: requests CORS answers itself (preflights)
 # are logged too.
 app.add_middleware(RequestLoggingMiddleware)

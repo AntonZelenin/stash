@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
+from stash_shared import metrics
 from stash_shared.log import get_logger
 
 from content_analyzer.errors import PermanentProcessingError
@@ -70,10 +71,12 @@ class S3ObjectStore(ObjectStore):
         await self._call("delete", key, self._client.delete_object, Bucket=self._bucket, Key=key)
 
     async def _call(self, operation: str, key: str, function, *args, **kwargs):
-        """Runs a boto3 call off the event loop, logging a failure with the
-        key involved (the worker's retry/dead-letter logs don't know it)."""
+        """Runs a boto3 call off the event loop, measured as external call
+        `storage.<operation>`, logging a failure with the key involved (the
+        worker's retry/dead-letter logs don't know it)."""
         try:
-            return await asyncio.to_thread(function, *args, **kwargs)
+            with metrics.external_call(f"storage.{operation}"):
+                return await asyncio.to_thread(function, *args, **kwargs)
         except Exception as exc:
             logger.warning(
                 "Storage operation failed",
