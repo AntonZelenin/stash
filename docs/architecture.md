@@ -250,6 +250,24 @@ the same server-side filters: an item type, any number of tags (an item
 must carry all of them), and favorites only (`items.is_favorite`, toggled
 per item).
 
+### Editing items
+
+`PATCH /items/{id}` edits an item in place (its id never changes):
+
+- Notes and links: the whole text. It's classified again with the same
+  logic as on creation, so a note can become a link and vice versa.
+- Images and files: the caption. The description is rebuilt as the new
+  caption plus the generated description (`stash_shared.descriptions`,
+  also used by the content analyzers), under a row lock on the item so an
+  analyzer finishing at the same moment can't overwrite the edit or be
+  overwritten. With nothing searchable left, the description and embedding
+  are removed.
+- Files: the displayed filename, which is also what downloads are named.
+  The storage key and stored object never change.
+
+When the searchable text changes, the item goes through `embedding_jobs`
+again, as on creation.
+
 ## Repository
 
 The project uses a monorepo.

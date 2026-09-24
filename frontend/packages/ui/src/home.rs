@@ -186,8 +186,9 @@ pub fn Home() -> Element {
         }
     });
 
-    // A card's tags changed: refetch, so tag filters stay accurate (an item
-    // that lost a filtered-by tag drops out).
+    // A card's tags or content changed: refetch, so filters stay accurate
+    // (an item that lost a filtered-by tag drops out, and an edited note
+    // may have become a link or vice versa).
     let refresh_items = use_callback(move |()| {
         saved_items.restart();
         search_results.restart();
@@ -552,6 +553,7 @@ pub fn Home() -> Element {
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
+                                refresh_items,
                             ),
                         }}
                     } else {
@@ -562,6 +564,7 @@ pub fn Home() -> Element {
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
+                                refresh_items,
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
@@ -590,6 +593,7 @@ fn item_results(
     on_delete: Callback<String>,
     on_tags_changed: Callback<()>,
     on_favorite_changed: Callback<()>,
+    on_edited: Callback<()>,
 ) -> Element {
     if items.is_empty() {
         rsx! {
@@ -604,6 +608,7 @@ fn item_results(
                 on_delete,
                 on_tags_changed,
                 on_favorite_changed,
+                on_edited,
             }
         }
     }

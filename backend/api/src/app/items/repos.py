@@ -161,6 +161,38 @@ class ItemRepository:
         await self._session.flush()
         return item
 
+    async def get_for_update(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> Item | None:
+        """The user's item with everything an edit touches, row-locked
+        until the transaction ends. The lock serializes an edit with the
+        content analyzer completing the item (which updates the same row
+        first), so a caption edit and a newly generated description can't
+        overwrite each other's `item_descriptions`. None if there's no such
+        item *owned by this user*."""
+        result = await self._session.execute(
+            select(Item)
+            .options(*_LISTED_ITEM_LOADS, selectinload(Item.description))
+            .where(Item.id == item_id, Item.user_id == user_id)
+            .with_for_update(of=Item)
+            # Fresh from the database even if already in the session.
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def get(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> Item | None:
+        """The user's item, loaded for a response."""
+        result = await self._session.execute(
+            select(Item)
+            .options(*_LISTED_ITEM_LOADS)
+            .where(Item.id == item_id, Item.user_id == user_id)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_embedding(self, item_id: uuid.UUID) -> None:
+        """For an item left with nothing searchable: its old vector would
+        otherwise keep matching text it no longer has."""
+        await self._session.execute(delete(Embedding).where(Embedding.item_id == item_id))
+
     async def set_favorite(self, *, item_id: uuid.UUID, user_id: uuid.UUID, is_favorite: bool) -> bool:
         """Marks or unmarks the user's item as a favorite. Returns False if
         there's no such item *owned by this user*."""

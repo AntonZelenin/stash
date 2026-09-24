@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use api::{
-    ApiClient, ApiError, ItemCreated, ItemQuery, ListItemsResponse, SearchResponse, Tag, TokenPair,
-    TokenStore,
+    ApiClient, ApiError, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListedItem,
+    SearchResponse, Tag, TokenPair, TokenStore,
 };
 use dioxus::prelude::*;
 
@@ -218,6 +218,21 @@ impl AuthSession {
             let item_id = item_id.clone();
             let name = name.clone();
             async move { client.assign_tag(&access_token, &item_id, &name).await }
+        })
+        .await
+    }
+
+    pub async fn update_item(
+        &self,
+        item_id: String,
+        update: ItemUpdate,
+    ) -> Result<ListedItem, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            let update = update.clone();
+            async move { client.update_item(&access_token, &item_id, &update).await }
         })
         .await
     }

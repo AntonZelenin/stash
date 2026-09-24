@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.tags.names import MAX_TAGS_PER_ITEM
 
@@ -34,6 +34,19 @@ class CreateTextItemRequest(BaseModel):
         if not value:
             raise ValueError("text must not be empty")
         return value
+
+
+class UpdateItemRequest(BaseModel):
+    """Only the fields sent are changed; unknown fields (e.g. storage
+    details, which are never editable) are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A note's or link's whole text (its type is detected again), or an
+    # image's or file's caption; an empty caption removes it.
+    text: str | None = Field(default=None, max_length=100_000)
+    # Files only: the name shown and used for downloads.
+    filename: str | None = Field(default=None, max_length=1_000)
 
 
 class ItemCreated(BaseModel):

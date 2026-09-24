@@ -489,6 +489,57 @@ paths:
         "422":
           description: Invalid item id
 
+    patch:
+      summary: Edit an item
+      description: >-
+        Changes the item's user-editable content in place; only the fields
+        sent are changed. The item keeps its id. A note's or link's new
+        text is classified again exactly as on creation, so the item can
+        turn from `text` into `link` or back. A file's new filename only
+        changes the name it's shown and downloaded under; the stored file
+        itself is untouched. When the searchable text changes, the item is
+        embedded again, so search reflects the edit a few seconds later.
+      operationId: updateItem
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateItemRequest"
+
+      responses:
+        "200":
+          description: The item as updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListedItem"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+        "422":
+          description: >-
+            The edit doesn't apply to this item or would leave it invalid:
+            an empty note or link, an empty filename, a filename for
+            anything but a file, or an unknown field.
+
   /items:
     get:
       summary: List saved items
@@ -754,6 +805,24 @@ components:
           type:
             - string
             - "null"
+
+    UpdateItemRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        text:
+          description: >-
+            For `text` and `link` items, the whole text (must not be blank;
+            the type is detected again). For `image` and `file` items, the
+            caption; blank removes it.
+          type: string
+          maxLength: 100000
+        filename:
+          description: >-
+            `file` items only: the name shown and used for downloads.
+            Must not be blank.
+          type: string
+          maxLength: 1000
 
     ListItemsResponse:
       type: object

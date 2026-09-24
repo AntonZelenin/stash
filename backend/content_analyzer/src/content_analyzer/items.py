@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import descriptions
 
 # Deliberately not shared with `app.items.repos.ItemRepository` on the API
 # side, even where the operation is identical: the worker avoids depending
@@ -72,7 +73,7 @@ async def complete_item(engine: AsyncEngine, item_id: UUID, *, description: str 
         )
         if result.rowcount != 1:
             return False
-        if description is not None:
+        if description:
             # `item_descriptions` is the single text source search reads
             # from, so an image's user caption (if any) goes in alongside
             # the generated description rather than being replaced by it.
@@ -82,8 +83,7 @@ async def complete_item(engine: AsyncEngine, item_id: UUID, *, description: str 
                     {"item_id": str(item_id)},
                 )
             ).scalar_one_or_none()
-            if caption:
-                description = f"{caption}\n\n{description}"
+            description = descriptions.compose(caption, description)
             await conn.execute(
                 text(
                     "INSERT INTO item_descriptions (item_id, text) VALUES (:item_id, :text) "

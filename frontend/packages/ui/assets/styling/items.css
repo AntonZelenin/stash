@@ -569,8 +569,19 @@
     background: #e6e8ed;
 }
 
-/* The full caption, unlike the card's truncated one. */
-.lightbox-caption {
+/* Without an image (notes, links and files, opened for editing): just the
+   panel, wider, as a centered dialog. */
+.lightbox-content-no-media {
+    width: 560px;
+}
+
+.lightbox-content-no-media .lightbox-panel {
+    flex: 1;
+    width: auto;
+}
+
+/* The full caption or note text, unlike the card's truncated one. */
+.lightbox-text {
     flex: 0 1 auto;
     min-height: 0;
     margin: 0;
@@ -580,6 +591,129 @@
     line-height: 1.55;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+}
+
+/* A link's or file's own block, as on its card, minus the card's
+   padding and the room kept there for the ♡ ⋯ buttons. */
+.lightbox-panel .item-card-link-main,
+.lightbox-panel .item-card-file-main {
+    padding: 0;
+}
+
+.lightbox-panel .item-card-link-row,
+.lightbox-panel .item-card-file-row {
+    padding-right: 0;
+}
+
+/* ---- edit mode: the view's content as a form ---- */
+
+.item-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+}
+
+/* The file being renamed: its icon and type/size, as on the card. */
+.item-editor-file {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.item-editor-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.item-editor-label {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.item-editor-input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid #d4d8e0;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.item-editor-input:focus {
+    border-color: #a9b1f5;
+    box-shadow: 0 0 0 3px rgba(91, 107, 240, 0.15);
+}
+
+.item-editor-input:disabled {
+    background: #f5f6f8;
+}
+
+.item-editor-input::placeholder {
+    color: var(--placeholder);
+}
+
+.item-editor-textarea {
+    min-height: 96px;
+    resize: vertical;
+}
+
+/* A note's whole text gets more room than a caption. */
+.item-editor-textarea-tall {
+    min-height: 200px;
+}
+
+.item-editor-error {
+    margin: 0;
+    color: #dc2626;
+    font-size: 13px;
+}
+
+.item-editor-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.item-editor-button {
+    height: 36px;
+    padding: 0 18px;
+    border: none;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.item-editor-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.item-editor-cancel {
+    background: #f1f2f5;
+    color: var(--text-primary);
+}
+
+.item-editor-cancel:hover:not(:disabled) {
+    background: #e6e8ed;
+}
+
+/* Same gradient as the capture box's send button. */
+.item-editor-save {
+    background: linear-gradient(135deg, #c026e0 0%, #577efb 100%);
+    color: #fff;
 }
 
 /* Narrow screens: panel below the image, both full width. */
@@ -606,6 +740,10 @@
     .lightbox-panel {
         width: auto;
         max-height: none;
+    }
+
+    .lightbox-content-no-media {
+        width: 100%;
     }
 }
 

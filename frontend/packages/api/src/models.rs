@@ -103,6 +103,19 @@ pub struct ListedItem {
     pub is_favorite: bool,
 }
 
+/// Changes to an item's editable content (`PATCH /items/{id}`); `None`
+/// fields are left as they are.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ItemUpdate {
+    /// A note's or link's whole text (its type is detected again by the
+    /// server), or an image's or file's caption, where empty removes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Files only: the name it's shown and downloaded under.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SearchRequest {
     pub query: String,

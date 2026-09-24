@@ -1,4 +1,4 @@
-use api::{ListedItem, Tag};
+use api::{ItemUpdate, ListedItem, Tag};
 use chrono::{DateTime, Local, TimeZone};
 use dioxus::prelude::*;
 use futures_timer::Delay;
@@ -6,7 +6,8 @@ use futures_timer::Delay;
 use crate::AuthSession;
 use crate::filters::TAG_SEARCH_DEBOUNCE;
 use crate::icons::{
-    IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconTrash,
+    IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
+    IconTrash,
 };
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
@@ -45,14 +46,16 @@ fn column_count(grid_width: f64) -> usize {
 ///
 /// `on_delete` receives the id of an item the user chose to delete from
 /// its card menu, `on_tags_changed` fires after a tag was added to or
-/// removed from a card, and `on_favorite_changed` after a card's favorite
-/// state was saved; the caller acts on them and refreshes `items` as needed.
+/// removed from a card, `on_favorite_changed` after a card's favorite
+/// state was saved, and `on_edited` after an item's content was edited; the
+/// caller acts on them and refreshes `items` as needed.
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
+    on_edited: EventHandler<()>,
 ) -> Element {
     let mut columns = use_signal(|| MAX_COLUMNS);
 
@@ -85,6 +88,7 @@ pub fn ItemGrid(
                             on_delete,
                             on_tags_changed,
                             on_favorite_changed,
+                            on_edited,
                         }
                     }
                 }
@@ -134,6 +138,13 @@ fn CardDate(date: Option<UploadDate>) -> Element {
     }
 }
 
+/// How an item is open in its `ItemView`.
+#[derive(Clone, Copy, PartialEq)]
+enum ViewMode {
+    Viewing,
+    Editing,
+}
+
 /// One saved item: its type-specific content, a footer with its tags and
 /// upload date, and its actions menu.
 ///
@@ -143,33 +154,48 @@ fn CardDate(date: Option<UploadDate>) -> Element {
 /// and nothing in the card clips its content, so dropdowns can extend past
 /// short cards.
 ///
-/// Clicking an image opens it full size in a `Lightbox` with the same
-/// controls as the card. The card owns the viewer, so both show one
-/// favorite state and share the same handlers.
+/// Clicking an image opens it in an `ItemView` with the same controls as
+/// the card; "Edit" in the menu opens any item there, in edit mode. The
+/// card owns the view, so both show one favorite state and share the same
+/// handlers.
 ///
-/// `on_tags_changed` fires after a tag was added to or removed from it, and
-/// `on_favorite_changed` after its favorite state was saved.
+/// `on_tags_changed` fires after a tag was added to or removed from it,
+/// `on_favorite_changed` after its favorite state was saved, and
+/// `on_edited` after an edit was saved.
 #[component]
 fn ItemCard(
     item: ListedItem,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
+    on_edited: EventHandler<()>,
 ) -> Element {
     let session = use_context::<AuthSession>();
+    // A saved edit's result, paired with the item it replaced: shown while
+    // `item` is still that one, i.e. until the refetch `on_edited` asks for
+    // arrives, so the old content doesn't flash back in the meantime.
+    let mut edited = use_signal(|| None::<(ListedItem, ListedItem)>);
+    let props_item = item;
+    let item = match edited() {
+        Some((before, after)) if before == props_item => after,
+        _ => props_item.clone(),
+    };
     // The user's latest choice, shown immediately (optimistically) while it
     // saves; None until they toggle, i.e. show the server's value.
     let mut favorite_override = use_signal(|| None::<bool>);
     let mut favorite_saving = use_signal(|| false);
     let is_favorite = favorite_override().unwrap_or(item.is_favorite);
-    // Whether this image is open in the full-size viewer.
-    let mut viewing = use_signal(|| false);
+    // Whether the item is open in its `ItemView`, and how.
+    let mut view = use_signal(|| None::<ViewMode>);
 
     // Grid cards show the small thumbnail; the full original is only the
     // fallback while the thumbnail is still being generated. Viewing an
     // image opens the original.
     let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
-    let full_size_url = item.download_url.clone().or(item.thumbnail_url.clone());
+    let full_size_url = match item.r#type.as_str() {
+        "image" => item.download_url.clone().or(item.thumbnail_url.clone()),
+        _ => None,
+    };
     let date = UploadDate::from_api(&item.created_at);
     let (kind, body) = match (item.r#type.as_str(), image_url, &item.text) {
         ("image", Some(url), caption) => (
@@ -178,7 +204,7 @@ fn ItemCard(
                 ImageBody {
                     url: url.clone(),
                     caption: caption.clone(),
-                    on_open: move |_| viewing.set(true),
+                    on_open: move |_| view.set(Some(ViewMode::Viewing)),
                 }
             },
         ),
@@ -255,36 +281,237 @@ fn ItemCard(
             div { class: "item-card-actions",
                 FavoriteButton { is_favorite, on_toggle: toggle_favorite.clone() }
                 ItemMenu {
+                    can_edit: true,
+                    on_edit: move |_| view.set(Some(ViewMode::Editing)),
                     on_delete: {
                         let item_id = item_id.clone();
                         move |_| on_delete.call(item_id.clone())
                     },
                 }
             }
-            if viewing() {
-                if let Some(url) = full_size_url {
-                    // The card's controls again, in the viewer's side panel.
-                    Lightbox { url, on_close: move |_| viewing.set(false),
-                        div { class: "lightbox-panel-header",
-                            CardDate { date }
-                            div { class: "lightbox-actions",
-                                FavoriteButton { is_favorite, on_toggle: toggle_favorite }
-                                ItemMenu {
-                                    on_delete: move |_| {
-                                        viewing.set(false);
-                                        on_delete.call(item_id.clone());
-                                    },
-                                }
+            if let Some(mode) = view() {
+                ItemView {
+                    image_url: full_size_url,
+                    editing: mode == ViewMode::Editing,
+                    on_close: move |_| view.set(None),
+                    on_cancel_edit: move |_| view.set(Some(ViewMode::Viewing)),
+                    // The card's controls again, above the content.
+                    div { class: "lightbox-panel-header",
+                        CardDate { date }
+                        div { class: "lightbox-actions",
+                            FavoriteButton { is_favorite, on_toggle: toggle_favorite }
+                            ItemMenu {
+                                can_edit: mode == ViewMode::Viewing,
+                                on_edit: move |_| view.set(Some(ViewMode::Editing)),
+                                on_delete: move |_| {
+                                    view.set(None);
+                                    on_delete.call(item_id.clone());
+                                },
                             }
                         }
-                        if let Some(caption) = item.text.clone() {
-                            p { class: "lightbox-caption", "{caption}" }
+                    }
+                    match mode {
+                        ViewMode::Viewing => rsx! {
+                            ItemDetails { item: item.clone() }
+                            ItemTags {
+                                item_id: item.id.clone(),
+                                tags: item.tags.clone(),
+                                on_changed: on_tags_changed,
+                            }
+                        },
+                        // Tags are left out while editing: they save the
+                        // moment they change, so Cancel couldn't undo them.
+                        ViewMode::Editing => rsx! {
+                            ItemEditor {
+                                item: item.clone(),
+                                on_cancel: move |_| view.set(Some(ViewMode::Viewing)),
+                                on_saved: move |updated: Option<ListedItem>| {
+                                    if let Some(updated) = updated {
+                                        edited.set(Some((props_item.clone(), updated)));
+                                        on_edited.call(());
+                                    }
+                                    view.set(Some(ViewMode::Viewing));
+                                },
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The item's content in its `ItemView`, in full: an image's caption (the
+/// image itself is beside it), a note's whole text, a link, or a file with
+/// its caption.
+#[component]
+fn ItemDetails(item: ListedItem) -> Element {
+    match (
+        item.r#type.as_str(),
+        &item.file,
+        &item.download_url,
+        item.text,
+    ) {
+        ("link", _, _, Some(url)) => rsx! {
+            LinkBody { url }
+        },
+        ("file", Some(file), Some(url), caption) => rsx! {
+            FileBody {
+                url: url.clone(),
+                filename: file.filename.clone(),
+                size_bytes: file.size_bytes,
+                caption,
+            }
+        },
+        (_, _, _, Some(text)) => rsx! {
+            p { class: "lightbox-text", "{text}" }
+        },
+        _ => rsx! {},
+    }
+}
+
+/// Form for the item's editable content, in its `ItemView`: a note's or
+/// link's whole text, an image's caption, or a file's name and caption.
+/// A caption can be added, changed or cleared. The server decides again
+/// whether edited text is a note or a link. The text or caption field has
+/// focus when the form opens.
+///
+/// Only changed fields are sent. `on_saved` gets the updated item, or None
+/// if nothing had changed; `on_cancel` drops the changes.
+#[component]
+fn ItemEditor(
+    item: ListedItem,
+    on_cancel: EventHandler<()>,
+    on_saved: EventHandler<Option<ListedItem>>,
+) -> Element {
+    let session = use_context::<AuthSession>();
+    let original_text = item.text.clone().unwrap_or_default();
+    let original_filename = item.file.as_ref().map(|file| file.filename.clone());
+    let mut text = use_signal(|| original_text.clone());
+    let mut filename = use_signal(|| original_filename.clone().unwrap_or_default());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+
+    let kind = item.r#type.as_str();
+    let edits_text = matches!(kind, "text" | "link");
+    let edits_filename = kind == "file";
+    let edits_caption = matches!(kind, "image" | "file");
+
+    let update = ItemUpdate {
+        text: (edits_text || edits_caption)
+            .then(|| text().trim().to_string())
+            .filter(|text| text != original_text.trim()),
+        filename: edits_filename
+            .then(|| filename().trim().to_string())
+            .filter(|name| Some(name) != original_filename.as_ref()),
+    };
+    let invalid = (edits_text && text().trim().is_empty())
+        || (edits_filename && filename().trim().is_empty());
+
+    let save = use_callback({
+        let item_id = item.id.clone();
+        move |()| {
+            if saving() || invalid {
+                return;
+            }
+            if update == ItemUpdate::default() {
+                on_saved.call(None);
+                return;
+            }
+            let session = session.clone();
+            let item_id = item_id.clone();
+            let update = update.clone();
+            spawn(async move {
+                saving.set(true);
+                match session.update_item(item_id, update).await {
+                    // This form closes; nothing more to reset here.
+                    Ok(updated) => on_saved.call(Some(updated)),
+                    Err(err) => {
+                        error.set(Some(err.to_string()));
+                        saving.set(false);
+                    }
+                }
+            });
+        }
+    });
+    // Ctrl/⌘+Enter saves from a text area (plain Enter is a new line).
+    let save_on_shortcut = move |evt: KeyboardEvent| {
+        let modifiers = evt.modifiers();
+        if evt.key() == Key::Enter && (modifiers.ctrl() || modifiers.meta()) {
+            evt.prevent_default();
+            save.call(());
+        }
+    };
+
+    rsx! {
+        div { class: "item-editor",
+            if let Some(file) = item.file.as_ref().filter(|_| edits_filename) {
+                div { class: "item-editor-file",
+                    span { class: "item-card-file-icon", IconFile {} }
+                    span { class: "item-card-file-details",
+                        "{file_details(&file.filename, file.size_bytes)}"
+                    }
+                }
+                label { class: "item-editor-field",
+                    span { class: "item-editor-label", "Filename" }
+                    input {
+                        class: "item-editor-input",
+                        r#type: "text",
+                        maxlength: "255",
+                        value: "{filename}",
+                        disabled: saving(),
+                        oninput: move |evt| filename.set(evt.value()),
+                        onkeydown: move |evt| {
+                            if evt.key() == Key::Enter {
+                                evt.prevent_default();
+                                save.call(());
+                            }
+                        },
+                    }
+                }
+            }
+            if edits_text || edits_caption {
+                label { class: "item-editor-field",
+                    span { class: "item-editor-label",
+                        if edits_text {
+                            "Text"
+                        } else {
+                            "Caption"
                         }
-                        ItemTags {
-                            item_id: item.id.clone(),
-                            tags: item.tags.clone(),
-                            on_changed: on_tags_changed,
-                        }
+                    }
+                    textarea {
+                        class: if edits_text { "item-editor-input item-editor-textarea item-editor-textarea-tall" } else { "item-editor-input item-editor-textarea" },
+                        placeholder: if edits_text { "" } else { "Add a caption" },
+                        value: "{text}",
+                        disabled: saving(),
+                        oninput: move |evt| text.set(evt.value()),
+                        onmounted: move |evt| async move {
+                            let _ = evt.set_focus(true).await;
+                        },
+                        onkeydown: save_on_shortcut,
+                    }
+                }
+            }
+            if let Some(message) = error() {
+                p { class: "item-editor-error", "{message}" }
+            }
+            div { class: "item-editor-buttons",
+                button {
+                    class: "item-editor-button item-editor-cancel",
+                    r#type: "button",
+                    disabled: saving(),
+                    onclick: move |_| on_cancel.call(()),
+                    "Cancel"
+                }
+                button {
+                    class: "item-editor-button item-editor-save",
+                    r#type: "button",
+                    disabled: saving() || invalid,
+                    onclick: move |_| save.call(()),
+                    if saving() {
+                        "Saving…"
+                    } else {
+                        "Save"
                     }
                 }
             }
@@ -319,9 +546,10 @@ fn FavoriteButton(is_favorite: bool, on_toggle: EventHandler<()>) -> Element {
 }
 
 /// "⋯" button in a card's top-right corner, opening a small actions menu.
-/// Shown on hover (always on touch screens, which can't hover).
+/// Shown on hover (always on touch screens, which can't hover). "Edit" is
+/// left out when `can_edit` is false (the item is already being edited).
 #[component]
-fn ItemMenu(on_delete: EventHandler<()>) -> Element {
+fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<()>) -> Element {
     let mut open = use_signal(|| false);
 
     rsx! {
@@ -341,6 +569,18 @@ fn ItemMenu(on_delete: EventHandler<()>) -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div { class: "item-menu-dropdown",
+                    if can_edit {
+                        button {
+                            class: "item-menu-entry",
+                            r#type: "button",
+                            onclick: move |_| {
+                                open.set(false);
+                                on_edit.call(());
+                            },
+                            IconPencil {}
+                            "Edit"
+                        }
+                    }
                     button {
                         class: "item-menu-entry item-menu-entry-danger",
                         r#type: "button",
@@ -598,42 +838,75 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
     }
 }
 
-/// Full-size image viewer over the whole page: the image (scaled down to
-/// fit the screen if needed, never up) plus a side panel with `children`
-/// (the item's caption and controls), on a dimmed backdrop. The panel sits
-/// beside the image on wide screens and below it on narrow ones.
-/// Closes via the ✕ button, a click anywhere on the backdrop, or Escape.
+/// An item opened over the whole page, on a dimmed backdrop: a panel with
+/// `children` (the item's content and controls) and, for an image, the
+/// image itself (scaled down to fit the screen if needed, never up) with
+/// the panel beside it on wide screens and below it on narrow ones.
+///
+/// The ✕ button, Escape and a click anywhere on the backdrop close it.
+/// While `editing`, Escape calls `on_cancel_edit` instead (like the form's
+/// Cancel button), and backdrop clicks are ignored so a stray click doesn't
+/// throw the changes away.
 #[component]
-fn Lightbox(url: String, on_close: EventHandler<()>, children: Element) -> Element {
+fn ItemView(
+    image_url: Option<String>,
+    editing: bool,
+    on_close: EventHandler<()>,
+    on_cancel_edit: EventHandler<()>,
+    children: Element,
+) -> Element {
+    let has_image = image_url.is_some();
+    let mut dialog = use_signal(|| None::<std::rc::Rc<MountedData>>);
+
+    // Keep keyboard focus on the dialog whenever it's not being edited, so
+    // Escape reaches it: on opening, and after leaving edit mode, when the
+    // focused form field (or Cancel/Save button) has just been removed.
+    // While editing, the form's field has focus instead.
+    use_effect(use_reactive!(|editing| {
+        if !editing && let Some(dialog) = dialog() {
+            spawn(async move {
+                let _ = dialog.set_focus(true).await;
+            });
+        }
+    }));
+
     rsx! {
         div {
             class: "lightbox",
             role: "dialog",
             aria_modal: "true",
-            aria_label: "Image viewer",
-            // Focusable so it can receive Escape; focused as soon as it opens.
+            aria_label: if has_image { "Image viewer" } else { "Item" },
+            // Focusable so it can receive Escape (see the effect above).
             tabindex: "-1",
-            onmounted: move |evt| async move {
-                let _ = evt.set_focus(true).await;
-            },
+            onmounted: move |evt| dialog.set(Some(evt.data())),
             onkeydown: move |evt| {
                 if evt.key() == Key::Escape {
-                    on_close.call(());
+                    if editing {
+                        on_cancel_edit.call(());
+                    } else {
+                        on_close.call(());
+                    }
                 }
             },
             // The backdrop is the lightbox itself, so any click that isn't
-            // stopped by the content below lands here and closes it.
-            onclick: move |_| on_close.call(()),
+            // stopped by the content below lands here.
+            onclick: move |_| {
+                if !editing {
+                    on_close.call(());
+                }
+            },
             div {
-                class: "lightbox-content",
+                class: if has_image { "lightbox-content" } else { "lightbox-content lightbox-content-no-media" },
                 // Also catches clicks on the full-screen backdrops of the
                 // menu and tag picker inside, which only close those.
                 onclick: move |evt| evt.stop_propagation(),
-                div { class: "lightbox-media",
-                    img {
-                        class: "lightbox-image",
-                        src: "{url}",
-                        alt: "Saved image",
+                if let Some(url) = image_url {
+                    div { class: "lightbox-media",
+                        img {
+                            class: "lightbox-image",
+                            src: "{url}",
+                            alt: "Saved image",
+                        }
                     }
                 }
                 div { class: "lightbox-panel", {children} }

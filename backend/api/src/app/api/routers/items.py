@@ -14,6 +14,7 @@ from app.api.schemas.items import (
     ListedItem,
     ListedTag,
     ListItemsResponse,
+    UpdateItemRequest,
 )
 from app.db import DbSession
 from app.items.models import ItemType as DomainItemType
@@ -24,6 +25,8 @@ from app.items.services import (
     EmptyImageError,
     ImageTooLargeError,
     InvalidCursorError,
+    InvalidItemEditError,
+    ItemEdit,
     ItemNotFoundError,
     ItemService,
     UnsupportedImageTypeError,
@@ -158,6 +161,38 @@ async def list_items(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
 
     return ListItemsResponse(items=[to_listed_item(listed) for listed in listed_items], next_cursor=next_cursor)
+
+
+@router.patch(
+    "/items/{item_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ListedItem,
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Item not found"},
+        422: {"description": "Invalid edit"},
+    },
+)
+async def update_item(
+    item_id: UUID,
+    payload: UpdateItemRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
+    embedding_queue: JobQueue = Depends(get_embedding_queue),
+) -> ListedItem:
+    try:
+        listed = await ItemService(session, storage, queue, embedding_queue=embedding_queue).update_item(
+            user_id=current_user.id,
+            item_id=item_id,
+            edit=ItemEdit(text=payload.text, filename=payload.filename),
+        )
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    except InvalidItemEditError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    return to_listed_item(listed)
 
 
 @router.put(

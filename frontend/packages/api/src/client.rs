@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    AssignTagRequest, CreateTextItemRequest, ItemCreated, ItemQuery, ListItemsResponse,
-    ListTagsResponse, LoginRequest, RefreshRequest, RegisterRequest, RegisterResponse,
+    AssignTagRequest, CreateTextItemRequest, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse,
+    ListTagsResponse, ListedItem, LoginRequest, RefreshRequest, RegisterRequest, RegisterResponse,
     SearchRequest, SearchResponse, Tag, TokenPair,
 };
 
@@ -223,6 +223,31 @@ impl ApiClient {
         match response.status().as_u16() {
             204 => Ok(()),
             401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// Edits the item in place and returns it as updated (same id; a
+    /// note or link may come back with a different `type`).
+    pub async fn update_item(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        update: &ItemUpdate,
+    ) -> Result<ListedItem, ApiError> {
+        let response = self
+            .authenticated(Method::PATCH, &format!("/items/{item_id}"), access_token)
+            .json(update)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
             _ => Err(ApiError::Server),
         }
     }
