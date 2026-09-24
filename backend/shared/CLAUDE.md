@@ -14,6 +14,13 @@ API (search queries) and the embedding worker (item text), so both always
 use the same model and vector size (`EMBEDDING_DIMENSIONS`, which must
 match the `item_embeddings.embedding` column).
 
+Also holds `stash_shared.log`: the structured logging abstraction every
+service uses (`get_logger(__name__)`, `log_context`/`bind_context`,
+`logged_call` for external calls) and the one place that picks the
+implementation per environment. Never use `logging.getLogger` in
+application code. See "Logging" in the architecture doc for the field names
+and what must never be logged.
+
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before

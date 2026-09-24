@@ -6,6 +6,8 @@ from uuid import UUID
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
+from stash_shared.log import get_logger
+
 from stash_shared.queue.base import (
     DeadLetter,
     DeadLetterQueue,
@@ -27,6 +29,8 @@ _PAYLOAD_FIELD = "payload"
 _STREAM_MAX_LEN = 100_000
 _DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 _SOCKET_TIMEOUT_SECONDS = 60
+
+logger = get_logger(__name__)
 
 
 class ValkeyJobQueue(JobQueue):
@@ -123,6 +127,8 @@ class ValkeyJobQueue(JobQueue):
         except ResponseError as exc:
             if "BUSYGROUP" not in str(exc):
                 raise
+        else:
+            logger.info("Created consumer group", queue_stream=self._stream_key, group=self._group)
         self._group_ready = True
 
     async def _reclaim_one(self) -> Delivery | None:
@@ -145,6 +151,10 @@ class ValkeyJobQueue(JobQueue):
             self._stream_key, self._group, min=message_id, max=message_id, count=1
         )
         delivery_count = pending[0]["times_delivered"] if pending else 1
+        # A retry coming due, or a message a crashed consumer never acked.
+        logger.debug(
+            "Reclaimed pending message", queue_stream=self._stream_key, job_id=message_id, attempt=delivery_count
+        )
         return _to_delivery(message_id, fields, delivery_count=delivery_count)
 
 
@@ -175,7 +185,13 @@ def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Deliv
     raw = fields.get(_PAYLOAD_FIELD, "")
     try:
         job = _from_payload(json.loads(raw))
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning(
+            "Could not decode job payload",
+            job_id=message_id,
+            error_type=type(exc).__name__,
+            payload_chars=len(raw),
+        )
         job = None
     return Delivery(receipt=message_id, delivery_count=delivery_count, raw_payload=raw, job=job)
 

@@ -1,14 +1,18 @@
 import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared.log import get_logger
 from stash_shared.queue.base import JobQueue, ProcessingJob
 
+from content_analyzer.analysis import log_completion
 from content_analyzer.documents.describer import DocumentDescriber
 from content_analyzer.documents.excerpt import select_excerpt
 from content_analyzer.documents.parsers import normalize_text, parser_for
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import complete_item
 from content_analyzer.storage import ObjectStore
+
+logger = get_logger(__name__)
 
 
 class DocumentAnalysisHandler:
@@ -62,10 +66,21 @@ class DocumentAnalysisHandler:
             raise PermanentProcessingError("Document has no extractable text")
 
         excerpt = select_excerpt(text, self._max_chars)
+        logger.info(
+            "Document text extracted",
+            storage_key=job.file.storage_key,
+            content_type=job.file.content_type,
+            parser=type(parser).__name__,
+            size_bytes=len(data),
+            text_chars=len(text),
+            excerpt_chars=len(excerpt.text),
+            is_partial=excerpt.is_partial,
+        )
         description = await self._describer.describe(
             filename=job.file.filename, text=excerpt.text, is_partial=excerpt.is_partial
         )
-        await complete_item(self._engine, job.item_id, description=description)
+        completed = await complete_item(self._engine, job.item_id, description=description)
         await self._embedding_queue.publish(
             ProcessingJob(item_id=job.item_id, user_id=job.user_id, item_type=job.item_type)
         )
+        log_completion(completed, description_chars=len(description))

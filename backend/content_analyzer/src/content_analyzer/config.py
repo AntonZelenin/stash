@@ -5,6 +5,13 @@ from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
 class Settings(BaseSettings):
+    # Where the service runs; picks the logging implementation (see
+    # `stash_shared.log`): "local" = readable lines, "aws" = Powertools,
+    # anything else (e.g. "digitalocean") = JSON lines.
+    platform: str = "local"
+    # Deployment stage (local, dev, stage, prod...). Only labels logs.
+    environment: str = "local"
+    log_level: str = "INFO"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
     queue_provider: str = "valkey"
     valkey_url: str = "redis://localhost:6379"

@@ -7,6 +7,10 @@ from abc import ABC, abstractmethod
 
 from openai import AsyncOpenAI
 
+from stash_shared.log import DEBUG, get_logger, logged_call
+
+logger = get_logger(__name__)
+
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 # The `item_embeddings.embedding` column is `vector(1536)`. Requested
 # explicitly (text-embedding-3 models can return shortened vectors), so
@@ -33,11 +37,20 @@ class OpenAIEmbedder(Embedder):
         self._model = model
 
     async def embed(self, text: str) -> list[float]:
-        response = await self._client.embeddings.create(
+        # Success at DEBUG: both callers log their own outcome (the search,
+        # the saved embedding); failures are logged here with their cause.
+        with logged_call(
+            logger,
+            "openai.embeddings",
+            success_level=DEBUG,
             model=self._model,
-            input=text[:MAX_INPUT_CHARS],
-            dimensions=EMBEDDING_DIMENSIONS,
-        )
+            input_chars=min(len(text), MAX_INPUT_CHARS),
+        ):
+            response = await self._client.embeddings.create(
+                model=self._model,
+                input=text[:MAX_INPUT_CHARS],
+                dimensions=EMBEDDING_DIMENSIONS,
+            )
         return response.data[0].embedding
 
 

@@ -13,7 +13,7 @@ from content_analyzer.describer import OpenAIImageDescriber
 from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
 from content_analyzer.sweeper import StaleItemSweeper
 
-configure_logging()
+configure_logging(service="content_analyzer")
 
 
 async def main() -> None:

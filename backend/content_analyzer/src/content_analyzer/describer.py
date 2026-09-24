@@ -1,8 +1,12 @@
 import base64
 from abc import ABC, abstractmethod
 
+from stash_shared.log import get_logger, logged_call
+
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.openai_client import PERMANENT_OPENAI_ERRORS, build_openai_client
+
+logger = get_logger(__name__)
 
 _PROMPT = (
     "You are describing an image saved to a personal content library, so that it can be found again "
@@ -30,18 +34,22 @@ class OpenAIImageDescriber(ImageDescriber):
         # from OpenAI (MinIO locally is on the Docker network).
         data_url = f"data:{content_type};base64,{base64.b64encode(image).decode()}"
         try:
-            response = await self._client.responses.create(
-                model=self._model,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": _PROMPT},
-                            {"type": "input_image", "image_url": data_url},
-                        ],
-                    }
-                ],
-            )
+            with logged_call(
+                logger, "openai.responses", purpose="image_description", model=self._model, input_bytes=len(image)
+            ) as call:
+                response = await self._client.responses.create(
+                    model=self._model,
+                    input=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": _PROMPT},
+                                {"type": "input_image", "image_url": data_url},
+                            ],
+                        }
+                    ],
+                )
+                call.update(response_status=response.status, output_chars=len(response.output_text or ""))
         except PERMANENT_OPENAI_ERRORS as exc:
             raise PermanentProcessingError(f"OpenAI rejected the image: {exc}") from exc
 

@@ -10,7 +10,7 @@ from content_analyzer.db import create_engine
 from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
 from content_analyzer.thumbnails import ThumbnailHandler
 
-configure_logging()
+configure_logging(service="thumbnailer")
 
 
 async def main() -> None:

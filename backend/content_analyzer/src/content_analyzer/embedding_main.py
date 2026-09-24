@@ -12,7 +12,7 @@ from content_analyzer.db import create_engine
 from content_analyzer.embeddings import EmbeddingHandler
 from content_analyzer.runtime import build_stage_worker, configure_logging
 
-configure_logging()
+configure_logging(service="embedding_worker")
 
 
 async def main() -> None:

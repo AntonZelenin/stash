@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from stash_shared.log import get_logger
 
 from app.items.models import Tag
 from app.items.services import ItemNotFoundError
@@ -9,6 +10,8 @@ from app.tags.names import InvalidTagNameError, normalize_tag_name
 from app.tags.repos import TagRepository
 
 __all__ = ["InvalidTagNameError", "TagService"]
+
+logger = get_logger(__name__)
 
 
 class TagService:
@@ -39,6 +42,9 @@ class TagService:
                 await self._session.rollback()
                 if attempt:
                     raise
+                # A concurrent request linked it first (or the item was
+                # just deleted); the retry sees which.
+                logger.warning("Tag assignment conflicted; retrying", item_id=item_id, attempt=attempt + 1)
         raise AssertionError("unreachable")
 
     async def _assign(self, *, user_id: uuid.UUID, item_id: uuid.UUID, name: str) -> Tag:

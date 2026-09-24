@@ -1,15 +1,16 @@
 import asyncio
-import logging
 import random
+import time
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared.log import get_logger, log_context
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import fail_item, get_item_status, start_attempt
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _STATUS_COMPLETED = "completed"
 _STATUS_FAILED = "failed"
@@ -83,9 +84,12 @@ class Worker:
         retry_max_delay_seconds: float = 120.0,
         item_type: ItemType | None = ItemType.image,
         manages_item_status: bool = True,
+        queue_name: str | None = None,
     ):
         """`item_type` is the kind of item this stage processes (None: any);
-        jobs for any other kind are dropped."""
+        jobs for any other kind are dropped. `queue_name` only labels the
+        logs."""
+        self._queue_name = queue_name
         self._item_type = item_type
         self._manages_item_status = manages_item_status
         self._queue = queue
@@ -97,7 +101,15 @@ class Worker:
         self._retry_max_delay_seconds = retry_max_delay_seconds
 
     async def run_forever(self) -> None:
+        logger.info(
+            "Worker started",
+            queue=self._queue_name,
+            item_type=self._item_type,
+            max_attempts=self._max_attempts,
+            manages_item_status=self._manages_item_status,
+        )
         while True:
+            delivery = None
             try:
                 delivery = await self._queue.receive(timeout_seconds=_RECEIVE_TIMEOUT_SECONDS)
                 if delivery is not None:
@@ -105,10 +117,28 @@ class Worker:
             except Exception:
                 # Whatever delivery was in hand stays unacked and is
                 # redelivered after the queue's visibility timeout.
-                logger.exception("Worker loop error")
+                if delivery is None:
+                    logger.exception("Failed to receive from queue", queue=self._queue_name)
+                else:
+                    logger.exception(
+                        "Job handling failed; it will be redelivered after the visibility timeout",
+                        **self._delivery_fields(delivery),
+                    )
                 await asyncio.sleep(_LOOP_ERROR_PAUSE_SECONDS)
 
     async def handle_delivery(self, delivery: Delivery) -> None:
+        # Everything logged while handling it — here, in the handler, in
+        # storage/OpenAI calls — carries the job's identifiers.
+        with log_context(**self._delivery_fields(delivery)):
+            await self._handle_delivery(delivery)
+
+    def _delivery_fields(self, delivery: Delivery) -> dict:
+        fields: dict = {"queue": self._queue_name, "job_id": delivery.receipt, "attempt": delivery.delivery_count}
+        if delivery.job is not None:
+            fields.update(item_id=delivery.job.item_id, user_id=delivery.job.user_id, item_type=delivery.job.item_type)
+        return fields
+
+    async def _handle_delivery(self, delivery: Delivery) -> None:
         job = delivery.job
         if job is None:
             await self._dead_letter(delivery, reason="Malformed job payload")
@@ -117,24 +147,19 @@ class Worker:
             # Each queue only ever gets its stage's kind of item (text/links
             # are never enqueued at all). Anything else is stray, so drop it
             # without touching the item.
-            logger.warning(
-                "Ignoring job for %s item %s (this stage handles %s)",
-                job.item_type.value,
-                job.item_id,
-                self._item_type.value,
-            )
+            logger.warning("Ignoring job for another item type", expected_item_type=self._item_type)
             await self._queue.ack(delivery)
             return
 
         status = await get_item_status(self._engine, job.item_id)
         if status is None:
-            logger.warning("Item %s not found; dropping job", job.item_id)
+            logger.warning("Item not found; dropping job")
             await self._queue.ack(delivery)
             return
         if self._manages_item_status and status in (_STATUS_COMPLETED, _STATUS_FAILED):
             # A duplicate/redelivery of a job whose outcome is already
             # durable (e.g. the worker crashed between commit and ack).
-            logger.info("Item %s is already %s; skipping", job.item_id, status)
+            logger.info("Item already finished; skipping job", item_status=status)
             await self._queue.ack(delivery)
             return
         if delivery.delivery_count > self._max_attempts:
@@ -145,6 +170,8 @@ class Worker:
 
         if self._manages_item_status:
             await start_attempt(self._engine, job.item_id)
+        logger.info("Job started", item_status=status, max_attempts=self._max_attempts)
+        started = time.perf_counter()
 
         try:
             await self._handler.handle(job)
@@ -152,17 +179,18 @@ class Worker:
             if await get_item_status(self._engine, job.item_id) is None:
                 # Deleted by the user mid-processing (which also removes its
                 # image, hence the error) — nothing left to fail or report.
-                logger.info("Item %s was deleted during processing; dropping job", job.item_id)
+                logger.info("Item was deleted during processing; dropping job", duration_ms=_elapsed_ms(started))
                 await self._queue.ack(delivery)
                 return
-            logger.warning("Item %s failed permanently: %s", job.item_id, exc)
-            await self._dead_letter(delivery, reason=str(exc))
+            await self._dead_letter(delivery, reason=str(exc), error=exc, duration_ms=_elapsed_ms(started))
             return
         except Exception as exc:
             if delivery.delivery_count >= self._max_attempts:
-                logger.exception("Item %s failed on final attempt %d", job.item_id, delivery.delivery_count)
                 await self._dead_letter(
-                    delivery, reason=f"Failed after {delivery.delivery_count} attempts: {exc!r}"
+                    delivery,
+                    reason=f"Failed after {delivery.delivery_count} attempts: {exc!r}",
+                    error=exc,
+                    duration_ms=_elapsed_ms(started),
                 )
                 return
             delay = backoff_delay(
@@ -171,19 +199,26 @@ class Worker:
                 max_seconds=self._retry_max_delay_seconds,
             )
             logger.warning(
-                "Item %s attempt %d/%d failed (%r); retrying in %.1fs",
-                job.item_id,
-                delivery.delivery_count,
-                self._max_attempts,
-                exc,
-                delay,
+                "Job attempt failed; retrying",
+                exc_info=exc,
+                max_attempts=self._max_attempts,
+                delay_seconds=delay,
+                duration_ms=_elapsed_ms(started),
             )
             await self._queue.retry_later(delivery, delay_seconds=delay)
             return
 
         await self._queue.ack(delivery)
+        logger.info("Job completed", duration_ms=_elapsed_ms(started))
 
-    async def _dead_letter(self, delivery: Delivery, *, reason: str) -> None:
+    async def _dead_letter(
+        self,
+        delivery: Delivery,
+        *,
+        reason: str,
+        error: BaseException | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
         """Order matters: dead-letter first, then mark failed, then ack. A
         crash before the ack just means a redelivery that either finds the
         item `failed` and acks it, or dead-letters it again — a possible
@@ -196,6 +231,20 @@ class Worker:
                 source_receipt=delivery.receipt,
             )
         )
+        marked_failed = False
         if delivery.job is not None and self._manages_item_status:
-            await fail_item(self._engine, delivery.job.item_id)
+            marked_failed = await fail_item(self._engine, delivery.job.item_id)
         await self._queue.ack(delivery)
+        logger.error(
+            "Job moved to dead-letter queue",
+            exc_info=error,
+            reason=reason,
+            permanent=isinstance(error, PermanentProcessingError),
+            max_attempts=self._max_attempts,
+            duration_ms=duration_ms,
+            item_status=_STATUS_FAILED if marked_failed else None,
+        )
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000

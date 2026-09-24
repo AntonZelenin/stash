@@ -1,17 +1,17 @@
 import asyncio
 import io
-import logging
 from uuid import UUID
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import ImageRef, JobQueue, ProcessingJob
+from stash_shared.log import get_logger
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, JobQueue, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import record_thumbnail
 from content_analyzer.storage import ObjectStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 THUMBNAIL_CONTENT_TYPE = "image/webp"
 
@@ -92,7 +92,7 @@ class ThumbnailHandler:
             # The item was deleted while we worked. Its delete couldn't have
             # known about this thumbnail yet, so clean it up here, and don't
             # hand a deleted item on.
-            logger.info("Item %s was deleted during thumbnailing; discarding thumbnail", job.item_id)
+            logger.info("Item was deleted during thumbnailing; discarding thumbnail", storage_key=key)
             await self._storage.delete(key)
             return
 
@@ -103,4 +103,11 @@ class ThumbnailHandler:
                 item_type=job.item_type,
                 image=ImageRef(storage_key=key, content_type=THUMBNAIL_CONTENT_TYPE),
             )
+        )
+        logger.info(
+            "Thumbnail stored; handed off to content analysis",
+            storage_key=key,
+            original_bytes=len(original),
+            thumbnail_bytes=len(thumbnail),
+            next_queue=CONTENT_ANALYSIS_JOBS,
         )

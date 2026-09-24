@@ -1,5 +1,5 @@
 import base64
-import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared import descriptions
+from stash_shared.log import bind_context, get_logger
 from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.embeddings import Embedder
 from stash_shared.queue.base import FileRef, ImageRef, JobQueue, ProcessingJob
@@ -19,7 +20,7 @@ from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
 from app.storage.base import ObjectStorage
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _MAX_IMAGE_SIZE_BYTES = 100 * 1024 * 1024
 
@@ -141,6 +142,14 @@ def _detect_image_content_type(data: bytes) -> str | None:
     return None
 
 
+def _log_created(item: Item, **fields) -> None:
+    """One line per saved item, after it's committed (and its processing
+    job published, if it has one): `item_status` says whether it went on
+    to processing (`pending`), needs none (`completed`), or couldn't be
+    enqueued (`failed`)."""
+    logger.info("Item created", item_id=item.id, item_type=item.type, item_status=item.status, **fields)
+
+
 class ItemService:
     def __init__(
         self,
@@ -196,10 +205,11 @@ class ItemService:
     ) -> list[ListedItem]:
         """Semantic search: the user's items whose description embedding is
         closest in meaning to `query`, most similar first."""
+        started = time.perf_counter()
         try:
             query_embedding = await embedder.embed(query)
         except Exception as exc:
-            logger.exception("Failed to embed search query")
+            logger.exception("Failed to embed search query; search unavailable", query_chars=len(query))
             raise SearchUnavailableError() from exc
         rows = await self._repo.search_items(
             user_id=user_id,
@@ -207,6 +217,17 @@ class ItemService:
             limit=limit,
             max_distance=get_settings().search_max_cosine_distance,
             filters=filters,
+        )
+        # The query itself is user content: only its length is logged.
+        logger.info(
+            "Search completed",
+            query_chars=len(query),
+            result_count=len(rows),
+            limit=limit,
+            item_type=filters.item_type,
+            tag_filter_count=len(filters.tag_ids),
+            favorites_only=filters.favorites_only,
+            duration_ms=(time.perf_counter() - started) * 1000,
         )
         return await self._with_download_urls(rows)
 
@@ -226,9 +247,11 @@ class ItemService:
         filename is ever changed for a file: its object in storage (and
         storage key) stays as uploaded.
         """
+        bind_context(item_id=item_id)
         item = await self._repo.get_for_update(item_id=item_id, user_id=user_id)
         if item is None:
             raise ItemNotFoundError()
+        previous_type = item.type
 
         if edit.filename is not None:
             self._rename_file(item, edit.filename)
@@ -241,6 +264,14 @@ class ItemService:
                 needs_embedding = await self._edit_caption(item, edit.text)
 
         await self._session.commit()
+        logger.info(
+            "Item updated",
+            item_type=item.type,
+            previous_item_type=previous_type if item.type != previous_type else None,
+            renamed=edit.filename is not None,
+            text_edited=edit.text is not None,
+            reembedding=needs_embedding,
+        )
         if needs_embedding:
             await self._publish_embedding_job(item)
 
@@ -322,17 +353,20 @@ class ItemService:
         gone and is dropped by the worker. Tags no other item uses are
         deleted with it, in the same transaction.
         """
+        bind_context(item_id=item_id)
         deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
         if deleted is None:
             raise ItemNotFoundError()
         await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=deleted.tag_ids)
         await self._session.commit()
+        logger.info("Item deleted", storage_object_count=len(deleted.storage_keys), tag_count=len(deleted.tag_ids))
 
         for key in deleted.storage_keys:
             try:
                 await self._storage.delete(key=key)
             except Exception:
-                logger.exception("Failed to delete %s from storage for deleted item %s", key, item_id)
+                # Not retried: the object is orphaned in storage.
+                logger.exception("Failed to delete stored object of deleted item; object orphaned", storage_key=key)
 
     async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
         return [
@@ -374,6 +408,8 @@ class ItemService:
         # No analysis for text/links (stored already `completed`); their
         # text is their description, so it goes straight to embedding.
         await self._session.commit()
+        bind_context(item_id=item.id)
+        _log_created(item, text_chars=len(text), tag_count=len(resolved_tags))
         await self._publish_embedding_job(item)
         return item
 
@@ -397,6 +433,7 @@ class ItemService:
 
         item_id = uuid.uuid4()
         storage_key = f"images/{item_id}{_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type]}"
+        bind_context(item_id=item_id)
 
         await self._storage.upload(key=storage_key, data=data, content_type=content_type)
 
@@ -417,6 +454,14 @@ class ItemService:
             image=ImageRef(storage_key=storage_key, content_type=content_type),
         )
         await self._commit_and_enqueue(item, job, self._queue)
+        _log_created(
+            item,
+            storage_key=storage_key,
+            content_type=content_type,
+            size_bytes=len(data),
+            has_caption=text is not None,
+            tag_count=len(resolved_tags),
+        )
         if text is not None:
             # Searchable by its caption now, not only once analysis is done.
             await self._publish_embedding_job(item)
@@ -451,6 +496,7 @@ class ItemService:
 
         item_id = uuid.uuid4()
         storage_key = f"files/{item_id}{classified.extension}"
+        bind_context(item_id=item_id)
         await self._storage.upload(key=storage_key, data=data, content_type=classified.content_type)
 
         resolved_tags = await self._link_tags(user_id, tag_names)
@@ -465,8 +511,18 @@ class ItemService:
             status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
             tags=resolved_tags,
         )
+        # The filename is user content, so it isn't logged.
+        created_fields = dict(
+            storage_key=storage_key,
+            content_type=classified.content_type,
+            size_bytes=len(data),
+            analyzable=classified.analyzable,
+            has_caption=text is not None,
+            tag_count=len(resolved_tags),
+        )
         if not classified.analyzable:
             await self._session.commit()
+            _log_created(item, **created_fields)
             if text is not None:
                 await self._publish_embedding_job(item)
             return item
@@ -479,6 +535,7 @@ class ItemService:
             file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
         )
         await self._commit_and_enqueue(item, job, self._document_queue)
+        _log_created(item, **created_fields)
         if text is not None:
             await self._publish_embedding_job(item)
         return item
@@ -509,7 +566,7 @@ class ItemService:
         try:
             await self._embedding_queue.publish(job)
         except Exception:
-            logger.exception("Failed to enqueue embedding job for item %s", item.id)
+            logger.exception("Failed to publish embedding job; the sweeper will re-publish it", item_id=item.id)
 
     async def _commit_and_enqueue(self, item: Item, job: ProcessingJob, queue: JobQueue) -> None:
         """Commits the item's creation, then publishes its processing job
@@ -526,7 +583,7 @@ class ItemService:
         try:
             await queue.publish(job)
         except Exception:
-            logger.exception("Failed to enqueue processing job for item %s", item.id)
+            logger.exception("Failed to publish processing job; marking item failed", item_id=item.id)
             transitioned = await self._repo.transition_status(
                 item.id, from_status=ItemStatus.pending, to_status=ItemStatus.failed
             )

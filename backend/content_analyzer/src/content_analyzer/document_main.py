@@ -12,7 +12,7 @@ from content_analyzer.documents.analysis import DocumentAnalysisHandler
 from content_analyzer.documents.describer import OpenAIDocumentDescriber
 from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
 
-configure_logging()
+configure_logging(service="document_analyzer")
 
 
 async def main() -> None:

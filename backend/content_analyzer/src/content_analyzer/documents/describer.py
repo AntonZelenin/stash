@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 
+from stash_shared.log import get_logger, logged_call
+
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.openai_client import PERMANENT_OPENAI_ERRORS, build_openai_client
+
+logger = get_logger(__name__)
 
 _INSTRUCTIONS = (
     "You write short descriptions of documents saved to a personal library, used to find them again by "
@@ -40,11 +44,20 @@ class OpenAIDocumentDescriber(DocumentDescriber):
             else "The text below is the whole document."
         )
         try:
-            response = await self._client.responses.create(
+            with logged_call(
+                logger,
+                "openai.responses",
+                purpose="document_description",
                 model=self._model,
-                instructions=_INSTRUCTIONS,
-                input=f"Filename: {filename}\n{coverage}\n\n{text}",
-            )
+                input_chars=len(text),
+                is_partial=is_partial,
+            ) as call:
+                response = await self._client.responses.create(
+                    model=self._model,
+                    instructions=_INSTRUCTIONS,
+                    input=f"Filename: {filename}\n{coverage}\n\n{text}",
+                )
+                call.update(response_status=response.status, output_chars=len(response.output_text or ""))
         except PERMANENT_OPENAI_ERRORS as exc:
             raise PermanentProcessingError(f"OpenAI rejected the document: {exc}") from exc
 

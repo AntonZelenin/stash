@@ -1,18 +1,22 @@
 """Wiring shared by the worker entrypoints (`main`, `thumbnail_main`)."""
 
-import logging
-
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import log
 from stash_shared.queue.factory import build_dead_letter_queue, build_job_queue
 from stash_shared.queue.base import ItemType, JobQueue
 
-from content_analyzer.config import Settings
+from content_analyzer.config import Settings, get_settings
 from content_analyzer.storage import S3ObjectStore
 from content_analyzer.worker import JobHandler, Worker
 
 
-def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO)
+def configure_logging(*, service: str) -> None:
+    """`service` is the entrypoint's compose service name, which every log
+    record carries."""
+    settings = get_settings()
+    log.configure_logging(
+        service=service, platform=settings.platform, environment=settings.environment, level=settings.log_level
+    )
 
 
 def build_object_store(settings: Settings) -> S3ObjectStore:
@@ -43,6 +47,7 @@ def build_stage_worker(
     `manages_item_status`."""
     return Worker(
         queue=build_queue(settings, queue_name),
+        queue_name=queue_name,
         dead_letters=build_dead_letter_queue(settings.queue_provider, settings, queue_name),
         engine=engine,
         handler=handler,

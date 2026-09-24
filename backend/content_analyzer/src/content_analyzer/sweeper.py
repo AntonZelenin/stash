@@ -1,8 +1,18 @@
 import asyncio
-import logging
 
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import FileRef, ImageRef, ItemType, JobQueue, ProcessingJob
+from stash_shared.log import get_logger
+from stash_shared.queue.base import (
+    CONTENT_ANALYSIS_JOBS,
+    DOCUMENT_ANALYSIS_JOBS,
+    EMBEDDING_JOBS,
+    THUMBNAIL_JOBS,
+    FileRef,
+    ImageRef,
+    ItemType,
+    JobQueue,
+    ProcessingJob,
+)
 
 from content_analyzer.items import (
     StaleItem,
@@ -13,7 +23,7 @@ from content_analyzer.items import (
 )
 from content_analyzer.thumbnails import THUMBNAIL_CONTENT_TYPE
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _BATCH_SIZE = 100
 
@@ -78,7 +88,9 @@ class StaleItemSweeper:
             try:
                 await self.sweep_once()
             except Exception:
-                logger.exception("Stale-item sweep failed")
+                logger.exception(
+                    "Stale-item sweep failed; retrying next interval", interval_seconds=self._interval_seconds
+                )
             await asyncio.sleep(self._interval_seconds)
 
     async def sweep_once(self) -> None:
@@ -94,7 +106,12 @@ class StaleItemSweeper:
                 ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=ItemType(item.type))
             )
         if items:
-            logger.warning("Re-published embedding jobs for %d items with a missing or stale embedding", len(items))
+            logger.warning(
+                "Re-published embedding jobs for items with a missing or stale embedding",
+                item_count=len(items),
+                item_ids=[str(item.id) for item in items],
+                queue=EMBEDDING_JOBS,
+            )
 
     async def _sweep_stale_items(self) -> None:
         stale_items = await find_stale_items(
@@ -103,7 +120,15 @@ class StaleItemSweeper:
         for item in stale_items:
             if item.requeue_count >= self._max_requeues:
                 if await fail_stale_item(self._engine, item.id, stale_after_seconds=self._stale_after_seconds):
-                    logger.warning("Item %s still stale after %d requeues; marked failed", item.id, item.requeue_count)
+                    logger.error(
+                        "Stale item marked failed after too many requeues",
+                        item_id=item.id,
+                        user_id=item.user_id,
+                        item_type=item.type,
+                        item_status="failed",
+                        requeue_count=item.requeue_count,
+                        max_requeues=self._max_requeues,
+                    )
                 continue
 
             # Claim in the DB *before* publishing: if publishing then fails,
@@ -112,15 +137,21 @@ class StaleItemSweeper:
                 continue
             if item.type == ItemType.file.value:
                 await self._document_queue.publish(_file_job_for(item))
-                stage = "document analysis"
+                queue = DOCUMENT_ANALYSIS_JOBS
             elif item.thumbnail_key is not None:
                 await self._analysis_queue.publish(_job_for(item, item.thumbnail_key, THUMBNAIL_CONTENT_TYPE))
-                stage = "content analysis"
+                queue = CONTENT_ANALYSIS_JOBS
             else:
                 await self._thumbnail_queue.publish(_job_for(item, item.storage_key, item.content_type))
-                stage = "thumbnail"
+                queue = THUMBNAIL_JOBS
             logger.warning(
-                "Item %s was stale; re-published its %s job (requeue %d)", item.id, stage, item.requeue_count + 1
+                "Stale item re-published",
+                item_id=item.id,
+                user_id=item.user_id,
+                item_type=item.type,
+                queue=queue,
+                requeue_count=item.requeue_count + 1,
+                max_requeues=self._max_requeues,
             )
 
 

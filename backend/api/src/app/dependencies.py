@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from stash_shared.log import bind_context
 
 from app.auth.services import AuthService
 from app.db import DbSession
@@ -28,4 +29,6 @@ async def get_current_user(
     if user is None:
         raise _unauthorized()
 
+    # Everything logged for the rest of the request carries it.
+    bind_context(user_id=user.id)
     return user

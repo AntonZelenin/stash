@@ -1,8 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from stash_shared.log import configure_logging
 
 from app.api.routers import auth, items, search, tags, users
 from app.config import get_settings
+from app.request_logging import RequestLoggingMiddleware
+
+configure_logging(
+    service="api",
+    platform=get_settings().platform,
+    environment=get_settings().environment,
+    level=get_settings().log_level,
+)
 
 app = FastAPI(
     title="Stash API",
@@ -23,6 +32,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so it's outermost: requests CORS answers itself (preflights)
+# are logged too.
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(users.router)
 app.include_router(auth.router)

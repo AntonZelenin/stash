@@ -1,10 +1,15 @@
+import time
+
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared.embeddings import Embedder, to_pgvector
+from stash_shared.log import get_logger
 from stash_shared.queue.base import ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import description_hash, get_description_and_embedding_hash, save_embedding
 from content_analyzer.openai_client import PERMANENT_OPENAI_ERRORS
+
+logger = get_logger(__name__)
 
 
 class EmbeddingHandler:
@@ -31,14 +36,30 @@ class EmbeddingHandler:
         if text is None or not text.strip():
             # Nothing searchable (e.g. an upload with no caption whose
             # analysis failed) — nothing to embed.
+            logger.debug("Item has no description; nothing to embed")
             return
 
         content_hash = description_hash(text)
         if embedded_hash == content_hash:
+            logger.debug("Embedding is already up to date")
             return
 
+        started = time.perf_counter()
         try:
             vector = await self._embedder.embed(text)
         except PERMANENT_OPENAI_ERRORS as exc:
             raise PermanentProcessingError(f"OpenAI rejected the text: {exc}") from exc
-        await save_embedding(self._engine, job.item_id, embedding=to_pgvector(vector), content_hash=content_hash)
+        saved = await save_embedding(self._engine, job.item_id, embedding=to_pgvector(vector), content_hash=content_hash)
+        duration_ms = (time.perf_counter() - started) * 1000
+        if saved:
+            logger.info(
+                "Embedding saved",
+                text_chars=len(text),
+                replaced=embedded_hash is not None,
+                duration_ms=duration_ms,
+            )
+        else:
+            # A newer job for any new text is on its way.
+            logger.info(
+                "Description changed or was removed while embedding; embedding discarded", duration_ms=duration_ms
+            )

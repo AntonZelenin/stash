@@ -138,6 +138,55 @@ Queues (stream key `stash:<name>`, one consumer group each, dead letters in
 - `thumbnail_jobs`: API → thumbnail worker.
 - `content_analysis_jobs`: thumbnail worker → content-analyzer worker.
 
+## Logging
+
+Every backend service logs through one abstraction, `stash_shared.log`:
+`logger = get_logger(__name__)`, then `logger.info("Item created",
+item_id=..., item_type=...)`. Context goes in key-value fields, never in the
+message. Application code never creates environment-specific loggers; each
+entrypoint calls `configure_logging(service=..., platform=PLATFORM,
+environment=ENVIRONMENT, level=LOG_LEVEL)` once. Two independent settings:
+
+`PLATFORM` (where it runs) alone picks the implementation:
+
+- `local`: standard `logging`, one readable line per record
+  (`time LEVEL logger: message key=value ...`).
+- `aws`: AWS Lambda Powertools `Logger` (optional `stash-shared[aws]`
+  extra; falls back to standard logging with a warning if missing).
+- anything else (e.g. `digitalocean`): standard `logging`, one JSON object
+  per line.
+
+`ENVIRONMENT` (the deployment stage: `local`, `dev`, `stage`, `prod`...)
+only labels records, so e.g. dev, stage and prod on the same platform log
+identically and are told apart by that field.
+
+Every record has `timestamp`, `level`, `message`, `service` (the compose
+service name), `platform` and `environment` (the JSON and Powertools
+formats; the local format leaves out the last three), plus whichever
+shared fields apply:
+`request_id`, `job_id` (the queue message id), `queue`, `item_id`,
+`user_id`, `item_type`, `item_status`, `storage_key`, `attempt`,
+`max_attempts`, `duration_ms`, `error_type`. Exceptions keep their stack
+trace.
+
+Context is attached once per unit of work, not passed around: the API's
+request middleware opens a context with a fresh `request_id` (the auth
+dependency adds `user_id`, item operations add `item_id`) and logs one line
+per request with route, status and duration; the `Worker` opens one per
+delivery with `queue`, `job_id`, `attempt`, `item_id`, `user_id` and
+`item_type`. Everything logged inside, third-party libraries included,
+carries those fields. So an item's history can be followed by `item_id`
+from the API request through each stage: `Job started`, `Job attempt
+failed; retrying` (WARNING, with `error_type`, `delay_seconds` and the stack
+trace), then `Job completed`, or `Job moved to dead-letter queue` (ERROR,
+with `reason`, `permanent`, and `item_status=failed` when the item was
+failed). External calls (OpenAI) are logged as `External call
+succeeded/failed` with `operation`, `model` and `duration_ms`; storage
+failures with `storage_key`.
+
+Never logged: passwords, tokens, emails, note text, captions, filenames,
+search queries (only their length), or document/image content.
+
 ## Environments
 
 ### Local
