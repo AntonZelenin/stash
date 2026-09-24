@@ -36,7 +36,7 @@ class ObjectStore(ABC):
 
 
 class S3ObjectStore(ObjectStore):
-    """S3-compatible storage (MinIO locally, DigitalOcean Spaces in
+    """S3-compatible storage (MinIO locally, AWS S3 in
     production). Deliberately separate from the API's `app.storage`, same
     reasoning as `content_analyzer.items`: the workers need only these few
     operations, and shouldn't depend on the API package to get them.

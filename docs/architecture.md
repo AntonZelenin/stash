@@ -118,7 +118,7 @@ The application uses an S3-compatible API through `boto3`.
 
 Environments:
 - Local: MinIO.
-- Production: DigitalOcean Spaces.
+- Production: Amazon S3.
 
 The same storage integration should work in both environments; endpoint, credentials, bucket and other configuration are environment-specific.
 An empty endpoint means AWS S3 itself, and empty access keys mean boto3's
@@ -354,13 +354,13 @@ Configuration is provided through local environment variables / `.env`.
 
 ### Production
 
-Production runs on DigitalOcean.
+Production runs on AWS.
 
 Expected infrastructure:
 - API container
 - Worker container
-- Managed PostgreSQL
-- DigitalOcean Spaces
+- Managed PostgreSQL (with pgvector)
+- Amazon S3
 - Queue
 
 The API and Worker use the same Docker images/code as in the local environment, with environment-specific configuration.

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # Used only for signing download URLs handed to the browser, which can't
     # resolve the `minio` Docker-network hostname `s3_endpoint_url` normally
     # holds locally. Defaults to matching `s3_endpoint_url` in environments
-    # (e.g. production, with DigitalOcean Spaces) where there's no
+    # (e.g. production, on AWS S3) where there's no
     # internal/external split.
     s3_public_endpoint_url: str = "http://localhost:9000"
     # Set both endpoints and both keys to "" on AWS: S3 itself, with the

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 class ObjectStorage(ABC):
     """Storage for uploaded file content, keyed by an opaque storage key.
 
-    Backed by an S3-compatible bucket (MinIO locally, DigitalOcean Spaces in
+    Backed by an S3-compatible bucket (MinIO locally, AWS S3 in
     production). Item/business logic depends only on this interface so the
     concrete backend can be swapped without touching it.
     """
