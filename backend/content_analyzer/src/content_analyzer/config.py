@@ -23,8 +23,14 @@ class Settings(BaseSettings):
     # this namespace, only when `platform` is "aws"; a no-op elsewhere.
     metrics_namespace: str = "Stash"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
-    queue_provider: str = "valkey"
+    # Unset: picked from `platform` (SQS on "aws", Valkey elsewhere); see
+    # `stash_shared.queue.factory`.
+    queue_provider: str | None = None
     valkey_url: str = "redis://localhost:6379"
+    # SQS only: queue name (`stash_shared.queue.base`) -> queue URL, as JSON,
+    # e.g. SQS_QUEUE_URLS='{"thumbnail_jobs": "https://sqs..."}'. Credentials
+    # and region come from the execution role, not settings.
+    sqs_queue_urls: dict[str, str] = {}
     # How long a received message may stay unacked before another consumer
     # reclaims it. Must exceed the worst-case time to process one message
     # (storage download + `openai_timeout_seconds`) and `retry_max_delay_seconds`.

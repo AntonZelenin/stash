@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 from sqlalchemy import text
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import Delivery, ImageRef, ItemType, PlatformDeadLetterQueue, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import complete_item
@@ -12,6 +12,7 @@ from conftest import (
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
+    FakePlatformDeadLetteringQueue,
     fetch_descriptions,
     fetch_status,
     insert_item,
@@ -257,6 +258,104 @@ async def test_malformed_payload_is_dead_lettered(worker, queue, dead_letters):
     assert queue.acked == [delivery]
     [letter] = dead_letters.letters
     assert letter.raw_payload == "not json"
+
+
+# ---- a queue whose platform dead-letters on its own (SQS redrive) ----
+
+
+@pytest.fixture
+def platform_queue() -> FakePlatformDeadLetteringQueue:
+    return FakePlatformDeadLetteringQueue()
+
+
+@pytest.fixture
+def platform_worker(engine, platform_queue, describer) -> Worker:
+    return Worker(
+        queue=platform_queue,
+        dead_letters=PlatformDeadLetterQueue(),
+        engine=engine,
+        handler=ContentAnalysisHandler(
+            storage=FakeObjectStore({"images/cat.png": b"png-bytes"}),
+            describer=describer,
+            engine=engine,
+            embedding_queue=FakeJobQueue(),
+        ),
+        max_attempts=_MAX_ATTEMPTS,
+    )
+
+
+async def test_platform_dead_lettered_job_is_left_unacked(platform_worker, engine, platform_queue, describer):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    describer.errors = [PermanentProcessingError("corrupt image")]
+    delivery = _delivery(_image_job(item_id))
+
+    await platform_worker.handle_delivery(delivery)
+
+    assert await fetch_status(engine, item_id) == "failed"
+    assert platform_queue.abandoned == [delivery]
+    assert platform_queue.acked == []
+    assert platform_queue.retried == []
+
+
+async def test_platform_dead_letters_exhausted_retries_unacked(platform_worker, engine, platform_queue, describer):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing")
+    describer.errors = [RuntimeError("503")]
+    delivery = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS)
+
+    await platform_worker.handle_delivery(delivery)
+
+    assert await fetch_status(engine, item_id) == "failed"
+    assert platform_queue.abandoned == [delivery]
+    assert platform_queue.acked == []
+
+
+async def test_platform_dead_letters_malformed_payload_unacked(platform_worker, platform_queue):
+    delivery = _delivery(None, raw_payload="not json")
+
+    await platform_worker.handle_delivery(delivery)
+
+    assert platform_queue.abandoned == [delivery]
+    assert platform_queue.acked == []
+
+
+async def test_platform_redelivery_of_failed_item_stays_on_its_way_to_the_dlq(
+    platform_worker, engine, platform_queue, describer
+):
+    """The job was already given up on; acking it now would take it out of
+    the platform's redrive before it reaches the DLQ."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="failed")
+    delivery = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS + 1)
+
+    await platform_worker.handle_delivery(delivery)
+
+    assert describer.calls == 0
+    assert platform_queue.abandoned == [delivery]
+    assert platform_queue.acked == []
+
+
+async def test_platform_redelivery_of_completed_item_is_acked(platform_worker, engine, platform_queue, describer):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="completed")
+
+    await platform_worker.handle_delivery(_delivery(_image_job(item_id), delivery_count=2))
+
+    assert describer.calls == 0
+    assert len(platform_queue.acked) == 1
+    assert platform_queue.abandoned == []
+
+
+async def test_platform_successful_job_is_acked(platform_worker, engine, platform_queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+
+    await platform_worker.handle_delivery(_delivery(_image_job(item_id)))
+
+    assert await fetch_status(engine, item_id) == "completed"
+    assert len(platform_queue.acked) == 1
+    assert platform_queue.abandoned == []
 
 
 async def test_complete_item_is_idempotent(engine):

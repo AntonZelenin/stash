@@ -43,7 +43,7 @@ def build_object_store(settings: Settings) -> S3ObjectStore:
 
 
 def build_queue(settings: Settings, queue_name: str) -> JobQueue:
-    return build_job_queue(settings.queue_provider, settings, queue_name)
+    return build_job_queue(settings, queue_name)
 
 
 def build_stage_worker(
@@ -62,7 +62,7 @@ def build_stage_worker(
     return Worker(
         queue=build_queue(settings, queue_name),
         queue_name=queue_name,
-        dead_letters=build_dead_letter_queue(settings.queue_provider, settings, queue_name),
+        dead_letters=build_dead_letter_queue(settings, queue_name),
         engine=engine,
         handler=handler,
         max_attempts=settings.max_delivery_attempts,

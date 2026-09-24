@@ -25,8 +25,14 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14
     cors_allowed_origins: list[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
-    queue_provider: str = "valkey"
+    # Unset: picked from `platform` (SQS on "aws", Valkey elsewhere); see
+    # `stash_shared.queue.factory`.
+    queue_provider: str | None = None
     valkey_url: str = "redis://localhost:6379"
+    # SQS only: queue name (`stash_shared.queue.base`) -> queue URL, as JSON,
+    # e.g. SQS_QUEUE_URLS='{"thumbnail_jobs": "https://sqs..."}'. Credentials
+    # and region come from the execution role, not settings.
+    sqs_queue_urls: dict[str, str] = {}
     s3_endpoint_url: str = "http://localhost:9000"
     # Used only for signing download URLs handed to the browser, which can't
     # resolve the `minio` Docker-network hostname `s3_endpoint_url` normally

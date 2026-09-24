@@ -65,7 +65,9 @@ class Worker:
     - transient error: `retry_later` with exponential backoff, item stays
       `processing`;
     - permanent error, or `max_attempts` deliveries used up: dead-lettered,
-      item marked `failed`, then acked.
+      item marked `failed`, then abandoned (`JobQueue.abandon`) — acked,
+      unless the queue's platform dead-letters on its own, in which case it
+      stays unacked for the platform to move to its DLQ.
     A message is only ever acked after its outcome is durable, so a crash at
     any point means redelivery, never loss. Redelivery is safe because every
     status write is guarded (see `content_analyzer.items`) and an item
@@ -231,10 +233,16 @@ class Worker:
             return
         if self._manages_item_status and status in (_STATUS_COMPLETED, _STATUS_FAILED):
             # A duplicate/redelivery of a job whose outcome is already
-            # durable (e.g. the worker crashed between commit and ack).
+            # durable (e.g. the worker crashed between commit and ack). A
+            # failed item's job was given up on: abandoned again, which on
+            # a platform that dead-letters on its own keeps it on its way
+            # to the DLQ (see `JobQueue.abandon`).
             logger.info("Item already finished; skipping job", item_status=status)
             _set_outcome("skipped", skip_reason="item_finished", item_status=status)
-            await self._queue.ack(delivery)
+            if status == _STATUS_FAILED:
+                await self._queue.abandon(delivery)
+            else:
+                await self._queue.ack(delivery)
             return
         if delivery.delivery_count > self._max_attempts:
             # Earlier deliveries never reported back (e.g. the worker kept
@@ -304,10 +312,12 @@ class Worker:
         error: BaseException | None = None,
         duration_ms: float | None = None,
     ) -> None:
-        """Order matters: dead-letter first, then mark failed, then ack. A
-        crash before the ack just means a redelivery that either finds the
-        item `failed` and acks it, or dead-letters it again — a possible
-        duplicate dead letter, never a lost one."""
+        """Order matters: dead-letter first, then mark failed, then abandon
+        (`JobQueue.abandon`: acked, unless the queue's platform
+        dead-letters on its own). A crash before that just means a
+        redelivery that either finds the item `failed` and abandons it, or
+        dead-letters it again — a possible duplicate dead letter, never a
+        lost one."""
         await self._dead_letters.send(
             DeadLetter(
                 raw_payload=delivery.raw_payload,
@@ -319,7 +329,7 @@ class Worker:
         marked_failed = False
         if delivery.job is not None and self._manages_item_status:
             marked_failed = await fail_item(self._engine, delivery.job.item_id)
-        await self._queue.ack(delivery)
+        await self._queue.abandon(delivery)
         metrics.count("JobsDeadLettered", queue=self._queue_label)
         tracing.mark_failed(trace.get_current_span(), reason, error=error)
         _set_outcome(

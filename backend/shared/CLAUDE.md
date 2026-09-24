@@ -5,9 +5,10 @@ Code shared between `api` and `content_analyzer`.
 Currently holds `stash_shared.queue`: the `JobQueue` (at-least-once:
 receive / ack / retry_later) and `DeadLetterQueue` interfaces and the
 `ProcessingJob` payload used to hand item-processing work from the API to the
-worker, plus the current Valkey Streams implementations. Both services depend
-only on the interfaces, not on Valkey directly, so the backend can be
-replaced later (e.g. SQS) without touching either.
+worker, plus two implementations: Valkey Streams (local/non-AWS) and SQS
+(`PLATFORM=aws`), picked by `queue.factory`. Both services depend only on
+the interfaces, never on a backend directly. The wire format (job payload,
+trace context) is shared by both backends in `queue.codec`.
 
 Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
 API (search queries) and the embedding worker (item text), so both always

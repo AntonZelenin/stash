@@ -1,7 +1,5 @@
-import json
 import socket
 from datetime import UTC, datetime
-from uuid import UUID
 
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
@@ -11,13 +9,11 @@ from redis.exceptions import ResponseError
 from stash_shared import tracing
 from stash_shared.log import get_logger
 
+from stash_shared.queue import codec
 from stash_shared.queue.base import (
     DeadLetter,
     DeadLetterQueue,
     Delivery,
-    FileRef,
-    ImageRef,
-    ItemType,
     JobQueue,
     ProcessingJob,
     QueueStats,
@@ -91,12 +87,12 @@ class ValkeyJobQueue(JobQueue):
             attributes=_messaging_attributes(self._queue_name, "publish"),
         ) as span:
             tracing.set_attributes(span, item_id=job.item_id, item_type=job.item_type)
-            fields = {_PAYLOAD_FIELD: json.dumps(_to_payload(job))}
+            fields = {_PAYLOAD_FIELD: codec.encode_job(job)}
             # Injected inside the publish span, so it's what the consumer's
             # span hangs off.
             trace_context = tracing.inject_context()
             if trace_context:
-                fields[_TRACE_CONTEXT_FIELD] = json.dumps(trace_context)
+                fields[_TRACE_CONTEXT_FIELD] = codec.encode_trace_context(trace_context)
             message_id = await self._client.xadd(self._stream_key, fields, maxlen=_STREAM_MAX_LEN, approximate=True)
             span.set_attribute("messaging.message.id", message_id)
 
@@ -240,79 +236,18 @@ class ValkeyDeadLetterQueue(DeadLetterQueue):
 
 def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Delivery:
     raw = fields.get(_PAYLOAD_FIELD, "")
-    try:
-        job = _from_payload(json.loads(raw))
-    except (ValueError, KeyError, TypeError) as exc:
-        logger.warning(
-            "Could not decode job payload",
-            job_id=message_id,
-            error_type=type(exc).__name__,
-            payload_chars=len(raw),
-        )
-        job = None
     return Delivery(
         message_id=message_id,
         receipt=message_id,
         delivery_count=delivery_count,
         raw_payload=raw,
-        job=job,
-        trace_context=_trace_context(fields.get(_TRACE_CONTEXT_FIELD)),
+        job=codec.decode_job(raw, message_id=message_id),
+        trace_context=codec.decode_trace_context(fields.get(_TRACE_CONTEXT_FIELD)),
     )
-
-
-def _trace_context(raw: str | None) -> dict[str, str]:
-    """Undecodable tracing metadata only costs the trace link, never the job."""
-    if not raw:
-        return {}
-    try:
-        decoded = json.loads(raw)
-    except ValueError:
-        return {}
-    if not isinstance(decoded, dict):
-        return {}
-    return {str(key): str(value) for key, value in decoded.items()}
 
 
 def _messaging_attributes(queue_name: str, operation: str) -> dict[str, str]:
-    """OpenTelemetry messaging semantic-convention attributes."""
-    return {
-        "messaging.system": "valkey",
-        "messaging.destination.name": queue_name,
-        "messaging.operation.type": operation,
-    }
-
-
-def _to_payload(job: ProcessingJob) -> dict:
-    payload = {
-        "item_id": str(job.item_id),
-        "user_id": str(job.user_id),
-        "item_type": job.item_type.value,
-    }
-    if job.image is not None:
-        payload["image"] = {"storage_key": job.image.storage_key, "content_type": job.image.content_type}
-    if job.file is not None:
-        payload["file"] = {
-            "storage_key": job.file.storage_key,
-            "content_type": job.file.content_type,
-            "filename": job.file.filename,
-        }
-    return payload
-
-
-def _from_payload(data: dict) -> ProcessingJob:
-    image = data.get("image")
-    file = data.get("file")
-    return ProcessingJob(
-        item_id=UUID(data["item_id"]),
-        user_id=UUID(data["user_id"]),
-        item_type=ItemType(data["item_type"]),
-        image=ImageRef(storage_key=image["storage_key"], content_type=image["content_type"]) if image else None,
-        file=(
-            FileRef(storage_key=file["storage_key"], content_type=file["content_type"], filename=file["filename"])
-            if file
-            else None
-        ),
-    )
+    return codec.messaging_attributes("valkey", queue_name, operation)
 
 
 def _client(url: str) -> Redis:

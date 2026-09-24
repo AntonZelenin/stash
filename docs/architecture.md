@@ -139,14 +139,45 @@ entries list, with a delivery counter, until acked. Unacked messages idle
 longer than a visibility timeout (a crashed consumer, or a delayed retry) are
 reclaimed with XAUTOCLAIM, SQS-style. The API and worker never talk to
 Valkey directly — both depend only on the `JobQueue` and `DeadLetterQueue`
-interfaces in `backend/shared/`, so the concrete backend (e.g. SQS + an SQS
-DLQ on AWS) can be replaced without touching either service. Valkey has no
-native DLQ; each queue's dead letters go to a stream next to it.
+interfaces in `backend/shared/`, so the concrete backend can be replaced
+without touching either service. Valkey has no native DLQ; each queue's dead
+letters go to a stream next to it.
 
-Queues (stream key `stash:<name>`, one consumer group each, dead letters in
-`stash:<name>:dead-letter`):
+The backend is picked by `stash_shared.queue.factory` from `PLATFORM`
+(`QUEUE_PROVIDER` overrides it):
+- anything but `aws` (local development included): Valkey Streams, as above.
+- `aws`: SQS standard queues (`stash_shared.queue.sqs_queue`). Each queue's
+  URL comes from `SQS_QUEUE_URLS` (JSON, queue name → URL); credentials and
+  region come from boto3's default chain (the execution role), never from
+  settings. `ack` deletes the message by its receipt handle, `retry_later`
+  changes its visibility timeout, and the delivery count is
+  `ApproximateReceiveCount`. Queue backlog metrics come from SQS's own
+  CloudWatch metrics.
+
+Dead-lettering goes through `JobQueue.abandon`, which the worker calls for
+every delivery it gives up on (after marking the item `failed`), and for
+redeliveries of jobs whose item has already failed:
+- Valkey: the dead letter is written to `stash:<name>:dead-letter` first,
+  then `abandon` acks the original.
+- SQS: nothing is sent (`PlatformDeadLetterQueue`) and `abandon` leaves the
+  message unacked: it reappears after its visibility timeout and, once
+  received `maxReceiveCount` times, the queue's redrive policy (configured
+  in Terraform) moves it to its DLQ. `maxReceiveCount` should be at least
+  `MAX_DELIVERY_ATTEMPTS` (default 5); lower, SQS moves messages before the
+  worker's last attempt, leaving their items `processing` until the stale
+  sweeper re-publishes or fails them. Any message for a `failed` item ends
+  up in the DLQ, including one left over after the sweeper gave up on it.
+  The embedding worker doesn't track item status, so each redelivery of a
+  message it gave up on is processed again (dead-lettered straight away
+  once past `MAX_DELIVERY_ATTEMPTS`) until SQS moves it.
+
+Queues (on Valkey: stream key `stash:<name>`, one consumer group each, dead
+letters in `stash:<name>:dead-letter`):
 - `thumbnail_jobs`: API → thumbnail worker.
 - `content_analysis_jobs`: thumbnail worker → content-analyzer worker.
+- `document_analysis_jobs`: API → document-analyzer worker.
+- `embedding_jobs`: API, content analyzer, document analyzer → embedding
+  worker.
 
 ## Logging
 

@@ -5,6 +5,9 @@ description = "Code shared between the Stash API and the content-analyzer worker
 requires-python = ">=3.14"
 dependencies = [
     "redis>=5.0",
+    # SQS queue backend (`stash_shared.queue.sqs_queue`); 1.35 for
+    # ReceiveMessage's `MessageSystemAttributeNames`.
+    "boto3>=1.35",
     "openai>=1.66",
     # Distributed tracing (`stash_shared.tracing`): OTLP/HTTP export, plus
     # the instrumentations every service uses (S3 via botocore, SQLAlchemy).

@@ -12,7 +12,7 @@ def get_job_queue() -> JobQueue:
     processing pipeline (thumbnails), which hands each image on to content
     analysis itself."""
     settings = get_settings()
-    return build_job_queue(settings.queue_provider, settings, THUMBNAIL_JOBS)
+    return build_job_queue(settings, THUMBNAIL_JOBS)
 
 
 @lru_cache
@@ -20,7 +20,7 @@ def get_document_analysis_queue() -> JobQueue:
     """Where the API publishes analyzable uploaded files, for the
     document-analyzer worker."""
     settings = get_settings()
-    return build_job_queue(settings.queue_provider, settings, DOCUMENT_ANALYSIS_JOBS)
+    return build_job_queue(settings, DOCUMENT_ANALYSIS_JOBS)
 
 
 @lru_cache
@@ -28,4 +28,4 @@ def get_embedding_queue() -> JobQueue:
     """Where the API publishes items whose searchable text it wrote itself
     (text items, captions), for the embedding worker."""
     settings = get_settings()
-    return build_job_queue(settings.queue_provider, settings, EMBEDDING_JOBS)
+    return build_job_queue(settings, EMBEDDING_JOBS)

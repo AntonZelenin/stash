@@ -149,6 +149,18 @@ class JobQueue(ABC):
         `delay_seconds` from now (best effort; backends may clamp it)."""
         ...
 
+    async def abandon(self, delivery: Delivery) -> None:
+        """Settles a delivery the consumer has given up on: one it has just
+        dead-lettered (`DeadLetterQueue.send`), or a redelivery of a job
+        whose item has already failed.
+
+        By default it's acked: the dead letter lives in the
+        `DeadLetterQueue`. A backend whose platform dead-letters on its own
+        (SQS redrive) overrides this to leave the delivery unacked instead,
+        so the platform keeps redelivering it and moves it to its DLQ once
+        its receive limit is reached."""
+        await self.ack(delivery)
+
     async def stats(self) -> QueueStats | None:
         """The queue's backlog, for metrics. None when the backend doesn't
         report it — e.g. one whose platform already publishes it (SQS's
@@ -168,11 +180,21 @@ class DeadLetterQueue(ABC):
     """Parking spot for messages the consumer gave up on (retries exhausted
     or a permanent error), kept for inspection/replay. Separate from
     `JobQueue` so each backend can supply its own — a Valkey stream
-    locally, an SQS DLQ on AWS, etc.
+    locally, the platform's own DLQ on AWS (`PlatformDeadLetterQueue`).
 
-    The consumer sends here *before* acking the original, so a crash in
-    between yields a duplicate dead letter rather than a lost message.
+    The consumer sends here *before* abandoning the original
+    (`JobQueue.abandon`), so a crash in between yields a duplicate dead
+    letter rather than a lost message.
     """
 
     @abstractmethod
     async def send(self, letter: DeadLetter) -> None: ...
+
+
+class PlatformDeadLetterQueue(DeadLetterQueue):
+    """For a `JobQueue` whose platform dead-letters on its own (SQS
+    redrive): there's nothing to send — the abandoned message itself is
+    moved to the platform's DLQ (see `JobQueue.abandon`)."""
+
+    async def send(self, letter: DeadLetter) -> None:
+        pass

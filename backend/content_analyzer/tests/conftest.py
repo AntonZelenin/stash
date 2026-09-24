@@ -160,6 +160,18 @@ class FakeJobQueue(JobQueue):
         self.retried.append((delivery, delay_seconds))
 
 
+class FakePlatformDeadLetteringQueue(FakeJobQueue):
+    """A queue whose platform dead-letters on its own (like SQS redrive):
+    abandoned deliveries are recorded, never acked."""
+
+    def __init__(self):
+        super().__init__()
+        self.abandoned: list[Delivery] = []
+
+    async def abandon(self, delivery: Delivery) -> None:
+        self.abandoned.append(delivery)
+
+
 class FakeDeadLetterQueue(DeadLetterQueue):
     def __init__(self):
         self.letters: list[DeadLetter] = []
