@@ -8,6 +8,11 @@ The MVP supports:
 - User registration and authentication with username/email and password.
 - Saving text.
 - Uploading images.
+- Uploading any file (max 50 MB) as a `file` item. Recognized formats (PDF,
+  Office, ODF, iWork, EPUB, FB2, MOBI, DjVu, text/data...) keep their MIME
+  type and are flagged `analyzable` where text extraction is planned; other
+  files are stored as generic downloads. No analysis/extraction yet (see
+  `backend/api/src/app/items/files.py`).
 - Automatic image description and tag generation.
 - Semantic and keyword-based search across saved content.
 - Searching by tags and generated descriptions.
@@ -167,6 +172,15 @@ Production infrastructure and deployment are managed using Terraform.
 ### Save Text
 
 Client → API → PostgreSQL → Queue → Worker → PostgreSQL
+
+### Save File
+
+Client → API → Object Storage (`files/{item_id}[.{ext}]`)
+             → PostgreSQL (`item_files`; item created `completed`)
+
+No queue or worker involvement yet. The listing's pre-signed `download_url`
+serves the file under its original filename: inline for PDF, plain text and
+JSON, as a download for everything else.
 
 ### Save Image
 

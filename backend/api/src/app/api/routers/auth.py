@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.auth import LoginRequest, RefreshTokenRequest, TokenPairResponse
 from app.auth.services import AuthService, InvalidCredentialsError, InvalidRefreshTokenError
-from app.db import get_db_session
+from app.db import DbSession
 
 router = APIRouter(tags=["auth"])
 
@@ -18,7 +18,7 @@ router = APIRouter(tags=["auth"])
 )
 async def login(
     payload: LoginRequest,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
 ) -> TokenPairResponse:
     service = AuthService(session)
     try:
@@ -40,7 +40,7 @@ async def login(
 )
 async def refresh(
     payload: RefreshTokenRequest,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
 ) -> TokenPairResponse:
     try:
         tokens = await AuthService(session).refresh(payload.refresh_token)

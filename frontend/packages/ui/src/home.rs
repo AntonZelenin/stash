@@ -8,13 +8,13 @@ use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::icons::{
-    IconArrowUp, IconClose, IconHelp, IconImage, IconLogout, IconMenu, IconSearch, IconSliders,
-    IconStash, IconUser,
+    IconArrowUp, IconClose, IconFile, IconHelp, IconLogout, IconMenu, IconPaperclip, IconSearch,
+    IconSliders, IconStash, IconUser,
 };
 use crate::items::ItemGrid;
 use crate::routes::Route;
 
-const IMAGE_UPLOAD_INPUT_ID: &str = "home-image-upload-input";
+const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// How long typing must pause before a search request is sent.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const SEARCH_LIMIT: u32 = 50;
@@ -27,17 +27,20 @@ enum ItemFilter {
     All,
     Links,
     Images,
+    Files,
     Notes,
 }
 
 impl ItemFilter {
     /// `item_type` is the backend's raw `type` string (`"text"`, `"link"`,
-    /// `"image"`) — "Notes" is this UI's name for a plain `"text"` item.
+    /// `"image"`, `"file"`) — "Notes" is this UI's name for a plain
+    /// `"text"` item.
     fn matches(self, item_type: &str) -> bool {
         match self {
             ItemFilter::All => true,
             ItemFilter::Links => item_type == "link",
             ItemFilter::Images => item_type == "image",
+            ItemFilter::Files => item_type == "file",
             ItemFilter::Notes => item_type == "text",
         }
     }
@@ -47,55 +50,71 @@ impl ItemFilter {
             ItemFilter::All => "All",
             ItemFilter::Links => "Links",
             ItemFilter::Images => "Images",
+            ItemFilter::Files => "Files",
             ItemFilter::Notes => "Notes",
         }
     }
 }
 
-/// Guesses a MIME type from a file name's extension. The browser normally
-/// supplies this via the file input's `File.type`, but Dioxus's
-/// cross-platform `FileEngine` only exposes file names, so this is
-/// reconstructed client-side. The backend re-derives the real content type
-/// from the file's bytes and does not trust this value.
-fn guess_content_type(file_name: &str) -> &'static str {
+/// Image content types by file extension; any other file is uploaded as a
+/// generic file item.
+fn image_content_type(file_name: &str) -> Option<&'static str> {
     let lower = file_name.to_ascii_lowercase();
     if lower.ends_with(".png") {
-        "image/png"
+        Some("image/png")
     } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
+        Some("image/jpeg")
     } else if lower.ends_with(".gif") {
-        "image/gif"
+        Some("image/gif")
     } else if lower.ends_with(".webp") {
-        "image/webp"
+        Some("image/webp")
     } else {
-        "application/octet-stream"
+        None
     }
 }
 
-/// An image the user has picked or dropped but not yet sent. Holds a
-/// `data:` URL rather than an object URL for the preview so it works the
-/// same way on every platform `ui` supports, not just the browser.
+/// A file the user has picked or dropped but not yet sent.
+///
+/// The content type is a guess from the extension: the browser normally
+/// supplies one via `File.type`, but Dioxus's cross-platform `FileData` only
+/// exposes the name. The backend ignores it anyway and determines the real
+/// type itself; for non-images it's just `application/octet-stream`.
 #[derive(Clone, PartialEq)]
-struct PendingImage {
+struct PendingFile {
     file_name: String,
     content_type: &'static str,
     data: Vec<u8>,
-    preview_url: String,
+    /// `data:` URL for an image's preview thumbnail (rather than an object
+    /// URL, so it works on every platform `ui` supports); None for a
+    /// non-image file, which is shown as an icon instead.
+    preview_url: Option<String>,
 }
 
-/// Reads `file` into a `PendingImage` ready for preview, without uploading
+impl PendingFile {
+    fn is_image(&self) -> bool {
+        self.preview_url.is_some()
+    }
+}
+
+/// Reads `file` into a `PendingFile` ready for preview, without uploading
 /// it. Shared by both the file-picker input and drag-and-drop, which differ
 /// only in how they obtain the `FileData`.
-async fn stage_file(file: FileData) -> Option<PendingImage> {
+async fn stage_file(file: FileData) -> Option<PendingFile> {
     let file_name = file.name();
     let data = file.read_bytes().await.ok()?.to_vec();
-    let content_type = guess_content_type(&file_name);
-    let preview_url = format!(
-        "data:{content_type};base64,{}",
-        BASE64_STANDARD.encode(&data)
-    );
 
-    Some(PendingImage {
+    let (content_type, preview_url) = match image_content_type(&file_name) {
+        Some(content_type) => (
+            content_type,
+            Some(format!(
+                "data:{content_type};base64,{}",
+                BASE64_STANDARD.encode(&data)
+            )),
+        ),
+        None => ("application/octet-stream", None),
+    };
+
+    Some(PendingFile {
         file_name,
         content_type,
         data,
@@ -163,7 +182,7 @@ pub fn Home() -> Element {
     // dragleave-then-dragenter for that child, and only the count (not a
     // single flag) tells the container it's still being dragged over.
     let mut drag_depth = use_signal(|| 0i32);
-    let mut pending_images = use_signal(Vec::<PendingImage>::new);
+    let mut pending_files = use_signal(Vec::<PendingFile>::new);
 
     // Deletes from a card's menu, then refetches whichever view is showing
     // (list and search), so the card disappears from both.
@@ -190,11 +209,11 @@ pub fn Home() -> Element {
                 return;
             }
 
-            // With images staged, the typed text is their caption: each image
-            // becomes one item carrying both (image above, text below), not
-            // a separate note.
-            let images = std::mem::take(&mut *pending_images.write());
-            if !images.is_empty() {
+            // With files staged, the typed text is their caption: each file
+            // becomes one item carrying both (image/file above, text
+            // below), not a separate note.
+            let files = std::mem::take(&mut *pending_files.write());
+            if !files.is_empty() {
                 let session = session.clone();
                 let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
                 spawn(async move {
@@ -204,16 +223,27 @@ pub fn Home() -> Element {
                     // One failure shouldn't stop the rest from uploading;
                     // report the last error, if any, once all are done.
                     let mut last_error = None;
-                    for image in images {
-                        if let Err(err) = session
-                            .create_image_item(
-                                &image.file_name,
-                                image.content_type,
-                                image.data,
-                                caption.clone(),
-                            )
-                            .await
-                        {
+                    for file in files {
+                        let result = if file.is_image() {
+                            session
+                                .create_image_item(
+                                    &file.file_name,
+                                    file.content_type,
+                                    file.data,
+                                    caption.clone(),
+                                )
+                                .await
+                        } else {
+                            session
+                                .create_file_item(
+                                    &file.file_name,
+                                    file.content_type,
+                                    file.data,
+                                    caption.clone(),
+                                )
+                                .await
+                        };
+                        if let Err(err) = result {
                             last_error = Some(err.to_string());
                         }
                     }
@@ -264,7 +294,7 @@ pub fn Home() -> Element {
         status.set(None);
         for file in files {
             match stage_file(file).await {
-                Some(image) => pending_images.write().push(image),
+                Some(file) => pending_files.write().push(file),
                 None => status.set(Some("Could not read the selected file".to_string())),
             }
         }
@@ -287,7 +317,7 @@ pub fn Home() -> Element {
             status.set(None);
             for file in files {
                 match stage_file(file).await {
-                    Some(image) => pending_images.write().push(image),
+                    Some(file) => pending_files.write().push(file),
                     None => status.set(Some("Could not read the selected file".to_string())),
                 }
             }
@@ -320,7 +350,7 @@ pub fn Home() -> Element {
                 p { class: "home-tagline", "Save anything. Find anytime." }
 
                 if drag_depth() > 0 {
-                    div { class: "home-drop-hint", "Drop image to upload" }
+                    div { class: "home-drop-hint", "Drop files to upload" }
                 }
 
                 form {
@@ -337,25 +367,31 @@ pub fn Home() -> Element {
                         // input looking empty. Laid out 3-per-row so a
                         // large batch doesn't become one long scrolling
                         // line.
-                        if !pending_images().is_empty() {
+                        if !pending_files().is_empty() {
                             div { class: "home-image-preview-grid",
-                                for (index , image) in pending_images().into_iter().enumerate() {
+                                for (index , file) in pending_files().into_iter().enumerate() {
                                     div {
                                         class: "home-image-preview",
-                                        key: "{index}-{image.file_name}",
-                                        img {
-                                            class: "home-image-preview-thumb",
-                                            src: "{image.preview_url}",
-                                            alt: "{image.file_name}",
+                                        key: "{index}-{file.file_name}",
+                                        if let Some(preview_url) = &file.preview_url {
+                                            img {
+                                                class: "home-image-preview-thumb",
+                                                src: "{preview_url}",
+                                                alt: "{file.file_name}",
+                                            }
+                                        } else {
+                                            span { class: "home-image-preview-thumb home-file-preview-icon",
+                                                IconFile {}
+                                            }
                                         }
-                                        span { class: "home-image-preview-name", "{image.file_name}" }
+                                        span { class: "home-image-preview-name", "{file.file_name}" }
                                         button {
                                             class: "home-image-preview-remove",
                                             r#type: "button",
-                                            title: "Remove image",
+                                            title: "Remove file",
                                             disabled: is_submitting(),
                                             onclick: move |_| {
-                                                pending_images.write().remove(index);
+                                                pending_files.write().remove(index);
                                             },
                                             IconClose {}
                                         }
@@ -372,18 +408,20 @@ pub fn Home() -> Element {
                             }
                             input {
                                 r#type: "file",
-                                id: IMAGE_UPLOAD_INPUT_ID,
+                                id: FILE_UPLOAD_INPUT_ID,
                                 class: "home-image-input",
-                                accept: "image/png,image/jpeg,image/gif,image/webp",
+                                // No `accept` filter: any file can be saved.
+                                // Images get the image pipeline; everything
+                                // else is stored as a file item.
                                 multiple: true,
                                 disabled: is_submitting(),
                                 onchange: stage_picked_files,
                             }
                             label {
                                 class: "home-input-attach",
-                                r#for: IMAGE_UPLOAD_INPUT_ID,
-                                title: "Upload an image",
-                                IconImage {}
+                                r#for: FILE_UPLOAD_INPUT_ID,
+                                title: "Attach images or files",
+                                IconPaperclip {}
                             }
                             button {
                                 class: "home-input-submit",
@@ -427,7 +465,13 @@ pub fn Home() -> Element {
                     }
 
                     div { class: "stash-filters",
-                        for filter in [ItemFilter::All, ItemFilter::Links, ItemFilter::Images, ItemFilter::Notes] {
+                        for filter in [
+                            ItemFilter::All,
+                            ItemFilter::Links,
+                            ItemFilter::Images,
+                            ItemFilter::Files,
+                            ItemFilter::Notes,
+                        ] {
                             button {
                                 class: if active_filter() == filter { "filter-chip filter-chip-active" } else { "filter-chip" },
                                 r#type: "button",

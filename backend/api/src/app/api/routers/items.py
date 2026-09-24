@@ -10,11 +10,14 @@ from app.api.schemas.items import (
     ItemCreated,
     ItemStatus,
     ItemType,
+    ListedFile,
     ListedItem,
     ListItemsResponse,
 )
-from app.db import get_db_session
+from app.db import DbSession
 from app.items.services import (
+    EmptyFileError,
+    FileTooLargeError,
     EmptyImageError,
     ImageTooLargeError,
     InvalidCursorError,
@@ -45,7 +48,7 @@ _RESPONSES = {
 async def create_text_item(
     payload: CreateTextItemRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
 ) -> ItemCreated:
@@ -63,7 +66,7 @@ async def create_image_item(
     file: UploadFile = File(...),
     text: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
 ) -> ItemCreated:
@@ -82,6 +85,33 @@ async def create_image_item(
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
 
+@router.post(
+    "/items/file",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ItemCreated,
+    responses=_RESPONSES,
+)
+async def create_file_item(
+    file: UploadFile = File(...),
+    text: str | None = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
+) -> ItemCreated:
+    data = await file.read()
+    try:
+        item = await ItemService(session, storage, queue).create_file_item(
+            user_id=current_user.id, filename=file.filename, data=data, text=text
+        )
+    except EmptyFileError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
+    except FileTooLargeError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is too large (max 50 MB)") from None
+
+    return ItemCreated(id=item.id, status=ItemStatus(item.status))
+
+
 @router.get(
     "/items",
     status_code=status.HTTP_200_OK,
@@ -92,7 +122,7 @@ async def list_items(
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
 ) -> ListItemsResponse:
@@ -114,7 +144,7 @@ async def list_items(
 async def delete_item(
     item_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
 ) -> Response:
@@ -136,4 +166,13 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
         text=listed.item.text_content.text if listed.item.text_content else None,
         download_url=listed.download_url,
         thumbnail_url=listed.thumbnail_url,
+        file=(
+            ListedFile(
+                filename=listed.item.file.filename,
+                content_type=listed.item.file.content_type,
+                size_bytes=listed.item.file.size_bytes,
+            )
+            if listed.item.file
+            else None
+        ),
     )

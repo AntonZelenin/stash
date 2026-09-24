@@ -4,7 +4,7 @@ from stash_shared.queue.base import JobQueue
 
 from app.api.routers.items import to_listed_item
 from app.api.schemas.search import SearchRequest, SearchResponse
-from app.db import get_db_session
+from app.db import DbSession
 from app.dependencies import get_current_user
 from app.items.services import ItemService
 from app.queue import get_job_queue
@@ -27,7 +27,7 @@ router = APIRouter(tags=["search"])
 async def search_items(
     payload: SearchRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
 ) -> SearchResponse:

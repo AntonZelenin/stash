@@ -11,6 +11,7 @@ from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.queue.base import ImageRef, JobQueue, ProcessingJob
 
 from app.config import get_settings
+from app.items import files
 from app.items.models import Item, ItemStatus, ItemType
 from app.items.repos import ItemRepository
 from app.storage.base import ObjectStorage
@@ -25,6 +26,8 @@ _IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
+
+_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 _LINK_SCHEMES = {"http", "https"}
 
@@ -75,6 +78,14 @@ class ImageTooLargeError(Exception):
 
 
 class UnsupportedImageTypeError(Exception):
+    pass
+
+
+class EmptyFileError(Exception):
+    pass
+
+
+class FileTooLargeError(Exception):
     pass
 
 
@@ -183,17 +194,30 @@ class ItemService:
         return [
             ListedItem(
                 item=row,
-                download_url=await self._presign(row.image.storage_key if row.image else None),
+                download_url=await self._download_url_for(row),
                 thumbnail_url=await self._presign(row.image.thumbnail_key if row.image else None),
             )
             for row in rows
         ]
 
-    async def _presign(self, key: str | None) -> str | None:
+    async def _download_url_for(self, row: Item) -> str | None:
+        if row.image is not None:
+            return await self._presign(row.image.storage_key)
+        if row.file is not None:
+            # With the original filename, so it opens/saves under its name;
+            # displayed inline only if its format is safe to render.
+            return await self._presign(
+                row.file.storage_key,
+                filename=row.file.filename,
+                inline=files.is_inline(row.file.content_type),
+            )
+        return None
+
+    async def _presign(self, key: str | None, *, filename: str | None = None, inline: bool = True) -> str | None:
         if key is None:
             return None
         return await self._storage.generate_download_url(
-            key=key, expires_in=get_settings().image_download_url_ttl_seconds
+            key=key, expires_in=get_settings().image_download_url_ttl_seconds, filename=filename, inline=inline
         )
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
@@ -233,6 +257,41 @@ class ItemService:
             text=text,
         )
         await self._commit_and_enqueue(item, ImageRef(storage_key=storage_key, content_type=content_type))
+        return item
+
+    async def create_file_item(
+        self, *, user_id: uuid.UUID, filename: str | None, data: bytes, text: str | None = None
+    ) -> Item:
+        """Stores an uploaded file as-is. Any file type is accepted: a
+        recognized format keeps its real content type, anything else is
+        stored as a generic binary (see `app.items.files`). No
+        processing yet, so it isn't enqueued; `text` is an optional caption,
+        as for images."""
+        text = text.strip() if text is not None else None
+        text = text or None
+
+        if not data:
+            raise EmptyFileError()
+        if len(data) > _MAX_FILE_SIZE_BYTES:
+            raise FileTooLargeError()
+
+        filename = files.clean_filename(filename)
+        classified = files.classify(filename, data)
+
+        item_id = uuid.uuid4()
+        storage_key = f"files/{item_id}{classified.extension}"
+        await self._storage.upload(key=storage_key, data=data, content_type=classified.content_type)
+
+        item = await self._repo.create_file_item(
+            item_id=item_id,
+            user_id=user_id,
+            storage_key=storage_key,
+            filename=filename,
+            content_type=classified.content_type,
+            size_bytes=len(data),
+            text=text,
+        )
+        await self._session.commit()
         return item
 
     async def _commit_and_enqueue(self, item: Item, image: ImageRef) -> None:

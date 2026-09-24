@@ -172,18 +172,60 @@ impl ApiClient {
         data: Vec<u8>,
         text: Option<&str>,
     ) -> Result<ItemCreated, ApiError> {
+        self.upload_file(
+            "/items/image",
+            access_token,
+            file_name,
+            content_type,
+            data,
+            text,
+        )
+        .await
+    }
+
+    /// Uploads any file (PDF, e-book, archive, anything). The backend decides the
+    /// type from the file name's extension and checks the content matches.
+    pub async fn create_file_item(
+        &self,
+        access_token: &str,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+        text: Option<&str>,
+    ) -> Result<ItemCreated, ApiError> {
+        self.upload_file(
+            "/items/file",
+            access_token,
+            file_name,
+            content_type,
+            data,
+            text,
+        )
+        .await
+    }
+
+    /// Shared multipart upload: the file as `file`, plus an optional
+    /// caption as `text`, stored on the same item.
+    async fn upload_file(
+        &self,
+        path: &str,
+        access_token: &str,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+        text: Option<&str>,
+    ) -> Result<ItemCreated, ApiError> {
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(file_name.to_string())
             .mime_str(content_type)
             .map_err(|_| ApiError::Server)?;
         let mut form = reqwest::multipart::Form::new().part("file", part);
-        // Optional caption, stored on the same item as the image.
         if let Some(text) = text {
             form = form.text("text", text.to_string());
         }
 
         let response = self
-            .authenticated(Method::POST, "/items/image", access_token)
+            .authenticated(Method::POST, path, access_token)
             .multipart(form)
             .send()
             .await

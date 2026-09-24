@@ -103,6 +103,37 @@ impl AuthSession {
         .await
     }
 
+    pub async fn create_file_item(
+        &self,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+        text: Option<String>,
+    ) -> Result<ItemCreated, ApiError> {
+        let client = self.client.clone();
+        let file_name = file_name.to_string();
+        let content_type = content_type.to_string();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let file_name = file_name.clone();
+            let content_type = content_type.clone();
+            let data = data.clone();
+            let text = text.clone();
+            async move {
+                client
+                    .create_file_item(
+                        &access_token,
+                        &file_name,
+                        &content_type,
+                        data,
+                        text.as_deref(),
+                    )
+                    .await
+            }
+        })
+        .await
+    }
+
     pub async fn list_items(
         &self,
         cursor: Option<String>,

@@ -18,7 +18,14 @@ class ObjectStorage(ABC):
         ...
 
     @abstractmethod
-    async def generate_download_url(self, *, key: str, expires_in: int) -> str:
+    async def generate_download_url(
+        self, *, key: str, expires_in: int, filename: str | None = None, inline: bool = True
+    ) -> str:
         """Returns a temporary, pre-signed URL the client can fetch `key`
-        from directly, without proxying the bytes through the API."""
+        from directly, without proxying the bytes through the API.
+
+        With `filename`, the response names the file for saving, and tells
+        the browser to display it (`inline`, where it can) or always
+        download it (`inline=False`).
+        """
         ...

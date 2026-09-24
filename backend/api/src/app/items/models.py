@@ -14,6 +14,7 @@ class ItemType(str, Enum):
     text = "text"
     link = "link"
     image = "image"
+    file = "file"
 
 
 class ItemStatus(str, Enum):
@@ -42,6 +43,7 @@ class Item(Base):
 
     text_content: Mapped["TextContent | None"] = relationship(back_populates="item", uselist=False)
     image: Mapped["ImageMetadata | None"] = relationship(back_populates="item", uselist=False)
+    file: Mapped["FileMetadata | None"] = relationship(back_populates="item", uselist=False)
     description: Mapped["Description | None"] = relationship(back_populates="item", uselist=False)
     embedding: Mapped["Embedding | None"] = relationship(back_populates="item", uselist=False)
     tags: Mapped[list["ItemTag"]] = relationship(back_populates="item")
@@ -68,6 +70,21 @@ class ImageMetadata(Base):
     thumbnail_key: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     item: Mapped[Item] = relationship(back_populates="image")
+
+
+class FileMetadata(Base):
+    __tablename__ = "item_files"
+
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    storage_key: Mapped[str] = mapped_column(String)
+    # As uploaded (path components stripped), for display and as the
+    # download's filename.
+    filename: Mapped[str] = mapped_column(String)
+    # Derived from the validated file type, not the client's header.
+    content_type: Mapped[str] = mapped_column(String)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+
+    item: Mapped[Item] = relationship(back_populates="file")
 
 
 class Description(Base):

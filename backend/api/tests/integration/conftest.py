@@ -10,7 +10,7 @@ from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
-from app.items.models import Description, ImageMetadata, Item, TextContent
+from app.items.models import Description, FileMetadata, ImageMetadata, Item, TextContent
 from app.main import app
 from app.queue import get_job_queue
 from app.storage.base import ObjectStorage
@@ -25,6 +25,7 @@ _TEST_TABLES = [
     TextContent.__table__,
     ImageMetadata.__table__,
     Description.__table__,
+    FileMetadata.__table__,
 ]
 
 
@@ -40,8 +41,13 @@ class FakeObjectStorage(ObjectStorage):
     async def delete(self, *, key: str) -> None:
         self.uploads.pop(key, None)
 
-    async def generate_download_url(self, *, key: str, expires_in: int) -> str:
-        return f"https://fake-storage.test/{key}?expires_in={expires_in}"
+    async def generate_download_url(
+        self, *, key: str, expires_in: int, filename: str | None = None, inline: bool = True
+    ) -> str:
+        url = f"https://fake-storage.test/{key}?expires_in={expires_in}"
+        if filename is None:
+            return url
+        return f"{url}&filename={filename}&disposition={'inline' if inline else 'attachment'}"
 
 
 class FakeJobQueue(JobQueue):

@@ -9,6 +9,7 @@ class ItemType(str, Enum):
     text = "text"
     link = "link"
     image = "image"
+    file = "file"
 
 
 class ItemStatus(str, Enum):
@@ -35,15 +36,25 @@ class ItemCreated(BaseModel):
     status: ItemStatus
 
 
+class ListedFile(BaseModel):
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
 class ListedItem(BaseModel):
     id: UUID
     type: ItemType
     status: ItemStatus
     created_at: datetime
     text: str | None = None
-    # Temporary, pre-signed — set only for `type == image`, and only while
-    # the underlying object storage URL remains valid.
+    # Temporary, pre-signed — set only for `type == image`/`file`, and
+    # only while the underlying object storage URL remains valid. For
+    # files it opens inline where the browser can, under the original
+    # filename.
     download_url: str | None = None
+    # Set only for `type == file`.
+    file: ListedFile | None = None
     # Temporary, pre-signed URL of a small WebP version for display. Set
     # only for images, once the thumbnail worker has produced it; until then
     # clients should fall back to `download_url`.

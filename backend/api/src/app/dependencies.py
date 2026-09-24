@@ -3,7 +3,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.services import AuthService
-from app.db import get_db_session
+from app.db import DbSession
 from app.users.models import User
 
 _bearer_scheme = HTTPBearer(scheme_name="bearerAuth", auto_error=False)
@@ -19,7 +19,7 @@ def _unauthorized() -> HTTPException:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = DbSession,
 ) -> User:
     if credentials is None:
         raise _unauthorized()

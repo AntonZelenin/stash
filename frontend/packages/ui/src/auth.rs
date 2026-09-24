@@ -53,6 +53,49 @@ fn split_error(err: ApiError) -> FormErrors {
     }
 }
 
+/// Must match the backend's `UserCreateRequest.password` limits.
+const MIN_PASSWORD_CHARS: usize = 8;
+const MAX_PASSWORD_CHARS: usize = 72;
+
+/// A deliberately loose shape check — something@domain.tld, no spaces — for
+/// instant feedback on obvious typos. The backend does the real validation,
+/// and its verdict still lands on the email field if it disagrees.
+fn validate_email(email: &str) -> Option<String> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Some("Enter your email".to_string());
+    }
+    let looks_valid = match email.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && !domain.contains('@')
+                && !email.chars().any(char::is_whitespace)
+                && domain
+                    .split_once('.')
+                    .is_some_and(|(name, rest)| !name.is_empty() && !rest.is_empty())
+                && !domain.ends_with('.')
+        }
+        None => false,
+    };
+    (!looks_valid).then(|| "Enter a valid email address".to_string())
+}
+
+/// Signup rules for a new password (login only requires one to be entered).
+fn validate_new_password(password: &str) -> Option<String> {
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_CHARS {
+        Some(format!(
+            "Password must be at least {MIN_PASSWORD_CHARS} characters"
+        ))
+    } else if length > MAX_PASSWORD_CHARS {
+        Some(format!(
+            "Password must be at most {MAX_PASSWORD_CHARS} characters"
+        ))
+    } else {
+        None
+    }
+}
+
 #[component]
 pub fn Auth() -> Element {
     let session = use_context::<AuthSession>();
@@ -127,20 +170,32 @@ fn LoginForm() -> Element {
     rsx! {
         form {
             class: "auth-form",
+            // Our own validation shows errors on the fields; the browser's
+            // built-in one (triggered by `type="email"`) would block submit
+            // first with at most a native tooltip.
+            novalidate: true,
             onsubmit: move |evt| {
                 evt.prevent_default();
                 if is_submitting() {
                     return;
                 }
 
+                general_error.set(None);
+                email_error.set(validate_email(&email()));
+                password_error.set(
+                    password()
+                        .is_empty()
+                        .then(|| "Enter your password".to_string()),
+                );
+                if email_error().is_some() || password_error().is_some() {
+                    return;
+                }
+
                 let session = session.clone();
                 spawn(async move {
                     is_submitting.set(true);
-                    general_error.set(None);
-                    email_error.set(None);
-                    password_error.set(None);
 
-                    if let Err(err) = session.login(&email(), &password()).await {
+                    if let Err(err) = session.login(email().trim(), &password()).await {
                         let errors = split_error(err);
                         general_error.set(errors.general);
                         email_error.set(errors.email);
@@ -163,7 +218,10 @@ fn LoginForm() -> Element {
                     r#type: "email",
                     placeholder: "Email",
                     value: "{email}",
-                    oninput: move |evt| email.set(evt.value()),
+                    oninput: move |evt| {
+                        email.set(evt.value());
+                        email_error.set(None);
+                    },
                 }
             }
             if let Some(message) = email_error() {
@@ -178,7 +236,10 @@ fn LoginForm() -> Element {
                     r#type: if show_password() { "text" } else { "password" },
                     placeholder: "Password",
                     value: "{password}",
-                    oninput: move |evt| password.set(evt.value()),
+                    oninput: move |evt| {
+                        password.set(evt.value());
+                        password_error.set(None);
+                    },
                 }
                 button {
                     class: "input-icon-button",
@@ -225,6 +286,10 @@ fn SignupForm() -> Element {
     rsx! {
         form {
             class: "auth-form",
+            // Our own validation shows errors on the fields; the browser's
+            // built-in one (triggered by `type="email"`) would block submit
+            // first with at most a native tooltip.
+            novalidate: true,
             onsubmit: move |evt| {
                 evt.prevent_default();
                 if is_submitting() {
@@ -232,12 +297,16 @@ fn SignupForm() -> Element {
                 }
 
                 general_error.set(None);
-                email_error.set(None);
-                password_error.set(None);
-                confirm_password_error.set(None);
-
-                if password() != confirm_password() {
-                    confirm_password_error.set(Some("Passwords don't match".to_string()));
+                email_error.set(validate_email(&email()));
+                password_error.set(validate_new_password(&password()));
+                confirm_password_error.set(
+                    (password() != confirm_password())
+                        .then(|| "Passwords don't match".to_string()),
+                );
+                if email_error().is_some()
+                    || password_error().is_some()
+                    || confirm_password_error().is_some()
+                {
                     return;
                 }
 
@@ -245,7 +314,7 @@ fn SignupForm() -> Element {
                 spawn(async move {
                     is_submitting.set(true);
 
-                    if let Err(err) = session.register(&email(), &password()).await {
+                    if let Err(err) = session.register(email().trim(), &password()).await {
                         let errors = split_error(err);
                         general_error.set(errors.general);
                         email_error.set(errors.email);
@@ -268,7 +337,10 @@ fn SignupForm() -> Element {
                     r#type: "email",
                     placeholder: "Email",
                     value: "{email}",
-                    oninput: move |evt| email.set(evt.value()),
+                    oninput: move |evt| {
+                        email.set(evt.value());
+                        email_error.set(None);
+                    },
                 }
             }
             if let Some(message) = email_error() {
@@ -283,7 +355,10 @@ fn SignupForm() -> Element {
                     r#type: if show_password() { "text" } else { "password" },
                     placeholder: "Password",
                     value: "{password}",
-                    oninput: move |evt| password.set(evt.value()),
+                    oninput: move |evt| {
+                        password.set(evt.value());
+                        password_error.set(None);
+                    },
                 }
                 button {
                     class: "input-icon-button",
@@ -304,7 +379,10 @@ fn SignupForm() -> Element {
                     r#type: if show_password() { "text" } else { "password" },
                     placeholder: "Confirm password",
                     value: "{confirm_password}",
-                    oninput: move |evt| confirm_password.set(evt.value()),
+                    oninput: move |evt| {
+                        confirm_password.set(evt.value());
+                        confirm_password_error.set(None);
+                    },
                 }
             }
             if let Some(message) = confirm_password_error() {
@@ -318,5 +396,52 @@ fn SignupForm() -> Element {
                 if is_submitting() { "Signing up..." } else { "Sign up" }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_plausible_emails() {
+        for email in [
+            "me@example.com",
+            "first.last+tag@mail.example.co.uk",
+            "  padded@example.com  ",
+        ] {
+            assert_eq!(validate_email(email), None, "{email}");
+        }
+    }
+
+    #[test]
+    fn rejects_obvious_email_typos() {
+        assert_eq!(validate_email("   "), Some("Enter your email".to_string()));
+        for email in [
+            "not-an-email",
+            "@example.com",
+            "me@",
+            "me@example",
+            "me@.com",
+            "me@example.",
+            "me@@example.com",
+            "me @example.com",
+        ] {
+            assert_eq!(
+                validate_email(email),
+                Some("Enter a valid email address".to_string()),
+                "{email}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_password_length_matches_backend_limits() {
+        assert!(validate_new_password("short").is_some());
+        assert_eq!(validate_new_password("exactly8"), None);
+        assert_eq!(validate_new_password(&"x".repeat(72)), None);
+        assert!(validate_new_password(&"x".repeat(73)).is_some());
+        // Counted in characters, like the backend, not bytes.
+        assert_eq!(validate_new_password("пароль12"), None);
     }
 }

@@ -457,6 +457,21 @@
     object-fit: cover;
 }
 
+/* A staged non-image file has no preview image: a file icon on a tile the same
+   size as an image thumbnail, so mixed batches line up. */
+.home-file-preview-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fff;
+    color: var(--text-muted);
+}
+
+.home-file-preview-icon .icon {
+    width: 20px;
+    height: 20px;
+}
+
 .home-image-preview-name {
     flex: 1;
     min-width: 0;

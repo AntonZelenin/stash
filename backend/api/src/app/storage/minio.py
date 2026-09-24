@@ -1,5 +1,6 @@
 import asyncio
 from functools import lru_cache
+from urllib.parse import quote
 
 import boto3
 from botocore.client import Config
@@ -63,13 +64,30 @@ class MinioStorage(ObjectStorage):
         # S3 DeleteObject already succeeds for a missing key.
         await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
 
-    async def generate_download_url(self, *, key: str, expires_in: int) -> str:
+    async def generate_download_url(
+        self, *, key: str, expires_in: int, filename: str | None = None, inline: bool = True
+    ) -> str:
+        params = {"Bucket": self._bucket, "Key": key}
+        if filename is not None:
+            # Signed into the URL, so S3 sends it back as the response's
+            # Content-Disposition header.
+            params["ResponseContentDisposition"] = _content_disposition(filename, inline=inline)
         return await asyncio.to_thread(
             self._public_client.generate_presigned_url,
             "get_object",
-            Params={"Bucket": self._bucket, "Key": key},
+            Params=params,
             ExpiresIn=expires_in,
         )
+
+
+def _content_disposition(filename: str, *, inline: bool) -> str:
+    """`inline` lets browsers display what they can (PDFs, text);
+    `attachment` always downloads. The name goes in twice, per RFC 6266: an
+    ASCII-only fallback plus the exact UTF-8 name (`filename*`), which modern
+    browsers use."""
+    disposition = "inline" if inline else "attachment"
+    ascii_fallback = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @lru_cache

@@ -1,7 +1,7 @@
 use api::ListedItem;
 use dioxus::prelude::*;
 
-use crate::icons::{IconClose, IconLink, IconMoreHorizontal, IconTrash};
+use crate::icons::{IconClose, IconFile, IconLink, IconMoreHorizontal, IconTrash};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 
@@ -114,6 +114,19 @@ fn ItemCard(
         },
         ("link", _, Some(url)) => rsx! {
             LinkCard { url: url.clone() }
+        },
+        // Before the catch-all below: a file with a caption has `text`
+        // too.
+        ("file", _, caption) => match (&item.file, &item.download_url) {
+            (Some(file), Some(url)) => rsx! {
+                FileCard {
+                    url: url.clone(),
+                    filename: file.filename.clone(),
+                    size_bytes: file.size_bytes,
+                    caption: caption.clone(),
+                }
+            },
+            _ => return rsx! {},
         },
         (_, _, Some(text)) => rsx! {
             NoteCard { text: text.clone() }
@@ -246,6 +259,60 @@ fn Lightbox(url: String, on_close: EventHandler<()>) -> Element {
     }
 }
 
+/// Compact card for an uploaded file: file icon, original filename and
+/// its type/size, plus the caption if one was added. The whole card links
+/// to the file's download URL, which the backend signs so it opens in a new
+/// tab where the browser can show it (PDF, text) and downloads under its
+/// original name otherwise.
+#[component]
+fn FileCard(url: String, filename: String, size_bytes: u64, caption: Option<String>) -> Element {
+    let details = file_details(&filename, size_bytes);
+
+    rsx! {
+        a {
+            class: "item-card item-card-file",
+            href: "{url}",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            title: "{filename}",
+            span { class: "item-card-file-row",
+                span { class: "item-card-file-icon", IconFile {} }
+                span { class: "item-card-file-body",
+                    span { class: "item-card-file-name", "{filename}" }
+                    span { class: "item-card-file-details", "{details}" }
+                }
+            }
+            if let Some(caption) = caption {
+                span { class: "item-card-file-caption", "{caption}" }
+            }
+        }
+    }
+}
+
+/// "PDF · 1.2 MB": the extension as a type label, plus a readable size.
+fn file_details(filename: &str, size_bytes: u64) -> String {
+    let size = format_size(size_bytes);
+    match filename.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+            format!("{} · {size}", extension.to_uppercase())
+        }
+        _ => size,
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes_f >= MB {
+        format!("{:.1} MB", bytes_f / MB)
+    } else if bytes_f >= KB {
+        format!("{:.0} KB", bytes_f / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Compact link card. The API only stores the URL itself (no page title or
 /// preview image yet), so the domain stands in as the title and the rest of
 /// the URL as the subtitle.
@@ -302,6 +369,16 @@ mod tests {
         assert_eq!(column_count(759.0), 2);
         assert_eq!(column_count(760.0), 3);
         assert_eq!(column_count(5000.0), 3);
+    }
+
+    #[test]
+    fn file_details_show_type_and_readable_size() {
+        assert_eq!(file_details("Report Q3.pdf", 1_258_291), "PDF · 1.2 MB");
+        assert_eq!(file_details("notes.md", 2_048), "MD · 2 KB");
+        assert_eq!(file_details("tiny.txt", 12), "TXT · 12 B");
+        // No usable extension: size only.
+        assert_eq!(file_details("README", 12), "12 B");
+        assert_eq!(file_details(".bashrc", 12), "12 B");
     }
 
     #[test]

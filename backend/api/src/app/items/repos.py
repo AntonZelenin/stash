@@ -6,13 +6,21 @@ from sqlalchemy import and_, delete, func, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.items.models import Description, ImageMetadata, Item, ItemStatus, ItemType, TextContent
+from app.items.models import (
+    Description,
+    FileMetadata,
+    ImageMetadata,
+    Item,
+    ItemStatus,
+    ItemType,
+    TextContent,
+)
 
 
 @dataclass(frozen=True)
 class DeletedItem:
-    # Objects the item had in storage (original image, thumbnail), for the
-    # caller to clean up once the delete is committed; empty for non-images.
+    # Objects the item had in storage (original image, thumbnail, uploaded
+    # file), for the caller to clean up once the delete is committed.
     storage_keys: list[str]
 
 
@@ -77,6 +85,37 @@ class ItemRepository:
         await self._session.flush()
         return item
 
+    async def create_file_item(
+        self,
+        *,
+        item_id: uuid.UUID,
+        user_id: uuid.UUID,
+        storage_key: str,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        text: str | None = None,
+    ) -> Item:
+        # No processing for files yet, so they're finished as soon as
+        # they're stored, like text items.
+        item = Item(
+            id=item_id,
+            user_id=user_id,
+            type=ItemType.file,
+            status=ItemStatus.completed,
+            file=FileMetadata(
+                storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
+            ),
+        )
+        if text is not None:
+            # Optional caption, same as for images (and searchable the same
+            # way, via the description).
+            item.text_content = TextContent(text=text)
+            item.description = Description(text=text)
+        self._session.add(item)
+        await self._session.flush()
+        return item
+
     async def delete_item(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> DeletedItem | None:
         """Deletes the user's item and, via `ON DELETE CASCADE`, every row
         hanging off it. Returns None if there's no such item *owned by this
@@ -84,15 +123,22 @@ class ItemRepository:
         """
         row = (
             await self._session.execute(
-                select(Item.id, ImageMetadata.storage_key, ImageMetadata.thumbnail_key)
+                select(
+                    Item.id,
+                    ImageMetadata.storage_key,
+                    ImageMetadata.thumbnail_key,
+                    FileMetadata.storage_key.label("file_key"),
+                )
                 .outerjoin(ImageMetadata, ImageMetadata.item_id == Item.id)
+                .outerjoin(FileMetadata, FileMetadata.item_id == Item.id)
                 .where(Item.id == item_id, Item.user_id == user_id)
             )
         ).first()
         if row is None:
             return None
         await self._session.execute(delete(Item).where(Item.id == item_id))
-        return DeletedItem(storage_keys=[key for key in (row.storage_key, row.thumbnail_key) if key is not None])
+        keys = (row.storage_key, row.thumbnail_key, row.file_key)
+        return DeletedItem(storage_keys=[key for key in keys if key is not None])
 
     async def search_items(self, *, user_id: uuid.UUID, tsquery: str, limit: int) -> list[Item]:
         """The user's items whose description matches `tsquery` (a
@@ -108,7 +154,7 @@ class ItemRepository:
         stmt = (
             select(Item)
             .join(Description, Description.item_id == Item.id)
-            .options(selectinload(Item.text_content), selectinload(Item.image))
+            .options(selectinload(Item.text_content), selectinload(Item.image), selectinload(Item.file))
             .where(Item.user_id == user_id, search_vector.op("@@")(query))
             .order_by(func.ts_rank(search_vector, query).desc(), Item.created_at.desc(), Item.id.desc())
             .limit(limit)
@@ -132,7 +178,7 @@ class ItemRepository:
         timestamp collisions."""
         stmt = (
             select(Item)
-            .options(selectinload(Item.text_content), selectinload(Item.image))
+            .options(selectinload(Item.text_content), selectinload(Item.image), selectinload(Item.file))
             .where(Item.user_id == user_id)
         )
         if cursor_created_at is not None and cursor_id is not None:
