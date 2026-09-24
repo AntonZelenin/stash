@@ -11,7 +11,11 @@ base64 = { workspace = true }
 # its built-in timer thread; the browser has no threads, so wasm switches
 # it to JS timers via `wasm-bindgen` below.
 futures-timer = "3"
+# Showing item dates in the user's local time zone. Native targets read the
+# OS time zone; wasm reads the browser's via `wasmbind` below.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "wasmbind"] }
 

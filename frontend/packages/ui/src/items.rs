@@ -1,4 +1,5 @@
 use api::ListedItem;
+use chrono::{DateTime, Local, TimeZone};
 use dioxus::prelude::*;
 
 use crate::icons::{IconClose, IconFile, IconLink, IconMoreHorizontal, IconTrash};
@@ -81,6 +82,47 @@ pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Elem
     }
 }
 
+/// When an item was saved, formatted for its card: a short date shown on the
+/// card, and the full date and time for its tooltip.
+#[derive(Clone, PartialEq)]
+struct UploadDate {
+    label: String,
+    full: String,
+}
+
+impl UploadDate {
+    /// `created_at` is the API's RFC 3339 timestamp; shown in the user's
+    /// local time zone, so an item saved just before midnight isn't dated
+    /// the next day. None if the timestamp can't be parsed.
+    fn from_api(created_at: &str) -> Option<Self> {
+        Self::in_zone(created_at, &Local)
+    }
+
+    fn in_zone<Tz: TimeZone>(created_at: &str, zone: &Tz) -> Option<Self>
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let local = DateTime::parse_from_rfc3339(created_at)
+            .ok()?
+            .with_timezone(zone);
+        Some(Self {
+            label: local.format("%-d %b %Y").to_string(),
+            full: local.format("%-d %B %Y, %H:%M").to_string(),
+        })
+    }
+}
+
+/// The upload date, in the bottom-right corner of a card.
+#[component]
+fn CardDate(date: Option<UploadDate>) -> Element {
+    match date {
+        Some(date) => rsx! {
+            span { class: "item-card-date", title: "{date.full}", "{date.label}" }
+        },
+        None => rsx! {},
+    }
+}
+
 /// One saved item, rendered according to its type, with its actions menu.
 ///
 /// The menu sits in a wrapper *beside* the card rather than inside it: the
@@ -100,11 +142,13 @@ fn ItemCard(
     // image opens the original.
     let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
     let full_size_url = item.download_url.clone().or(item.thumbnail_url.clone());
+    let date = UploadDate::from_api(&item.created_at);
     let body = match (item.r#type.as_str(), image_url, &item.text) {
         ("image", Some(url), caption) => rsx! {
             ImageCard {
                 url: url.clone(),
                 caption: caption.clone(),
+                date: date.clone(),
                 on_open: move |_| {
                     if let Some(url) = full_size_url.clone() {
                         on_view.call(url);
@@ -113,7 +157,7 @@ fn ItemCard(
             }
         },
         ("link", _, Some(url)) => rsx! {
-            LinkCard { url: url.clone() }
+            LinkCard { url: url.clone(), date: date.clone() }
         },
         // Before the catch-all below: a file with a caption has `text`
         // too.
@@ -124,12 +168,13 @@ fn ItemCard(
                     filename: file.filename.clone(),
                     size_bytes: file.size_bytes,
                     caption: caption.clone(),
+                    date: date.clone(),
                 }
             },
             _ => return rsx! {},
         },
         (_, _, Some(text)) => rsx! {
-            NoteCard { text: text.clone() }
+            NoteCard { text: text.clone(), date: date.clone() }
         },
         // e.g. an image whose download URL couldn't be produced.
         _ => return rsx! {},
@@ -185,10 +230,11 @@ fn ItemMenu(on_delete: EventHandler<()>) -> Element {
 
 /// Grows with its text up to a line limit, then truncates with an ellipsis.
 #[component]
-fn NoteCard(text: String) -> Element {
+fn NoteCard(text: String, date: Option<UploadDate>) -> Element {
     rsx! {
         div { class: "item-card item-card-note",
             p { class: "item-card-note-text", "{text}" }
+            CardDate { date }
         }
     }
 }
@@ -201,14 +247,22 @@ fn NoteCard(text: String) -> Element {
 ///
 /// Clicking the card (image or caption) calls `on_open`.
 #[component]
-fn ImageCard(url: String, caption: Option<String>, on_open: EventHandler<()>) -> Element {
+fn ImageCard(
+    url: String,
+    caption: Option<String>,
+    date: Option<UploadDate>,
+    on_open: EventHandler<()>,
+) -> Element {
     rsx! {
         div {
             class: "item-card item-card-image",
             onclick: move |_| on_open.call(()),
             img { src: "{url}", alt: "Saved image", loading: "lazy" }
-            if let Some(caption) = caption {
-                p { class: "item-card-image-caption", "{caption}" }
+            div { class: "item-card-image-footer",
+                if let Some(caption) = caption {
+                    p { class: "item-card-image-caption", "{caption}" }
+                }
+                CardDate { date }
             }
         }
     }
@@ -265,7 +319,13 @@ fn Lightbox(url: String, on_close: EventHandler<()>) -> Element {
 /// tab where the browser can show it (PDF, text) and downloads under its
 /// original name otherwise.
 #[component]
-fn FileCard(url: String, filename: String, size_bytes: u64, caption: Option<String>) -> Element {
+fn FileCard(
+    url: String,
+    filename: String,
+    size_bytes: u64,
+    caption: Option<String>,
+    date: Option<UploadDate>,
+) -> Element {
     let details = file_details(&filename, size_bytes);
 
     rsx! {
@@ -285,6 +345,7 @@ fn FileCard(url: String, filename: String, size_bytes: u64, caption: Option<Stri
             if let Some(caption) = caption {
                 span { class: "item-card-file-caption", "{caption}" }
             }
+            CardDate { date }
         }
     }
 }
@@ -317,7 +378,7 @@ fn format_size(bytes: u64) -> String {
 /// preview image yet), so the domain stands in as the title and the rest of
 /// the URL as the subtitle.
 #[component]
-fn LinkCard(url: String) -> Element {
+fn LinkCard(url: String, date: Option<UploadDate>) -> Element {
     let (domain, rest) = split_url(&url);
 
     rsx! {
@@ -326,13 +387,16 @@ fn LinkCard(url: String) -> Element {
             href: "{url}",
             target: "_blank",
             rel: "noopener noreferrer",
-            span { class: "item-card-link-icon", IconLink {} }
-            span { class: "item-card-link-body",
-                span { class: "item-card-link-title", "{domain}" }
-                if let Some(rest) = rest {
-                    span { class: "item-card-link-path", "{rest}" }
+            span { class: "item-card-link-row",
+                span { class: "item-card-link-icon", IconLink {} }
+                span { class: "item-card-link-body",
+                    span { class: "item-card-link-title", "{domain}" }
+                    if let Some(rest) = rest {
+                        span { class: "item-card-link-path", "{rest}" }
+                    }
                 }
             }
+            CardDate { date }
         }
     }
 }
@@ -369,6 +433,37 @@ mod tests {
         assert_eq!(column_count(759.0), 2);
         assert_eq!(column_count(760.0), 3);
         assert_eq!(column_count(5000.0), 3);
+    }
+
+    #[test]
+    fn upload_date_is_shown_in_the_viewers_time_zone() {
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        let lisbon_summer = chrono::FixedOffset::east_opt(3600).unwrap();
+        let new_york = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+
+        // Pydantic's format: fractional seconds, "Z" for UTC.
+        let date = UploadDate::in_zone("2026-09-24T12:21:14.658513Z", &utc).unwrap();
+        assert_eq!(date.label, "24 Sep 2026");
+        assert_eq!(date.full, "24 September 2026, 12:21");
+
+        // Just before midnight UTC is already the next day an hour east,
+        // and just after is still the previous day four hours west.
+        let late = "2026-09-24T23:30:00+00:00";
+        assert_eq!(
+            UploadDate::in_zone(late, &lisbon_summer).unwrap().label,
+            "25 Sep 2026"
+        );
+        let early = "2026-09-25T01:00:00Z";
+        assert_eq!(
+            UploadDate::in_zone(early, &new_york).unwrap().label,
+            "24 Sep 2026"
+        );
+    }
+
+    #[test]
+    fn unparseable_upload_date_is_omitted() {
+        assert!(UploadDate::from_api("not a date").is_none());
+        assert!(UploadDate::from_api("").is_none());
     }
 
     #[test]
