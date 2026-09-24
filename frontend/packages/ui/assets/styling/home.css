@@ -22,26 +22,47 @@
 
 /* ---- top bar ---- */
 
+/* Stays pinned to the top of the viewport while the page scrolls. Above
+   page content, but below the drag-and-drop overlay (z-index 20), popup
+   menus and their click-catching backdrops (30-31), and the image viewer
+   (100). */
 .top-bar {
+    position: sticky;
+    top: 0;
+    z-index: 15;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 18px 32px;
+    padding: 7.5px 24px;
+    border-bottom: 1px solid rgba(20, 22, 27, 0.06);
+}
+
+/* The frosted background lives on a pseudo-element: a backdrop-filter on
+   .top-bar itself would make it the containing block for the fixed
+   .menu-backdrop, shrinking that to the bar instead of the viewport. */
+.top-bar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: rgba(255, 255, 255, 0.72);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
 }
 
 .top-bar-brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .top-bar-brand .icon-stash {
-    width: 28px;
-    height: 28px;
+    width: 22px;
+    height: 22px;
 }
 
 .top-bar-name {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 800;
     letter-spacing: -0.01em;
     color: var(--text-primary);
@@ -52,8 +73,8 @@
 }
 
 .menu-button {
-    width: 40px;
-    height: 40px;
+    width: 32px;
+    height: 32px;
     padding: 2px;
     border: none;
     border-radius: 50%;
@@ -73,8 +94,8 @@
 }
 
 .menu-button-inner .icon {
-    width: 18px;
-    height: 18px;
+    width: 15px;
+    height: 15px;
 }
 
 /* Catches clicks outside the open menu (see TopBar). Below the dropdown
@@ -87,7 +108,7 @@
 
 .menu-dropdown {
     position: absolute;
-    top: calc(100% + 12px);
+    top: calc(100% + 10px);
     right: 0;
     width: 240px;
     padding: 8px;
