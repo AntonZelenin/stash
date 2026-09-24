@@ -103,6 +103,13 @@ Stores:
 - Embeddings.
 - Processing status.
 
+The schema is managed with Alembic (`backend/api/alembic`). By default the
+API container applies pending migrations on startup. Setting
+`RUN_MIGRATIONS=false` turns that off, for deployments where the API's
+database user has DML rights only; migrations then run as a separate
+one-off task from the same image (`alembic upgrade head`), as the schema
+owner, before the API rolls out.
+
 ### Object Storage
 
 Stores uploaded images.
@@ -114,6 +121,9 @@ Environments:
 - Production: DigitalOcean Spaces.
 
 The same storage integration should work in both environments; endpoint, credentials, bucket and other configuration are environment-specific.
+An empty endpoint means AWS S3 itself, and empty access keys mean boto3's
+default credential chain (e.g. an ECS task role), so the same code also runs
+on AWS without static keys.
 
 ### Queue
 

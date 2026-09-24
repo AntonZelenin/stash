@@ -34,9 +34,15 @@ class Settings(BaseSettings):
     # (e.g. production, with DigitalOcean Spaces) where there's no
     # internal/external split.
     s3_public_endpoint_url: str = "http://localhost:9000"
+    # Set both endpoints and both keys to "" on AWS: S3 itself, with the
+    # task role's credentials.
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "stash"
+    # A pre-signed URL also stops working when the credentials that signed
+    # it expire. With a task role's temporary credentials (boto3 only
+    # refreshes them shortly before they expire) that can be well before
+    # this TTL, so keep it short there and let clients re-fetch the URL.
     image_download_url_ttl_seconds: int = 3600
     # Search queries are embedded with this; it must be the model the
     # embedding worker uses for item text.

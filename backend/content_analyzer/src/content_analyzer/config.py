@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     max_stale_requeues: int = 3
     stale_sweep_interval_seconds: float = 60.0
 
+    # Set the endpoint and both keys to "" on AWS: S3 itself, with the task
+    # role's credentials.
     s3_endpoint_url: str = "http://localhost:9000"
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"

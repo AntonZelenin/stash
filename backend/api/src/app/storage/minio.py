@@ -24,6 +24,9 @@ class MinioStorage(ObjectStorage):
     endpoint is actually reachable from outside the network (e.g.
     `localhost` locally; the same public endpoint in production, where
     there's no internal/external split).
+
+    Empty endpoints mean AWS S3 itself, and empty keys mean boto3's default
+    credential chain (e.g. an ECS task role), instead of passing "" through.
     """
 
     def __init__(
@@ -36,23 +39,11 @@ class MinioStorage(ObjectStorage):
         bucket: str,
     ):
         self._bucket = bucket
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            config=Config(signature_version="s3v4"),
-        )
+        self._client = _s3_client(endpoint_url, access_key, secret_key)
         self._public_client = (
             self._client
-            if public_endpoint_url == endpoint_url
-            else boto3.client(
-                "s3",
-                endpoint_url=public_endpoint_url,
-                aws_access_key_id=access_key,
-                aws_secret_access_key=secret_key,
-                config=Config(signature_version="s3v4"),
-            )
+            if (public_endpoint_url or None) == (endpoint_url or None)
+            else _s3_client(public_endpoint_url, access_key, secret_key)
         )
 
     async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
@@ -108,6 +99,16 @@ def _content_disposition(filename: str, *, inline: bool) -> str:
     disposition = "inline" if inline else "attachment"
     ascii_fallback = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
     return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
+def _s3_client(endpoint_url: str, access_key: str, secret_key: str):
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url or None,
+        aws_access_key_id=access_key or None,
+        aws_secret_access_key=secret_key or None,
+        config=Config(signature_version="s3v4"),
+    )
 
 
 @lru_cache

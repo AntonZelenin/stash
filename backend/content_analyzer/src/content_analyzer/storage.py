@@ -39,15 +39,21 @@ class S3ObjectStore(ObjectStore):
     """S3-compatible storage (MinIO locally, DigitalOcean Spaces in
     production). Deliberately separate from the API's `app.storage`, same
     reasoning as `content_analyzer.items`: the workers need only these few
-    operations, and shouldn't depend on the API package to get them."""
+    operations, and shouldn't depend on the API package to get them.
+
+    An empty `endpoint_url` means AWS S3 itself, and empty keys mean boto3's
+    default credential chain (e.g. an ECS task role), instead of passing ""
+    through. On AWS, missing keys only read as `NoSuchKey` (a permanent
+    error) if the role may `s3:ListBucket`; otherwise S3 answers
+    `AccessDenied`, which is retried as transient."""
 
     def __init__(self, *, endpoint_url: str, access_key: str, secret_key: str, bucket: str):
         self._bucket = bucket
         self._client = boto3.client(
             "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+            endpoint_url=endpoint_url or None,
+            aws_access_key_id=access_key or None,
+            aws_secret_access_key=secret_key or None,
             config=Config(signature_version="s3v4"),
         )
 
