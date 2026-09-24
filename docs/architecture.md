@@ -10,9 +10,9 @@ The MVP supports:
 - Uploading images.
 - Uploading any file (max 50 MB) as a `file` item. Recognized formats (PDF,
   Office, ODF, iWork, EPUB, FB2, MOBI, DjVu, text/data...) keep their MIME
-  type and are flagged `analyzable` where text extraction is planned; other
-  files are stored as generic downloads. No analysis/extraction yet (see
-  `backend/api/src/app/items/files.py`).
+  type; other files are stored as generic downloads (see
+  `backend/api/src/app/items/files.py`). `analyzable` formats get an
+  automatic description of what the document is and is about.
 - Automatic image description and tag generation.
 - Semantic and keyword-based search across saved content.
 - Searching by tags and generated descriptions.
@@ -176,11 +176,26 @@ Client → API → PostgreSQL → Queue → Worker → PostgreSQL
 ### Save File
 
 Client → API → Object Storage (`files/{item_id}[.{ext}]`)
-             → PostgreSQL (`item_files`; item created `completed`)
+             → PostgreSQL (`item_files`)
+             → document_analysis_jobs → Document Analyzer → OpenAI
+                                                          → PostgreSQL
 
-No queue or worker involvement yet. The listing's pre-signed `download_url`
-serves the file under its original filename: inline for PDF, plain text and
-JSON, as a download for everything else.
+Only `analyzable` formats are enqueued (item created `pending`); anything
+else is created `completed` with no processing. The document analyzer
+(`document_analyzer` service) extracts the file's plain text with a
+per-format parser (`content_analyzer.documents.parsers`), caps what it sends
+to OpenAI at `DOCUMENT_ANALYSIS_MAX_CHARS` characters — longer documents are
+represented by their beginning plus evenly spaced samples — and stores a
+short description of what the document is and is about (not a summary) in
+`item_descriptions`, after any caption. It uses the same `Worker` as the
+image stages, so retries, backoff, the 5-attempt limit, dead-lettering (to
+`stash:document_analysis_jobs:dead-letter`) and ack-after-durable-outcome
+all behave identically. Unparsable, unsupported or text-less files (e.g.
+scanned PDFs: there is no OCR) fail immediately without retries.
+
+The listing's pre-signed `download_url` serves the file under its original
+filename: inline for PDF, plain text and JSON, as a download for everything
+else.
 
 ### Save Image
 

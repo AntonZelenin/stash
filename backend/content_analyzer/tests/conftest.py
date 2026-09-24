@@ -33,6 +33,12 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
         await conn.execute(text("CREATE TABLE item_text_contents (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(
             text(
+                "CREATE TABLE item_files (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "
+                "content_type TEXT NOT NULL, filename TEXT NOT NULL)"
+            )
+        )
+        await conn.execute(
+            text(
                 "CREATE TABLE item_images (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "
                 "content_type TEXT NOT NULL, thumbnail_key TEXT)"
             )
@@ -52,10 +58,12 @@ async def insert_item(
     storage_key: str | None = "images/cat.png",
     caption: str | None = None,
     thumbnail_key: str | None = None,
+    file: tuple[str, str, str] | None = None,
 ) -> None:
     """`age_seconds` backdates `status_updated_at`. Image items also get an
     `item_images` row unless `storage_key` is None, and an
-    `item_text_contents` row if `caption` is given."""
+    `item_text_contents` row if `caption` is given. `file` is a file item's
+    (storage_key, content_type, filename) for its `item_files` row."""
     updated_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
     async with engine.begin() as conn:
         await conn.execute(
@@ -79,6 +87,14 @@ async def insert_item(
                     "VALUES (:id, :key, 'image/png', :thumbnail_key)"
                 ),
                 {"id": str(item_id), "key": storage_key, "thumbnail_key": thumbnail_key},
+            )
+        if file is not None:
+            await conn.execute(
+                text(
+                    "INSERT INTO item_files (item_id, storage_key, content_type, filename) "
+                    "VALUES (:id, :key, :content_type, :filename)"
+                ),
+                {"id": str(item_id), "key": file[0], "content_type": file[1], "filename": file[2]},
             )
         if caption is not None:
             await conn.execute(

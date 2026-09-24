@@ -191,8 +191,11 @@ paths:
     post:
       summary: Save a file
       description: >-
-        Stores any file as-is, up to 50 MB (no processing yet); the item is
-        created already `completed`. Recognized formats — documents (PDF,
+        Stores any file as-is, up to 50 MB. Analyzable formats (PDF,
+        DOCX/XLSX/PPTX, ODT/ODS/ODP, RTF, EPUB, FB2, FB2.ZIP and the
+        text/data formats) are created `pending` and analyzed asynchronously
+        into a searchable description; everything else is created already
+        `completed`. Recognized formats — documents (PDF,
         Office, OpenDocument, RTF, iWork), books (EPUB, FB2, FB2.ZIP,
         MOBI/AZW/AZW3, DjVu), text/data (TXT, MD, CSV, TSV, JSON, YAML, XML,
         HTML, LOG) and ZIP — keep their real content type, taken from the
@@ -225,7 +228,7 @@ paths:
 
       responses:
         "202":
-          description: Item created
+          description: Item created (`pending` if it will be analyzed, otherwise `completed`)
           content:
             application/json:
               schema:

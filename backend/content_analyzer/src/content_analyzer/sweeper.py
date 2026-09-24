@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import ImageRef, ItemType, JobQueue, ProcessingJob
+from stash_shared.queue.base import FileRef, ImageRef, ItemType, JobQueue, ProcessingJob
 
 from content_analyzer.items import StaleItem, claim_for_requeue, fail_stale_item, find_stale_items
 from content_analyzer.thumbnails import THUMBNAIL_CONTENT_TYPE
@@ -29,8 +29,8 @@ class StaleItemSweeper:
 
     Stale items get their job re-published, up to `max_requeues` times, then
     are marked `failed`. The job goes to whichever stage the item got stuck
-    before: content analysis if its thumbnail is already recorded, the
-    thumbnail stage otherwise. Re-publishing a job that turns out to still
+    before: for an image, content analysis if its thumbnail is already
+    recorded, the thumbnail stage otherwise; for a file, document analysis. Re-publishing a job that turns out to still
     exist is harmless: every stage is idempotent, and a duplicate that finds
     the item finished is acked/skipped.
     """
@@ -40,6 +40,7 @@ class StaleItemSweeper:
         *,
         thumbnail_queue: JobQueue,
         analysis_queue: JobQueue,
+        document_queue: JobQueue,
         engine: AsyncEngine,
         stale_after_seconds: float,
         max_requeues: int,
@@ -47,6 +48,7 @@ class StaleItemSweeper:
     ):
         self._thumbnail_queue = thumbnail_queue
         self._analysis_queue = analysis_queue
+        self._document_queue = document_queue
         self._engine = engine
         self._stale_after_seconds = stale_after_seconds
         self._max_requeues = max_requeues
@@ -74,7 +76,10 @@ class StaleItemSweeper:
             # the item simply goes stale again and a later sweep retries.
             if not await claim_for_requeue(self._engine, item.id, stale_after_seconds=self._stale_after_seconds):
                 continue
-            if item.thumbnail_key is not None:
+            if item.type == ItemType.file.value:
+                await self._document_queue.publish(_file_job_for(item))
+                stage = "document analysis"
+            elif item.thumbnail_key is not None:
                 await self._analysis_queue.publish(_job_for(item, item.thumbnail_key, THUMBNAIL_CONTENT_TYPE))
                 stage = "content analysis"
             else:
@@ -92,3 +97,12 @@ def _job_for(item: StaleItem, storage_key: str | None, content_type: str | None)
     # An image item missing its `item_images` row gets `image=None`, which
     # the worker treats as a permanent failure — the right outcome.
     return ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=ItemType(item.type), image=image)
+
+
+def _file_job_for(item: StaleItem) -> ProcessingJob:
+    file = None
+    if item.file_storage_key is not None and item.file_content_type is not None and item.filename is not None:
+        file = FileRef(storage_key=item.file_storage_key, content_type=item.file_content_type, filename=item.filename)
+    # A file item missing its `item_files` row gets `file=None`, which the
+    # document worker treats as a permanent failure — the right outcome.
+    return ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=ItemType.file, file=file)

@@ -122,20 +122,29 @@ class StaleItem:
     user_id: UUID
     type: str
     requeue_count: int
+    # Image items: the original upload and, once made, its thumbnail.
     storage_key: str | None
     content_type: str | None
     thumbnail_key: str | None
+    # File items (only analyzable ones are ever unfinished): the upload.
+    file_storage_key: str | None
+    file_content_type: str | None
+    filename: str | None
 
 
 async def find_stale_items(engine: AsyncEngine, *, stale_after_seconds: float, limit: int) -> list[StaleItem]:
-    """Unfinished image items (the only kind that goes through the queue)
+    """Unfinished image and file items (the kinds that go through a queue)
     whose status hasn't moved in `stale_after_seconds`, oldest first."""
     async with engine.connect() as conn:
         result = await conn.execute(
             _sql(
-                "SELECT i.id, i.user_id, i.type, i.requeue_count, img.storage_key, img.content_type, img.thumbnail_key "
-                "FROM items i LEFT JOIN item_images img ON img.item_id = i.id "
-                f"WHERE i.type = 'image' AND i.{_NOT_FINISHED} AND i.status_updated_at < :cutoff "
+                "SELECT i.id, i.user_id, i.type, i.requeue_count, "
+                "img.storage_key, img.content_type, img.thumbnail_key, "
+                "f.storage_key AS file_storage_key, f.content_type AS file_content_type, f.filename "
+                "FROM items i "
+                "LEFT JOIN item_images img ON img.item_id = i.id "
+                "LEFT JOIN item_files f ON f.item_id = i.id "
+                f"WHERE i.type IN ('image', 'file') AND i.{_NOT_FINISHED} AND i.status_updated_at < :cutoff "
                 "ORDER BY i.status_updated_at LIMIT :limit"
             ),
             {"cutoff": _cutoff(stale_after_seconds), "limit": limit},
@@ -149,6 +158,9 @@ async def find_stale_items(engine: AsyncEngine, *, stale_after_seconds: float, l
                 storage_key=row.storage_key,
                 content_type=row.content_type,
                 thumbnail_key=row.thumbnail_key,
+                file_storage_key=row.file_storage_key,
+                file_content_type=row.file_content_type,
+                filename=row.filename,
             )
             for row in result
         ]

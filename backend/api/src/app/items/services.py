@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
-from stash_shared.queue.base import ImageRef, JobQueue, ProcessingJob
+from stash_shared.queue.base import FileRef, ImageRef, JobQueue, ProcessingJob
 
 from app.config import get_settings
 from app.items import files
@@ -136,11 +136,21 @@ def _detect_image_content_type(data: bytes) -> str | None:
 
 
 class ItemService:
-    def __init__(self, session: AsyncSession, storage: ObjectStorage, queue: JobQueue):
+    def __init__(
+        self,
+        session: AsyncSession,
+        storage: ObjectStorage,
+        queue: JobQueue,
+        document_queue: JobQueue | None = None,
+    ):
+        """`queue` is where new images go (the image pipeline's first
+        stage); `document_queue` is where analyzable files go, and is only
+        needed by `create_file_item`."""
         self._session = session
         self._repo = ItemRepository(session)
         self._storage = storage
         self._queue = queue
+        self._document_queue = document_queue
 
     async def list_items(
         self, *, user_id: uuid.UUID, limit: int, cursor: str | None
@@ -256,7 +266,13 @@ class ItemService:
             size_bytes=len(data),
             text=text,
         )
-        await self._commit_and_enqueue(item, ImageRef(storage_key=storage_key, content_type=content_type))
+        job = ProcessingJob(
+            item_id=item.id,
+            user_id=item.user_id,
+            item_type=QueueItemType.image,
+            image=ImageRef(storage_key=storage_key, content_type=content_type),
+        )
+        await self._commit_and_enqueue(item, job, self._queue)
         return item
 
     async def create_file_item(
@@ -264,9 +280,10 @@ class ItemService:
     ) -> Item:
         """Stores an uploaded file as-is. Any file type is accepted: a
         recognized format keeps its real content type, anything else is
-        stored as a generic binary (see `app.items.files`). No
-        processing yet, so it isn't enqueued; `text` is an optional caption,
-        as for images."""
+        stored as a generic binary (see `app.items.files`). An `analyzable`
+        format is created `pending` and enqueued for document analysis;
+        anything else is `completed` right away. `text` is an optional
+        caption, as for images."""
         text = text.strip() if text is not None else None
         text = text or None
 
@@ -290,13 +307,25 @@ class ItemService:
             content_type=classified.content_type,
             size_bytes=len(data),
             text=text,
+            status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
         )
-        await self._session.commit()
+        if not classified.analyzable:
+            await self._session.commit()
+            return item
+
+        assert self._document_queue is not None, "create_file_item needs a document_queue"
+        job = ProcessingJob(
+            item_id=item.id,
+            user_id=item.user_id,
+            item_type=QueueItemType.file,
+            file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
+        )
+        await self._commit_and_enqueue(item, job, self._document_queue)
         return item
 
-    async def _commit_and_enqueue(self, item: Item, image: ImageRef) -> None:
-        """Commits the image item's creation, then publishes its processing
-        job.
+    async def _commit_and_enqueue(self, item: Item, job: ProcessingJob, queue: JobQueue) -> None:
+        """Commits the item's creation, then publishes its processing job
+        to `queue`.
 
         The commit must happen first: the worker looks the item up in
         Postgres on its own connection, so publishing before this row is
@@ -306,9 +335,8 @@ class ItemService:
         """
         await self._session.commit()
 
-        job = ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType.image, image=image)
         try:
-            await self._queue.publish(job)
+            await queue.publish(job)
         except Exception:
             logger.exception("Failed to enqueue processing job for item %s", item.id)
             transitioned = await self._repo.transition_status(

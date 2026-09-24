@@ -95,14 +95,15 @@ class ItemRepository:
         content_type: str,
         size_bytes: int,
         text: str | None = None,
+        status: ItemStatus = ItemStatus.completed,
     ) -> Item:
-        # No processing for files yet, so they're finished as soon as
-        # they're stored, like text items.
+        # `pending` if it will be analyzed, otherwise finished as soon as
+        # it's stored, like text items.
         item = Item(
             id=item_id,
             user_id=user_id,
             type=ItemType.file,
-            status=ItemStatus.completed,
+            status=status,
             file=FileMetadata(
                 storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
             ),

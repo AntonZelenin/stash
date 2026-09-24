@@ -75,7 +75,11 @@ class Worker:
         max_attempts: int = 5,
         retry_base_delay_seconds: float = 2.0,
         retry_max_delay_seconds: float = 120.0,
+        item_type: ItemType = ItemType.image,
     ):
+        """`item_type` is the kind of item this stage processes; jobs for
+        any other kind are dropped."""
+        self._item_type = item_type
         self._queue = queue
         self._dead_letters = dead_letters
         self._engine = engine
@@ -101,11 +105,16 @@ class Worker:
         if job is None:
             await self._dead_letter(delivery, reason="Malformed job payload")
             return
-        if job.item_type != ItemType.image:
-            # The API only enqueues images; text/links are stored already
-            # `completed`. Anything else here is stray, so drop it without
-            # touching the item.
-            logger.warning("Ignoring job for non-image item %s (%s)", job.item_id, job.item_type.value)
+        if job.item_type != self._item_type:
+            # Each queue only ever gets its stage's kind of item (text/links
+            # are never enqueued at all). Anything else is stray, so drop it
+            # without touching the item.
+            logger.warning(
+                "Ignoring job for %s item %s (this stage handles %s)",
+                job.item_type.value,
+                job.item_id,
+                self._item_type.value,
+            )
             await self._queue.ack(delivery)
             return
 

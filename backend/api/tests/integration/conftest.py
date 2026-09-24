@@ -12,7 +12,7 @@ from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import Description, FileMetadata, ImageMetadata, Item, TextContent
 from app.main import app
-from app.queue import get_job_queue
+from app.queue import get_document_analysis_queue, get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -128,8 +128,21 @@ def queue() -> FakeJobQueue:
 
 
 @pytest.fixture
+def document_queue() -> FakeJobQueue:
+    """Stands in for the document-analysis queue, so tests never publish
+    to real Valkey."""
+    fake = FakeJobQueue()
+    app.dependency_overrides[get_document_analysis_queue] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_document_analysis_queue, None)
+
+
+@pytest.fixture
 async def client(
-    session: AsyncSession, storage: FakeObjectStorage, queue: FakeJobQueue
+    session: AsyncSession,
+    storage: FakeObjectStorage,
+    queue: FakeJobQueue,
+    document_queue: FakeJobQueue,
 ) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

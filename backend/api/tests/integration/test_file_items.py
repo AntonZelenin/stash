@@ -6,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items import services
 from app.items.models import Description, FileMetadata, Item, ItemType, TextContent
+from stash_shared.queue.base import FileRef
+from stash_shared.queue.base import ItemType as QueueItemType
+
 from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import register_and_login
 
@@ -27,16 +30,28 @@ async def _upload(client: AsyncClient, token: str, filename: str, data: bytes, *
 
 
 async def test_upload_pdf_stores_file_and_metadata(
-    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage, queue: FakeJobQueue
+    client: AsyncClient,
+    session: AsyncSession,
+    storage: FakeObjectStorage,
+    queue: FakeJobQueue,
+    document_queue: FakeJobQueue,
 ):
     user_id, token = await register_and_login(client)
 
     response = await _upload(client, token, "Quarterly Report.pdf", _PDF_BYTES)
 
     assert response.status_code == 202
-    # Nothing to process yet: finished on upload, never queued.
-    assert response.json()["status"] == "completed"
+    # PDFs are analyzable: pending until the document analyzer is done,
+    # and sent to its queue, not the image pipeline's.
+    assert response.json()["status"] == "pending"
     assert queue.published == []
+    [job] = document_queue.published
+    assert str(job.item_id) == response.json()["id"]
+    assert job.item_type == QueueItemType.file
+    assert job.image is None
+    assert job.file == FileRef(
+        storage_key=f"files/{job.item_id}.pdf", content_type="application/pdf", filename="Quarterly Report.pdf"
+    )
 
     item = await session.get(Item, UUID(response.json()["id"]))
     assert item.type == ItemType.file
@@ -190,3 +205,38 @@ async def test_delete_file_item_removes_stored_file(client: AsyncClient, storage
 
     assert response.status_code == 204
     assert storage.uploads == {}
+
+
+@pytest.mark.parametrize(
+    ("filename", "data"),
+    [
+        ("setup.exe", b"MZ\x90\x00"),  # unrecognized
+        ("book.mobi", b"\x00" * 60 + b"BOOKMOBI" + b"\x00" * 16),  # recognized, not analyzable
+        ("stuff.zip", b"PK\x03\x04" + b"\x00" * 16),
+    ],
+)
+async def test_non_analyzable_files_are_completed_and_not_queued(
+    client: AsyncClient, document_queue: FakeJobQueue, filename, data
+):
+    _, token = await register_and_login(client)
+
+    response = await _upload(client, token, filename, data)
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "completed"
+    assert document_queue.published == []
+
+
+async def test_analyzable_file_marked_failed_when_enqueue_fails(
+    client: AsyncClient, session: AsyncSession, document_queue: FakeJobQueue
+):
+    """Same as images: rather than stay `pending` forever with no job."""
+    document_queue.fail_publish = True
+    _, token = await register_and_login(client)
+
+    response = await _upload(client, token, "notes.txt", b"hello")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "failed"
+    item = await session.get(Item, UUID(response.json()["id"]))
+    assert item.status == "failed"

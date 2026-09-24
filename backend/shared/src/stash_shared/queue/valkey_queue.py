@@ -10,6 +10,7 @@ from stash_shared.queue.base import (
     DeadLetter,
     DeadLetterQueue,
     Delivery,
+    FileRef,
     ImageRef,
     ItemType,
     JobQueue,
@@ -187,16 +188,28 @@ def _to_payload(job: ProcessingJob) -> dict:
     }
     if job.image is not None:
         payload["image"] = {"storage_key": job.image.storage_key, "content_type": job.image.content_type}
+    if job.file is not None:
+        payload["file"] = {
+            "storage_key": job.file.storage_key,
+            "content_type": job.file.content_type,
+            "filename": job.file.filename,
+        }
     return payload
 
 
 def _from_payload(data: dict) -> ProcessingJob:
     image = data.get("image")
+    file = data.get("file")
     return ProcessingJob(
         item_id=UUID(data["item_id"]),
         user_id=UUID(data["user_id"]),
         item_type=ItemType(data["item_type"]),
         image=ImageRef(storage_key=image["storage_key"], content_type=image["content_type"]) if image else None,
+        file=(
+            FileRef(storage_key=file["storage_key"], content_type=file["content_type"], filename=file["filename"])
+            if file
+            else None
+        ),
     )
 
 

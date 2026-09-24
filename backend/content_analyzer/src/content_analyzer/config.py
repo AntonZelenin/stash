@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     thumbnail_max_size: int = 1024
     thumbnail_quality: int = 80
 
+    # Most extracted document text sent to OpenAI per document, in
+    # characters (~4 per token). Longer documents are represented by
+    # excerpts (see `content_analyzer.documents.excerpt`). Independent of
+    # the upload size limit.
+    document_analysis_max_chars: int = 24_000
+
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"
     openai_timeout_seconds: float = 90.0

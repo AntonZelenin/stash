@@ -26,7 +26,7 @@ from app.items.services import (
     UnsupportedImageTypeError,
 )
 from app.items.services import ListedItem as ListedItemResult
-from app.queue import get_job_queue
+from app.queue import get_document_analysis_queue, get_job_queue
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -98,10 +98,11 @@ async def create_file_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     queue: JobQueue = Depends(get_job_queue),
+    document_queue: JobQueue = Depends(get_document_analysis_queue),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue).create_file_item(
+        item = await ItemService(session, storage, queue, document_queue).create_file_item(
             user_id=current_user.id, filename=file.filename, data=data, text=text
         )
     except EmptyFileError:

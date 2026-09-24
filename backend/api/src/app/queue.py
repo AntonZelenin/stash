@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from stash_shared.queue.base import THUMBNAIL_JOBS, JobQueue
+from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, THUMBNAIL_JOBS, JobQueue
 from stash_shared.queue.factory import build_job_queue
 
 from app.config import get_settings
@@ -13,3 +13,11 @@ def get_job_queue() -> JobQueue:
     analysis itself."""
     settings = get_settings()
     return build_job_queue(settings.queue_provider, settings, THUMBNAIL_JOBS)
+
+
+@lru_cache
+def get_document_analysis_queue() -> JobQueue:
+    """Where the API publishes analyzable uploaded files, for the
+    document-analyzer worker."""
+    settings = get_settings()
+    return build_job_queue(settings.queue_provider, settings, DOCUMENT_ANALYSIS_JOBS)

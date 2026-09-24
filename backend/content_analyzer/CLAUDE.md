@@ -3,27 +3,38 @@
 Processes saved content asynchronously. Responsibilities:
 - Generate image thumbnails.
 - Generate image descriptions.
+- Generate document descriptions.
 - Generate tags.
 - Generate embeddings.
 - Store processing results in PostgreSQL.
 
 ## Current implementation
 
-This package is the image-processing pipeline. It runs as two services from
-the same Docker image, one per stage, each consuming its own queue from
-`backend/shared` (currently Valkey Streams):
+This package holds the processing workers. It runs as three services from
+the same Docker image, each consuming its own queue from `backend/shared`
+(currently Valkey Streams). Two form the image pipeline:
 
 1. `content_analyzer.thumbnail_main` (compose service `thumbnailer`):
    consumes `THUMBNAIL_JOBS` (published by the API on upload), makes and
    stores a thumbnail, then publishes to `CONTENT_ANALYSIS_JOBS`.
 2. `content_analyzer.main` (compose service `content_analyzer`): consumes
    `CONTENT_ANALYSIS_JOBS`, describes the thumbnail via OpenAI and completes
-   the item. Also runs the stale-item sweeper for the whole pipeline.
+   the item. Also runs the stale-item sweeper for every queue.
+
+And one analyzes documents:
+
+3. `content_analyzer.document_main` (compose service `document_analyzer`):
+   consumes `DOCUMENT_ANALYSIS_JOBS` (published by the API for analyzable
+   uploaded files), extracts their text, and describes what each document
+   is and is about. All document-specific code is in
+   `content_analyzer.documents` (`parsers` — one `DocumentParser` per
+   content type, add formats there; `excerpt` — what part of a long text is
+   sent; `describer`; `analysis` — the stage handler).
 
 Each stage looks up the item's status in Postgres by id and drives
-`pending -> processing -> completed`/`failed` (`processing` spans both
-stages). Never trusts the queue payload as the source of truth for item
-state — always re-reads from Postgres. (The image location *is* taken from
+`pending -> processing -> completed`/`failed` (for images, `processing` spans
+both image stages). Never trusts the queue payload as the source of truth for item
+state — always re-reads from Postgres. (The image/file location *is* taken from
 the payload; it's immutable once written.)
 
 Layout:
@@ -34,16 +45,17 @@ Layout:
   two stages' handlers. Each makes its outcome durable before returning
   (Worker acks right after) and must be safe to re-run; see their
   docstrings for how.
-- `describer` — `ImageDescriber` + the OpenAI implementation, which maps
-  OpenAI errors to permanent (`errors.PermanentProcessingError`) vs.
-  transient (anything else).
+- `describer` — `ImageDescriber` + the OpenAI implementation.
+- `openai_client` — OpenAI client setup shared by image and document
+  describers, and which OpenAI errors are permanent
+  (`errors.PermanentProcessingError`) vs. transient (anything else).
 - `storage` — small S3 object store (download/upload/delete).
 - `sweeper.StaleItemSweeper` — re-publishes jobs for items stuck
   `pending`/`processing` (by `status_updated_at`) whose job was lost, to the
   stage they got stuck before, and fails them after too many requeues.
 - `items` — the guarded SQL status/result writes. Every status write stamps
   `status_updated_at`; keep it that way or the sweeper will misjudge items.
-- `runtime` — wiring shared by the two entrypoints.
+- `runtime` — wiring shared by the entrypoints.
 
 Deliberately does not depend on the API's ORM models or storage code — it
 talks to the item tables directly via a few small SQL statements in

@@ -1,9 +1,10 @@
 """Content-analyzer worker: consumes `CONTENT_ANALYSIS_JOBS` (fed by the
-thumbnail worker) and runs the stale-item sweeper for the whole pipeline."""
+thumbnail worker) and runs the stale-item sweeper for all processing queues
+(images and documents)."""
 
 import asyncio
 
-from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, THUMBNAIL_JOBS
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, DOCUMENT_ANALYSIS_JOBS, THUMBNAIL_JOBS
 
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.config import get_settings
@@ -38,6 +39,7 @@ async def main() -> None:
     sweeper = StaleItemSweeper(
         thumbnail_queue=build_queue(settings, THUMBNAIL_JOBS),
         analysis_queue=build_queue(settings, CONTENT_ANALYSIS_JOBS),
+        document_queue=build_queue(settings, DOCUMENT_ANALYSIS_JOBS),
         engine=engine,
         stale_after_seconds=settings.stale_item_after_seconds,
         max_requeues=settings.max_stale_requeues,

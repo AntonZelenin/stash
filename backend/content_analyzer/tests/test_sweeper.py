@@ -1,7 +1,7 @@
 import uuid
 
 import pytest
-from stash_shared.queue.base import ImageRef, ItemType
+from stash_shared.queue.base import FileRef, ImageRef, ItemType
 
 from content_analyzer.items import start_attempt
 from content_analyzer.sweeper import StaleItemSweeper
@@ -22,10 +22,16 @@ def analysis_queue() -> FakeJobQueue:
     return FakeJobQueue()
 
 
-def _sweeper(engine, queue, analysis_queue) -> StaleItemSweeper:
+@pytest.fixture
+def document_queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+def _sweeper(engine, queue, analysis_queue, document_queue=None) -> StaleItemSweeper:
     return StaleItemSweeper(
         thumbnail_queue=queue,
         analysis_queue=analysis_queue,
+        document_queue=document_queue or FakeJobQueue(),
         engine=engine,
         stale_after_seconds=_STALE_AFTER,
         max_requeues=3,
@@ -34,8 +40,8 @@ def _sweeper(engine, queue, analysis_queue) -> StaleItemSweeper:
 
 
 @pytest.fixture
-def sweeper(engine, queue, analysis_queue) -> StaleItemSweeper:
-    return _sweeper(engine, queue, analysis_queue)
+def sweeper(engine, queue, analysis_queue, document_queue) -> StaleItemSweeper:
+    return _sweeper(engine, queue, analysis_queue, document_queue)
 
 
 @pytest.mark.parametrize("status", ["pending", "processing"])
@@ -142,3 +148,24 @@ async def test_item_with_thumbnail_resumes_at_content_analysis(sweeper, engine, 
     assert queue.published == []
     [job] = analysis_queue.published
     assert job.image == ImageRef(storage_key=f"thumbnails/{item_id}.webp", content_type="image/webp")
+
+
+async def test_stale_file_item_is_republished_to_document_analysis(
+    sweeper, engine, queue, analysis_queue, document_queue
+):
+    item_id = uuid.uuid4()
+    await insert_item(
+        engine,
+        item_id,
+        item_type="file",
+        status="pending",
+        age_seconds=_STALE_AFTER + 60,
+        file=(f"files/{item_id}.pdf", "application/pdf", "Report.pdf"),
+    )
+
+    await sweeper.sweep_once()
+
+    assert queue.published == [] and analysis_queue.published == []
+    [job] = document_queue.published
+    assert job.item_type == ItemType.file
+    assert job.file == FileRef(storage_key=f"files/{item_id}.pdf", content_type="application/pdf", filename="Report.pdf")
