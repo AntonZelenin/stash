@@ -154,6 +154,11 @@
 
 /* ---- image: natural aspect ratio, extremes cropped ---- */
 
+/* Clicking opens the full-size viewer. */
+.item-card-image {
+    cursor: zoom-in;
+}
+
 .item-card-image img {
     display: block;
     width: 100%;
@@ -241,4 +246,61 @@
     font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* ---- full-size image viewer ---- */
+
+/* Covers the whole viewport above everything else (drag-and-drop overlay is
+   z-index 20, card menus 30-31). The dimmed backdrop is this element
+   itself: clicking it closes the viewer. */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 56px 24px;
+    background: rgba(20, 22, 27, 0.72);
+    cursor: zoom-out;
+    outline: none;
+}
+
+/* Full resolution, but never larger than the space inside the padding;
+   max-* only ever scale down, so small images stay at their real size. */
+.lightbox-image {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+    background: #f1f2f5;
+    cursor: default;
+}
+
+.lightbox-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.lightbox-close:hover {
+    background: #fff;
+}
+
+.lightbox-close .icon {
+    width: 20px;
+    height: 20px;
 }

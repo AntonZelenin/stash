@@ -1,7 +1,7 @@
 use api::ListedItem;
 use dioxus::prelude::*;
 
-use crate::icons::{IconLink, IconMoreHorizontal, IconTrash};
+use crate::icons::{IconClose, IconLink, IconMoreHorizontal, IconTrash};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 
@@ -34,9 +34,13 @@ fn column_count(grid_width: f64) -> usize {
 ///
 /// `on_delete` receives the id of an item the user chose to delete from
 /// its card menu; the caller performs the deletion and refreshes `items`.
+///
+/// Clicking an image card opens it full size in a `Lightbox` over the page.
 #[component]
 pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Element {
     let mut columns = use_signal(|| MAX_COLUMNS);
+    // URL of the image open in the lightbox, if any.
+    let mut viewing = use_signal(|| None::<String>);
 
     let current_columns = columns();
     let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
@@ -60,10 +64,19 @@ pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Elem
             for (index , stack) in stacks.into_iter().enumerate() {
                 div { class: "item-grid-column", key: "{index}",
                     for item in stack {
-                        ItemCard { key: "{item.id}", item, on_delete }
+                        ItemCard {
+                            key: "{item.id}",
+                            item,
+                            on_delete,
+                            on_view: move |url| viewing.set(Some(url)),
+                        }
                     }
                 }
             }
+        }
+
+        if let Some(url) = viewing() {
+            Lightbox { url, on_close: move |_| viewing.set(None) }
         }
     }
 }
@@ -74,14 +87,30 @@ pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Elem
 /// card clips its content to its rounded corners (which would cut the
 /// dropdown off on short cards), and a link card is itself an `<a>`, where a
 /// nested button would also follow the link.
+///
+/// `on_view` receives the full-size URL of an image card the user clicked.
 #[component]
-fn ItemCard(item: ListedItem, on_delete: EventHandler<String>) -> Element {
+fn ItemCard(
+    item: ListedItem,
+    on_delete: EventHandler<String>,
+    on_view: EventHandler<String>,
+) -> Element {
     // Grid cards show the small thumbnail; the full original is only the
-    // fallback while the thumbnail is still being generated.
+    // fallback while the thumbnail is still being generated. Viewing an
+    // image opens the original.
     let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
+    let full_size_url = item.download_url.clone().or(item.thumbnail_url.clone());
     let body = match (item.r#type.as_str(), image_url, &item.text) {
         ("image", Some(url), caption) => rsx! {
-            ImageCard { url: url.clone(), caption: caption.clone() }
+            ImageCard {
+                url: url.clone(),
+                caption: caption.clone(),
+                on_open: move |_| {
+                    if let Some(url) = full_size_url.clone() {
+                        on_view.call(url);
+                    }
+                },
+            }
         },
         ("link", _, Some(url)) => rsx! {
             LinkCard { url: url.clone() }
@@ -156,13 +185,62 @@ fn NoteCard(text: String) -> Element {
 /// tall screenshot can't take over a column and a panorama doesn't shrink
 /// to a sliver. The user's caption, if any, sits below the image in the
 /// same card.
+///
+/// Clicking the card (image or caption) calls `on_open`.
 #[component]
-fn ImageCard(url: String, caption: Option<String>) -> Element {
+fn ImageCard(url: String, caption: Option<String>, on_open: EventHandler<()>) -> Element {
     rsx! {
-        div { class: "item-card item-card-image",
+        div {
+            class: "item-card item-card-image",
+            onclick: move |_| on_open.call(()),
             img { src: "{url}", alt: "Saved image", loading: "lazy" }
             if let Some(caption) = caption {
                 p { class: "item-card-image-caption", "{caption}" }
+            }
+        }
+    }
+}
+
+/// Full-size image viewer over the whole page: the image centered (scaled
+/// down to fit the screen if needed, never up), on a dimmed backdrop.
+/// Closes via the ✕ button, a click anywhere on the backdrop, or Escape.
+#[component]
+fn Lightbox(url: String, on_close: EventHandler<()>) -> Element {
+    rsx! {
+        div {
+            class: "lightbox",
+            role: "dialog",
+            aria_modal: "true",
+            aria_label: "Image viewer",
+            // Focusable so it can receive Escape; focused as soon as it opens.
+            tabindex: "-1",
+            onmounted: move |evt| async move {
+                let _ = evt.set_focus(true).await;
+            },
+            onkeydown: move |evt| {
+                if evt.key() == Key::Escape {
+                    on_close.call(());
+                }
+            },
+            // The backdrop is the lightbox itself, so any click that isn't
+            // stopped by the image below lands here and closes it.
+            onclick: move |_| on_close.call(()),
+            img {
+                class: "lightbox-image",
+                src: "{url}",
+                alt: "Saved image",
+                onclick: move |evt| evt.stop_propagation(),
+            }
+            button {
+                class: "lightbox-close",
+                r#type: "button",
+                title: "Close",
+                aria_label: "Close",
+                onclick: move |evt| {
+                    evt.stop_propagation();
+                    on_close.call(());
+                },
+                IconClose {}
             }
         }
     }
