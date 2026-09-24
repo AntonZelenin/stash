@@ -63,9 +63,15 @@ stages share the same `Worker` (status handling, retries, dead-lettering,
 acking) with a stage-specific handler, and each stage is idempotent, so a
 redelivered job — including a duplicate hand-off between stages — never
 causes duplicate or incorrect state. Each delivery is processed by
-`Worker.process_message`, whatever runtime received it; locally that's
-`Worker.run_forever`, a long-running consumer loop, and another runtime
-(e.g. one invoked per batch of messages) can call the same method.
+`Worker.process_message`, whatever runtime received it:
+
+- Locally: Valkey → `Worker.run_forever` (a long-running consumer loop) →
+  `process_message`.
+- AWS Lambda: SQS → event source mapping → a handler in
+  `content_analyzer.aws_lambda` (one per queue worker) → `process_message`
+  for each record of the batch, in order. See "Lambda runtime" under Queue.
+
+Each stage's worker is built once, in `content_analyzer.stages`, for both.
 
 Failure handling:
 - Each attempt is one queue delivery; nothing is retried in-process.
@@ -173,6 +179,28 @@ redeliveries of jobs whose item has already failed:
   The embedding worker doesn't track item status, so each redelivery of a
   message it gave up on is processed again (dead-lettered straight away
   once past `MAX_DELIVERY_ATTEMPTS`) until SQS moves it.
+
+Lambda runtime (SQS only). Each queue worker has a Lambda handler,
+`content_analyzer.aws_lambda.{thumbnail,content_analysis,document_analysis,embedding}_handler`,
+for a function whose SQS event source mapping has `ReportBatchItemFailures`
+on. The handler runs the same worker as locally, settling deliveries on a
+`stash_shared.queue.sqs_lambda.LambdaSqsQueue` instead of the queue itself,
+and returns the partial batch response (`process_sqs_batch`):
+- acked (completed, or skipped) → not reported; Lambda deletes it.
+- `retry_later` → its visibility timeout is changed to the backoff delay,
+  and it's reported in `batchItemFailures`.
+- `abandon` (dead-lettered, or an already-failed item) → reported; SQS
+  redrive moves it to the DLQ, as above.
+- `process_message` raised, or the record isn't a readable SQS message →
+  reported, redelivered after the visibility timeout.
+The handler never deletes or dead-letters anything itself, and one
+record's failure never fails the others. A record without a `messageId`
+fails the invocation (whole batch retried). The worker, engine and event
+loop are set up on the first invocation and reused; metrics and spans are
+flushed at the end of every invocation, since Lambda freezes the process
+after it returns. The function's timeout must cover a whole batch processed
+sequentially, and the queue's visibility timeout must exceed the function
+timeout. The stale-item sweeper isn't part of any handler.
 
 Queues (on Valkey: stream key `stash:<name>`, one consumer group each, dead
 letters in `stash:<name>:dead-letter`):

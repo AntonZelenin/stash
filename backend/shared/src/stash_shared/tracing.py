@@ -77,6 +77,18 @@ def is_enabled() -> bool:
     return _enabled
 
 
+def flush(timeout_millis: int = 5000) -> None:
+    """Exports every finished span still buffered. Spans are exported in
+    the background; only a runtime that freezes the process between units
+    of work (Lambda, after each invocation) must call this before yielding.
+    No-op when tracing is off."""
+    if not _enabled:
+        return
+    force_flush = getattr(trace.get_tracer_provider(), "force_flush", None)
+    if force_flush is not None:
+        force_flush(timeout_millis)
+
+
 def instrument_sqlalchemy(engine: Any) -> None:
     """Traces every statement run through `engine` (a SQLAlchemy
     `AsyncEngine` or `Engine`). No-op when tracing is off."""

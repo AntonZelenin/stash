@@ -163,7 +163,8 @@ def is_enabled() -> bool:
 
 def flush() -> None:
     """Writes out whatever is buffered. Happens on its own periodically and
-    at exit; only tests need it."""
+    at exit; only a runtime that freezes the process between units of work
+    (Lambda, after each invocation) must call it, and tests."""
     _backend.flush()
 
 

@@ -11,7 +11,7 @@ from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 # Tracing metadata (`Delivery.trace_context`, as JSON), as a message
 # attribute so the body stays the business contract alone.
-_TRACE_CONTEXT_ATTRIBUTE = "trace_context"
+TRACE_CONTEXT_ATTRIBUTE = "trace_context"
 # SQS's limits: long polls wait at most 20s, and a message can be hidden
 # for at most 12 hours.
 _MAX_WAIT_SECONDS = 20
@@ -72,7 +72,7 @@ class SqsJobQueue(JobQueue):
             trace_context = tracing.inject_context()
             if trace_context:
                 request["MessageAttributes"] = {
-                    _TRACE_CONTEXT_ATTRIBUTE: {
+                    TRACE_CONTEXT_ATTRIBUTE: {
                         "DataType": "String",
                         "StringValue": codec.encode_trace_context(trace_context),
                     }
@@ -87,7 +87,7 @@ class SqsJobQueue(JobQueue):
             "MaxNumberOfMessages": 1,
             "WaitTimeSeconds": max(0, min(timeout_seconds, _MAX_WAIT_SECONDS)),
             "MessageSystemAttributeNames": ["ApproximateReceiveCount"],
-            "MessageAttributeNames": [_TRACE_CONTEXT_ATTRIBUTE],
+            "MessageAttributeNames": [TRACE_CONTEXT_ATTRIBUTE],
         }
         if self._visibility_timeout_seconds is not None:
             request["VisibilityTimeout"] = self._visibility_timeout_seconds
@@ -121,7 +121,7 @@ class SqsJobQueue(JobQueue):
 def _to_delivery(message: dict) -> Delivery:
     message_id = message["MessageId"]
     raw = message.get("Body", "")
-    trace_attribute = (message.get("MessageAttributes") or {}).get(_TRACE_CONTEXT_ATTRIBUTE) or {}
+    trace_attribute = (message.get("MessageAttributes") or {}).get(TRACE_CONTEXT_ATTRIBUTE) or {}
     return Delivery(
         message_id=message_id,
         receipt=message["ReceiptHandle"],

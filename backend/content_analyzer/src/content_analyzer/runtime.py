@@ -1,4 +1,5 @@
-"""Wiring shared by the worker entrypoints (`main`, `thumbnail_main`)."""
+"""Wiring shared by the worker entrypoints (the `*_main` modules and
+`aws_lambda`)."""
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import log, metrics, tracing
@@ -54,13 +55,16 @@ def build_stage_worker(
     handler: JobHandler,
     item_type: ItemType | None = ItemType.image,
     manages_item_status: bool = True,
+    queue: JobQueue | None = None,
 ) -> Worker:
     """A `Worker` for `item_type` items (None: any), consuming
     `queue_name` and dead-lettering into that queue's own dead-letter queue,
     with the retry policy from settings. See `Worker` for
-    `manages_item_status`."""
+    `manages_item_status`. `queue` replaces the queue it settles deliveries
+    on (default: `queue_name` itself), for a runtime that delivers them
+    some other way (`content_analyzer.aws_lambda`)."""
     return Worker(
-        queue=build_queue(settings, queue_name),
+        queue=queue if queue is not None else build_queue(settings, queue_name),
         queue_name=queue_name,
         dead_letters=build_dead_letter_queue(settings, queue_name),
         engine=engine,

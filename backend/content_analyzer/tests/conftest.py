@@ -31,6 +31,13 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
             "md5", 1, lambda value: hashlib.md5(value.encode("utf-8")).hexdigest(), deterministic=True
         )
 
+    await create_schema(engine)
+    yield engine
+    await engine.dispose()
+
+
+async def create_schema(engine: AsyncEngine) -> None:
+    """The minimal tables the worker touches (see the `engine` fixture)."""
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -57,8 +64,6 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
                 "content_type TEXT NOT NULL, thumbnail_key TEXT)"
             )
         )
-    yield engine
-    await engine.dispose()
 
 
 async def insert_item(

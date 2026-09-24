@@ -72,6 +72,13 @@ Layout:
 - `items` — the guarded SQL status/result writes. Every status write stamps
   `status_updated_at`; keep it that way or the sweeper will misjudge items.
 - `runtime` — wiring shared by the entrypoints.
+- `stages` — each queue stage's `Worker`, built from settings; the only
+  place a stage is wired, used by both runtimes below.
+- Runtimes: the `*_main` modules (local: `run_forever` on Valkey) and
+  `aws_lambda` (one SQS-triggered handler per stage, calling
+  `process_message` per record and returning `batchItemFailures`). Keep
+  Lambda-specific code in `aws_lambda` / `stash_shared.queue.sqs_lambda`,
+  never in the worker or handlers.
 
 Deliberately does not depend on the API's ORM models or storage code — it
 talks to the item tables directly via a few small SQL statements in

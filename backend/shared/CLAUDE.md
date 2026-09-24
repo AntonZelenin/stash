@@ -9,6 +9,10 @@ worker, plus two implementations: Valkey Streams (local/non-AWS) and SQS
 (`PLATFORM=aws`), picked by `queue.factory`. Both services depend only on
 the interfaces, never on a backend directly. The wire format (job payload,
 trace context) is shared by both backends in `queue.codec`.
+`queue.sqs_lambda` is for consumers running as SQS-triggered Lambdas:
+`LambdaSqsQueue` (the `JobQueue` they settle on: records outcomes, never
+deletes) and `process_sqs_batch` (runs an event's records through a
+per-delivery callable, returns the partial batch response).
 
 Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
 API (search queries) and the embedding worker (item text), so both always
