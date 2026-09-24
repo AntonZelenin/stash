@@ -9,8 +9,8 @@ use futures_timer::Delay;
 use crate::AuthSession;
 use crate::filters::{FavoritesToggle, TagFilter, TypeDropdown, TypeFilter};
 use crate::icons::{
-    IconArrowUp, IconClose, IconFile, IconHelp, IconLogout, IconMenu, IconPaperclip, IconSearch,
-    IconSliders, IconStash, IconTag, IconUser,
+    IconArrowUp, IconClose, IconFile, IconLogout, IconMenu, IconPaperclip, IconSearch, IconStash,
+    IconTag, IconUser,
 };
 use crate::items::{ItemGrid, TagPicker};
 use crate::routes::Route;
@@ -644,8 +644,6 @@ fn TopBar() -> Element {
                     }
                     div { class: "menu-dropdown",
                         button { class: "menu-item", r#type: "button", IconUser {} "Account settings" }
-                        button { class: "menu-item", r#type: "button", IconSliders {} "Preferences" }
-                        button { class: "menu-item", r#type: "button", IconHelp {} "Help & feedback" }
                         div { class: "menu-divider" }
                         button {
                             class: "menu-item menu-item-danger",
