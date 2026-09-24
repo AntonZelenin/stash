@@ -81,7 +81,8 @@ fn validate_email(email: &str) -> Option<String> {
 }
 
 /// Signup rules for a new password (login only requires one to be entered).
-fn validate_new_password(password: &str) -> Option<String> {
+/// Also used when changing the password in account settings.
+pub(crate) fn validate_new_password(password: &str) -> Option<String> {
     let length = password.chars().count();
     if length < MIN_PASSWORD_CHARS {
         Some(format!(

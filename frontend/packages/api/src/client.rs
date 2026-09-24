@@ -3,9 +3,9 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    AssignTagRequest, CreateTextItemRequest, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse,
-    ListTagsResponse, ListedItem, LoginRequest, RefreshRequest, RegisterRequest, RegisterResponse,
-    SearchRequest, SearchResponse, Tag, TokenPair,
+    AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, ItemCreated, ItemQuery,
+    ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, RefreshRequest,
+    RegisterRequest, RegisterResponse, SearchRequest, SearchResponse, Tag, TokenPair,
 };
 
 #[derive(Clone)]
@@ -84,6 +84,35 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// Changes the password. Every existing session ends, including the
+    /// one `access_token` belongs to; the returned pair replaces it. A
+    /// wrong current password is a validation error on `current_password`.
+    pub async fn change_password(
+        &self,
+        access_token: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<TokenPair, ApiError> {
+        let response = self
+            .authenticated(Method::POST, "/users/me/password", access_token)
+            .json(&ChangePasswordRequest {
+                current_password: current_password.to_string(),
+                new_password: new_password.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
             _ => Err(ApiError::Server),
         }
     }

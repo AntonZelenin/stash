@@ -1,0 +1,271 @@
+/* ---- account settings window ---- */
+
+/* Same dimmed backdrop and layer as the image viewer (see .lightbox in
+   items.css): above the top bar, card menus and the drag-and-drop overlay.
+   Clicking it closes the window. Scrolls if the window can't fit. */
+.settings-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 56px 24px;
+    overflow-y: auto;
+    background: rgba(20, 22, 27, 0.72);
+    outline: none;
+}
+
+.settings-window {
+    position: relative;
+    display: flex;
+    width: 760px;
+    max-width: 100%;
+    min-height: 440px;
+    margin: auto;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+
+/* ---- side menu ---- */
+
+.settings-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 0 0 200px;
+    padding: 24px 12px;
+    border-right: 1px solid var(--border);
+    background: #f7f8fa;
+}
+
+.settings-nav-title {
+    margin: 0 0 12px;
+    padding: 0 12px;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border: none;
+    border-radius: 10px;
+    background: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.settings-nav-item:hover {
+    background: #eef0f3;
+}
+
+.settings-nav-item.active {
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(20, 22, 27, 0.08);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.settings-nav-item .icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* ---- main area ---- */
+
+.settings-main {
+    flex: 1;
+    min-width: 0;
+    padding: 28px 36px 32px;
+}
+
+.settings-title {
+    margin: 0 0 8px;
+    color: var(--text-primary);
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.settings-description {
+    max-width: 440px;
+    margin: 0 0 24px;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 360px;
+}
+
+.settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.settings-label {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Matches the item editor's inputs. */
+.settings-input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid #d4d8e0;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.settings-input:focus {
+    border-color: #a9b1f5;
+    box-shadow: 0 0 0 3px rgba(91, 107, 240, 0.15);
+}
+
+.settings-input.has-error {
+    border-color: #f5a3a3;
+}
+
+.settings-input.has-error:focus {
+    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+.settings-hint,
+.settings-field-error {
+    margin: 0;
+    font-size: 12px;
+}
+
+.settings-hint {
+    color: var(--text-muted);
+}
+
+.settings-field-error {
+    color: #dc2626;
+}
+
+.settings-error,
+.settings-success {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.settings-error {
+    background: #fef2f2;
+    color: #dc2626;
+}
+
+.settings-success {
+    background: #ecfdf5;
+    color: #047857;
+}
+
+.settings-actions {
+    display: flex;
+    margin-top: 4px;
+}
+
+/* Same gradient as the item editor's Save button. */
+.settings-button {
+    height: 38px;
+    padding: 0 20px;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #c026e0 0%, #577efb 100%);
+    color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.settings-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ---- close button ---- */
+
+.settings-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.settings-close:hover {
+    background: #f1f2f5;
+    color: var(--text-primary);
+}
+
+.settings-close .icon {
+    width: 18px;
+    height: 18px;
+}
+
+/* ---- narrow screens: menu above the section ---- */
+
+@media (max-width: 640px) {
+    .settings-overlay {
+        padding: 24px 16px;
+    }
+
+    .settings-window {
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .settings-nav {
+        flex: none;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 16px 56px 16px 16px;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .settings-nav-title {
+        width: 100%;
+        margin-bottom: 8px;
+        padding: 0 4px;
+    }
+
+    .settings-main {
+        padding: 24px 20px 28px;
+    }
+}

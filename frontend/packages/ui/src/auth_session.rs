@@ -62,6 +62,35 @@ impl AuthSession {
         slot.set(None);
     }
 
+    /// Changes the password and switches to the new token pair the server
+    /// returns (it ends every other session, this one's old tokens
+    /// included).
+    pub async fn change_password(
+        &self,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        let current_password = current_password.to_string();
+        let new_password = new_password.to_string();
+        let tokens = self
+            .call_authenticated(move |access_token| {
+                let client = client.clone();
+                let current_password = current_password.clone();
+                let new_password = new_password.clone();
+                async move {
+                    client
+                        .change_password(&access_token, &current_password, &new_password)
+                        .await
+                }
+            })
+            .await?;
+        self.store.save(&tokens);
+        let mut slot = self.tokens;
+        slot.set(Some(tokens));
+        Ok(())
+    }
+
     pub async fn create_text_item(
         &self,
         text: &str,

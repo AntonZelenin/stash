@@ -17,6 +17,8 @@ pub use auth_session::AuthSession;
 mod filters;
 mod items;
 
+mod settings;
+
 mod home;
 pub use home::Home;
 

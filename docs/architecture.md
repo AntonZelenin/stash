@@ -268,6 +268,15 @@ per item).
 When the searchable text changes, the item goes through `embedding_jobs`
 again, as on creation.
 
+### Changing the password
+
+`POST /users/me/password` takes the current password and a new one. It
+ends every session of the user (access tokens deleted, refresh tokens
+revoked), so a leaked token stops working, and returns a fresh token pair
+that keeps the caller signed in. A wrong current password is a 422 on the
+`current_password` field, not a 401, which clients take to mean the
+session itself is gone.
+
 ## Repository
 
 The project uses a monorepo.

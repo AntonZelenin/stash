@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AccessToken, RefreshToken
@@ -44,3 +44,13 @@ class TokenRepository:
 
     async def revoke_refresh_token(self, refresh_token: RefreshToken) -> None:
         refresh_token.revoked_at = datetime.now(timezone.utc)
+
+    async def revoke_all_for_user(self, user_id: UUID) -> None:
+        """Ends every session of the user: access tokens are deleted outright,
+        refresh tokens marked revoked."""
+        await self._session.execute(delete(AccessToken).where(AccessToken.user_id == user_id))
+        await self._session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )

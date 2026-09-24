@@ -22,6 +22,12 @@ pub(crate) struct RefreshRequest {
     pub refresh_token: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenPair {
     pub access_token: String,

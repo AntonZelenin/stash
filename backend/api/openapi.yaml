@@ -108,6 +108,51 @@ paths:
         "401":
           description: Invalid refresh token
 
+  /users/me/password:
+    post:
+      summary: Change the current user's password
+      description: >
+        Requires the current password. Ends every existing session of the
+        user (all access and refresh tokens stop working) and returns a new
+        token pair so the caller stays signed in.
+      operationId: changePassword
+
+      security:
+        - bearerAuth: []
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - current_password
+                - new_password
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 8
+                  maxLength: 72
+
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+
+        "401":
+          description: Unauthorized
+
+        "422":
+          description: >
+            The current password is incorrect (reported as a validation error
+            on `current_password`), or the new password is invalid.
+
   /items/text:
     post:
       summary: Save text content

@@ -14,6 +14,7 @@ use crate::icons::{
 };
 use crate::items::{ItemGrid, TagPicker};
 use crate::routes::Route;
+use crate::settings::AccountSettings;
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// How long typing must pause before a search request is sent.
@@ -618,6 +619,7 @@ fn item_results(
 fn TopBar() -> Element {
     let session = use_context::<AuthSession>();
     let mut menu_open = use_signal(|| false);
+    let mut settings_open = use_signal(|| false);
 
     rsx! {
         header { class: "top-bar",
@@ -643,7 +645,16 @@ fn TopBar() -> Element {
                         onclick: move |_| menu_open.set(false),
                     }
                     div { class: "menu-dropdown",
-                        button { class: "menu-item", r#type: "button", IconUser {} "Account settings" }
+                        button {
+                            class: "menu-item",
+                            r#type: "button",
+                            onclick: move |_| {
+                                menu_open.set(false);
+                                settings_open.set(true);
+                            },
+                            IconUser {}
+                            "Account settings"
+                        }
                         div { class: "menu-divider" }
                         button {
                             class: "menu-item menu-item-danger",
@@ -655,6 +666,12 @@ fn TopBar() -> Element {
                     }
                 }
             }
+        }
+
+        // Outside the header: its sticky positioning makes it a stacking
+        // context, which would keep the window below card menus.
+        if settings_open() {
+            AccountSettings { on_close: move |_| settings_open.set(false) }
         }
     }
 }

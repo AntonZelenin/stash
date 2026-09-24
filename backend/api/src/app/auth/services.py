@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.repos import TokenRepository
-from app.auth.security import generate_token, hash_token, verify_password
+from app.auth.security import generate_token, hash_password, hash_token, verify_password
 from app.config import get_settings
 from app.users.models import User
 from app.users.repos import UserRepository
@@ -15,6 +15,10 @@ class InvalidCredentialsError(Exception):
 
 
 class InvalidRefreshTokenError(Exception):
+    pass
+
+
+class IncorrectPasswordError(Exception):
     pass
 
 
@@ -67,6 +71,19 @@ class AuthService:
         if user is None:
             raise InvalidRefreshTokenError()
 
+        return await self.issue_tokens(user)
+
+    async def change_password(self, user: User, current_password: str, new_password: str) -> TokenPair:
+        """Replaces the user's password after checking the current one.
+
+        Every existing session is ended, so anyone holding the user's old
+        tokens is signed out; the returned pair keeps the caller signed in.
+        """
+        if not verify_password(current_password, user.password_hash):
+            raise IncorrectPasswordError()
+
+        user.password_hash = hash_password(new_password)
+        await self._tokens.revoke_all_for_user(user.id)
         return await self.issue_tokens(user)
 
     async def get_user_by_access_token(self, token: str) -> User | None:
