@@ -47,8 +47,6 @@ fn column_count(grid_width: f64) -> usize {
 /// its card menu, `on_tags_changed` fires after a tag was added to or
 /// removed from a card, and `on_favorite_changed` after a card's favorite
 /// state was saved; the caller acts on them and refreshes `items` as needed.
-///
-/// Clicking an image card opens it full size in a `Lightbox` over the page.
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
@@ -57,8 +55,6 @@ pub fn ItemGrid(
     on_favorite_changed: EventHandler<()>,
 ) -> Element {
     let mut columns = use_signal(|| MAX_COLUMNS);
-    // URL of the image open in the lightbox, if any.
-    let mut viewing = use_signal(|| None::<String>);
 
     let current_columns = columns();
     let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
@@ -89,15 +85,10 @@ pub fn ItemGrid(
                             on_delete,
                             on_tags_changed,
                             on_favorite_changed,
-                            on_view: move |url| viewing.set(Some(url)),
                         }
                     }
                 }
             }
-        }
-
-        if let Some(url) = viewing() {
-            Lightbox { url, on_close: move |_| viewing.set(None) }
         }
     }
 }
@@ -152,14 +143,16 @@ fn CardDate(date: Option<UploadDate>) -> Element {
 /// and nothing in the card clips its content, so dropdowns can extend past
 /// short cards.
 ///
-/// `on_view` receives the full-size URL of an image card the user clicked;
+/// Clicking an image opens it full size in a `Lightbox` with the same
+/// controls as the card. The card owns the viewer, so both show one
+/// favorite state and share the same handlers.
+///
 /// `on_tags_changed` fires after a tag was added to or removed from it, and
 /// `on_favorite_changed` after its favorite state was saved.
 #[component]
 fn ItemCard(
     item: ListedItem,
     on_delete: EventHandler<String>,
-    on_view: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
 ) -> Element {
@@ -169,6 +162,8 @@ fn ItemCard(
     let mut favorite_override = use_signal(|| None::<bool>);
     let mut favorite_saving = use_signal(|| false);
     let is_favorite = favorite_override().unwrap_or(item.is_favorite);
+    // Whether this image is open in the full-size viewer.
+    let mut viewing = use_signal(|| false);
 
     // Grid cards show the small thumbnail; the full original is only the
     // fallback while the thumbnail is still being generated. Viewing an
@@ -183,11 +178,7 @@ fn ItemCard(
                 ImageBody {
                     url: url.clone(),
                     caption: caption.clone(),
-                    on_open: move |_| {
-                        if let Some(url) = full_size_url.clone() {
-                            on_view.call(url);
-                        }
-                    },
+                    on_open: move |_| viewing.set(true),
                 }
             },
         ),
@@ -225,7 +216,7 @@ fn ItemCard(
 
     let toggle_favorite = {
         let item_id = item.id.clone();
-        move |_| {
+        move |_: ()| {
             if favorite_saving() {
                 return;
             }
@@ -257,25 +248,71 @@ fn ItemCard(
                         tags: item.tags.clone(),
                         on_changed: on_tags_changed,
                     }
-                    CardDate { date }
+                    CardDate { date: date.clone() }
                 }
             }
             // Top-right, over the card: ♡ then ⋯.
             div { class: "item-card-actions",
-                button {
-                    class: if is_favorite { "item-favorite-button item-favorite-active" } else { "item-favorite-button" },
-                    r#type: "button",
-                    title: if is_favorite { "Remove from favorites" } else { "Add to favorites" },
-                    aria_label: if is_favorite { "Remove from favorites" } else { "Add to favorites" },
-                    aria_pressed: if is_favorite { "true" } else { "false" },
-                    onclick: toggle_favorite,
-                    if is_favorite {
-                        IconHeartFilled {}
-                    } else {
-                        IconHeart {}
+                FavoriteButton { is_favorite, on_toggle: toggle_favorite.clone() }
+                ItemMenu {
+                    on_delete: {
+                        let item_id = item_id.clone();
+                        move |_| on_delete.call(item_id.clone())
+                    },
+                }
+            }
+            if viewing() {
+                if let Some(url) = full_size_url {
+                    // The card's controls again, in the viewer's side panel.
+                    Lightbox { url, on_close: move |_| viewing.set(false),
+                        div { class: "lightbox-panel-header",
+                            CardDate { date }
+                            div { class: "lightbox-actions",
+                                FavoriteButton { is_favorite, on_toggle: toggle_favorite }
+                                ItemMenu {
+                                    on_delete: move |_| {
+                                        viewing.set(false);
+                                        on_delete.call(item_id.clone());
+                                    },
+                                }
+                            }
+                        }
+                        if let Some(caption) = item.text.clone() {
+                            p { class: "lightbox-caption", "{caption}" }
+                        }
+                        ItemTags {
+                            item_id: item.id.clone(),
+                            tags: item.tags.clone(),
+                            on_changed: on_tags_changed,
+                        }
                     }
                 }
-                ItemMenu { on_delete: move |_| on_delete.call(item_id.clone()) }
+            }
+        }
+    }
+}
+
+/// ♡ button: outlined, or filled while the item is a favorite.
+#[component]
+fn FavoriteButton(is_favorite: bool, on_toggle: EventHandler<()>) -> Element {
+    let label = if is_favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    };
+
+    rsx! {
+        button {
+            class: if is_favorite { "item-favorite-button item-favorite-active" } else { "item-favorite-button" },
+            r#type: "button",
+            title: label,
+            aria_label: label,
+            aria_pressed: if is_favorite { "true" } else { "false" },
+            onclick: move |_| on_toggle.call(()),
+            if is_favorite {
+                IconHeartFilled {}
+            } else {
+                IconHeart {}
             }
         }
     }
@@ -489,6 +526,8 @@ pub(crate) fn TagPicker(
                     let typed = enter_typed;
                     move |evt: KeyboardEvent| {
                         if evt.key() == Key::Escape {
+                            // Close just the picker, not a viewer it's in.
+                            evt.stop_propagation();
                             on_close.call(());
                         } else if evt.key() == Key::Enter {
                             // Inside a form, Enter would submit it.
@@ -559,11 +598,13 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
     }
 }
 
-/// Full-size image viewer over the whole page: the image centered (scaled
-/// down to fit the screen if needed, never up), on a dimmed backdrop.
+/// Full-size image viewer over the whole page: the image (scaled down to
+/// fit the screen if needed, never up) plus a side panel with `children`
+/// (the item's caption and controls), on a dimmed backdrop. The panel sits
+/// beside the image on wide screens and below it on narrow ones.
 /// Closes via the ✕ button, a click anywhere on the backdrop, or Escape.
 #[component]
-fn Lightbox(url: String, on_close: EventHandler<()>) -> Element {
+fn Lightbox(url: String, on_close: EventHandler<()>, children: Element) -> Element {
     rsx! {
         div {
             class: "lightbox",
@@ -581,13 +622,21 @@ fn Lightbox(url: String, on_close: EventHandler<()>) -> Element {
                 }
             },
             // The backdrop is the lightbox itself, so any click that isn't
-            // stopped by the image below lands here and closes it.
+            // stopped by the content below lands here and closes it.
             onclick: move |_| on_close.call(()),
-            img {
-                class: "lightbox-image",
-                src: "{url}",
-                alt: "Saved image",
+            div {
+                class: "lightbox-content",
+                // Also catches clicks on the full-screen backdrops of the
+                // menu and tag picker inside, which only close those.
                 onclick: move |evt| evt.stop_propagation(),
+                div { class: "lightbox-media",
+                    img {
+                        class: "lightbox-image",
+                        src: "{url}",
+                        alt: "Saved image",
+                    }
+                }
+                div { class: "lightbox-panel", {children} }
             }
             button {
                 class: "lightbox-close",

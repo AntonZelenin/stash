@@ -468,7 +468,8 @@
 
 /* Covers the whole viewport above everything else (drag-and-drop overlay is
    z-index 20, card menus 30-31). The dimmed backdrop is this element
-   itself: clicking it closes the viewer. */
+   itself: clicking it closes the viewer. Scrolls if the content can't fit
+   (narrow screens, where the panel goes below the image). */
 .lightbox {
     position: fixed;
     inset: 0;
@@ -477,22 +478,135 @@
     align-items: center;
     justify-content: center;
     padding: 56px 24px;
+    overflow-y: auto;
     background: rgba(20, 22, 27, 0.72);
     cursor: zoom-out;
     outline: none;
+    --lightbox-panel-width: 320px;
 }
 
-/* Full resolution, but never larger than the space inside the padding;
-   max-* only ever scale down, so small images stay at their real size. */
-.lightbox-image {
-    display: block;
+/* Image and side panel, as one rounded box. Deliberately no overflow
+   clipping, so the menu and tag picker dropdowns can extend past it. */
+.lightbox-content {
+    display: flex;
     max-width: 100%;
     max-height: 100%;
-    object-fit: contain;
-    border-radius: 6px;
+    border-radius: 12px;
+    background: #fff;
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
-    background: #f1f2f5;
     cursor: default;
+}
+
+/* Dark behind the image, so a short image next to a taller panel is
+   letterboxed rather than floating on white. Rounds its own left corners
+   (the content box doesn't clip). */
+.lightbox-media {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    border-radius: 12px 0 0 12px;
+    background: #14161b;
+}
+
+/* Full resolution, but never larger than the screen minus the lightbox's
+   padding and the panel; max-* only ever scale down, so small images stay
+   at their real size. */
+.lightbox-image {
+    display: block;
+    max-width: calc(100vw - 48px - var(--lightbox-panel-width));
+    max-height: calc(100vh - 112px);
+    object-fit: contain;
+}
+
+/* Date and ♡ ⋯ on top, then the caption (scrolls if long), then tags. */
+.lightbox-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: var(--lightbox-panel-width);
+    /* Same limit as the image, so a long caption scrolls instead of making
+       the viewer taller than the screen. */
+    max-height: calc(100vh - 112px);
+    padding: 12px 16px 16px;
+}
+
+.lightbox-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.lightbox-panel .item-card-date {
+    margin-left: 0;
+}
+
+.lightbox-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* On the card these only show on hover; in the viewer they're the point. */
+.lightbox .item-favorite-button,
+.lightbox .item-menu-button,
+.lightbox .tag-add {
+    opacity: 1;
+}
+
+/* No image underneath here, so a flat look instead of the floating one. */
+.lightbox .item-favorite-button,
+.lightbox .item-menu-button {
+    background: #f1f2f5;
+    box-shadow: none;
+}
+
+.lightbox .item-favorite-button:hover,
+.lightbox .item-menu-button:hover {
+    background: #e6e8ed;
+}
+
+/* The full caption, unlike the card's truncated one. */
+.lightbox-caption {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin: 0;
+    overflow-y: auto;
+    color: var(--text-primary);
+    font-size: 15px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+/* Narrow screens: panel below the image, both full width. */
+@media (max-width: 760px) {
+    .lightbox {
+        align-items: flex-start;
+        padding: 64px 12px 24px;
+    }
+
+    .lightbox-content {
+        flex-direction: column;
+        max-height: none;
+    }
+
+    .lightbox-media {
+        border-radius: 12px 12px 0 0;
+    }
+
+    .lightbox-image {
+        max-width: calc(100vw - 24px);
+        max-height: 70vh;
+    }
+
+    .lightbox-panel {
+        width: auto;
+        max-height: none;
+    }
 }
 
 .lightbox-close {
