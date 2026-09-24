@@ -90,6 +90,7 @@ class ItemNotFoundError(Exception):
 class ListedItem:
     item: Item
     download_url: str | None
+    thumbnail_url: str | None
 
 
 def _encode_cursor(created_at: datetime, item_id: uuid.UUID) -> str:
@@ -172,27 +173,28 @@ class ItemService:
             raise ItemNotFoundError()
         await self._session.commit()
 
-        if deleted.storage_key is not None:
+        for key in deleted.storage_keys:
             try:
-                await self._storage.delete(key=deleted.storage_key)
+                await self._storage.delete(key=key)
             except Exception:
-                logger.exception("Failed to delete %s from storage for deleted item %s", deleted.storage_key, item_id)
+                logger.exception("Failed to delete %s from storage for deleted item %s", key, item_id)
 
     async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
-        settings = get_settings()
         return [
             ListedItem(
                 item=row,
-                download_url=(
-                    await self._storage.generate_download_url(
-                        key=row.image.storage_key, expires_in=settings.image_download_url_ttl_seconds
-                    )
-                    if row.type == ItemType.image and row.image is not None
-                    else None
-                ),
+                download_url=await self._presign(row.image.storage_key if row.image else None),
+                thumbnail_url=await self._presign(row.image.thumbnail_key if row.image else None),
             )
             for row in rows
         ]
+
+    async def _presign(self, key: str | None) -> str | None:
+        if key is None:
+            return None
+        return await self._storage.generate_download_url(
+            key=key, expires_in=get_settings().image_download_url_ttl_seconds
+        )
 
     async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
         item_type = _classify_text_item_type(text)

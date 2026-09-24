@@ -6,21 +6,18 @@ from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import complete_item
-from content_analyzer.processing import ItemProcessor
+from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.worker import Worker, backoff_delay
-from conftest import FakeDeadLetterQueue, FakeJobQueue, fetch_descriptions, fetch_status, insert_item
+from conftest import (
+    FakeDeadLetterQueue,
+    FakeJobQueue,
+    FakeObjectStore,
+    fetch_descriptions,
+    fetch_status,
+    insert_item,
+)
 
 _MAX_ATTEMPTS = 5
-
-
-class _FakeStorage:
-    def __init__(self):
-        self.objects = {"images/cat.png": b"png-bytes"}
-
-    async def download(self, key: str) -> bytes:
-        if key not in self.objects:
-            raise PermanentProcessingError(f"{key} not found")
-        return self.objects[key]
 
 
 class _FakeDescriber:
@@ -72,7 +69,9 @@ def worker(engine, queue, dead_letters, describer) -> Worker:
         queue=queue,
         dead_letters=dead_letters,
         engine=engine,
-        processor=ItemProcessor(storage=_FakeStorage(), describer=describer),
+        handler=ContentAnalysisHandler(
+            storage=FakeObjectStore({"images/cat.png": b"png-bytes"}), describer=describer, engine=engine
+        ),
         max_attempts=_MAX_ATTEMPTS,
         retry_base_delay_seconds=2.0,
         retry_max_delay_seconds=120.0,

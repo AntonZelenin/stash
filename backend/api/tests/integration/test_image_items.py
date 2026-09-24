@@ -177,3 +177,25 @@ async def test_create_image_item_ignores_blank_caption(client: AsyncClient, sess
     item_id = UUID(response.json()["id"])
     assert await session.get(TextContent, item_id) is None
     assert await session.get(Description, item_id) is None
+
+
+async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    created = await client.post(
+        "/items/image",
+        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    item_id = UUID(created.json()["id"])
+
+    listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
+    # Not generated yet: clients fall back to download_url.
+    assert listed[0]["thumbnail_url"] is None
+    assert listed[0]["download_url"] is not None
+
+    image = await session.get(ImageMetadata, item_id)
+    image.thumbnail_key = f"thumbnails/{item_id}.webp"
+    await session.commit()
+
+    listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
+    assert listed[0]["thumbnail_url"] == f"https://fake-storage.test/thumbnails/{item_id}.webp?expires_in=3600"

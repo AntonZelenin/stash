@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import random
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue
+from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
-from content_analyzer.items import complete_item, fail_item, get_item_status, start_attempt
-from content_analyzer.processing import ItemProcessor
+from content_analyzer.items import fail_item, get_item_status, start_attempt
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +30,31 @@ def backoff_delay(delivery_count: int, *, base_seconds: float, max_seconds: floa
     return ceiling / 2 + random.uniform(0, ceiling / 2)
 
 
+class JobHandler(Protocol):
+    """One pipeline stage's actual work for a job (thumbnailing, content
+    analysis...). Must make its outcome durable before returning — persist
+    results, publish the next stage's job — because `Worker` acks right
+    after. Must be safe to re-run for the same job: redelivery after a crash
+    will call it again.
+
+    Raise `PermanentProcessingError` for input that can never succeed; any
+    other exception is treated as transient and retried.
+    """
+
+    async def handle(self, job: ProcessingJob) -> None: ...
+
+
 class Worker:
-    """Consumes processing jobs from `queue` and drives each item through
+    """Consumes one pipeline stage's jobs from `queue`, runs `handler` on
+    each, and owns everything around it that's the same for every stage:
+    item status, retries, dead-lettering and acking. Items move through
     `pending -> processing -> completed`/`failed` in Postgres, identified by
     `job.item_id` (the queue payload is never treated as the source of truth
-    for the item's status).
+    for the item's status); `processing` spans all stages, and only the last
+    stage's handler marks the item `completed`.
 
     Every attempt is one queue delivery; nothing is retried in-process:
-    - success: result + `completed` are committed together, then acked;
+    - success: the handler has made its outcome durable, then it's acked;
     - transient error: `retry_later` with exponential backoff, item stays
       `processing`;
     - permanent error, or `max_attempts` deliveries used up: dead-lettered,
@@ -54,7 +71,7 @@ class Worker:
         queue: JobQueue,
         dead_letters: DeadLetterQueue,
         engine: AsyncEngine,
-        processor: ItemProcessor,
+        handler: JobHandler,
         max_attempts: int = 5,
         retry_base_delay_seconds: float = 2.0,
         retry_max_delay_seconds: float = 120.0,
@@ -62,7 +79,7 @@ class Worker:
         self._queue = queue
         self._dead_letters = dead_letters
         self._engine = engine
-        self._processor = processor
+        self._handler = handler
         self._max_attempts = max_attempts
         self._retry_base_delay_seconds = retry_base_delay_seconds
         self._retry_max_delay_seconds = retry_max_delay_seconds
@@ -112,8 +129,7 @@ class Worker:
         await start_attempt(self._engine, job.item_id)
 
         try:
-            result = await self._processor.process(job)
-            await complete_item(self._engine, job.item_id, description=result.description)
+            await self._handler.handle(job)
         except PermanentProcessingError as exc:
             if await get_item_status(self._engine, job.item_id) is None:
                 # Deleted by the user mid-processing (which also removes its

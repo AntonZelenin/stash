@@ -16,9 +16,9 @@ from stash_shared.queue.base import (
     ProcessingJob,
 )
 
-_STREAM_KEY = "stash:item-processing"
-_GROUP = "content-analyzer"
-_DEAD_LETTER_STREAM_KEY = "stash:item-processing:dead-letter"
+# One consumer group per stream: each stream has exactly one kind of consumer
+# (its pipeline stage), whose replicas share the group's work.
+_GROUP = "workers"
 _PAYLOAD_FIELD = "payload"
 # Acked entries stay in a stream until trimmed. Approximate trimming on
 # publish keeps it bounded; the cap is far above any healthy backlog, so it
@@ -52,7 +52,7 @@ class ValkeyJobQueue(JobQueue):
         self,
         client: Redis,
         *,
-        stream_key: str = _STREAM_KEY,
+        stream_key: str,
         group: str = _GROUP,
         consumer: str | None = None,
         visibility_timeout_seconds: int = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
@@ -153,7 +153,7 @@ class ValkeyDeadLetterQueue(DeadLetterQueue):
     entries are expected to be rare and kept until someone inspects or
     replays them."""
 
-    def __init__(self, client: Redis, *, stream_key: str = _DEAD_LETTER_STREAM_KEY):
+    def __init__(self, client: Redis, *, stream_key: str):
         self._client = client
         self._stream_key = stream_key
 
@@ -207,12 +207,21 @@ def _client(url: str) -> Redis:
     return Redis.from_url(url, decode_responses=True, socket_timeout=_SOCKET_TIMEOUT_SECONDS)
 
 
-def build_valkey_job_queue(url: str, *, visibility_timeout_seconds: int | None = None) -> ValkeyJobQueue:
+def _stream_key(queue_name: str) -> str:
+    return f"stash:{queue_name}"
+
+
+def build_valkey_job_queue(
+    url: str, queue_name: str, *, visibility_timeout_seconds: int | None = None
+) -> ValkeyJobQueue:
     return ValkeyJobQueue(
         _client(url),
+        stream_key=_stream_key(queue_name),
         visibility_timeout_seconds=visibility_timeout_seconds or _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
     )
 
 
-def build_valkey_dead_letter_queue(url: str) -> ValkeyDeadLetterQueue:
-    return ValkeyDeadLetterQueue(_client(url))
+def build_valkey_dead_letter_queue(url: str, queue_name: str) -> ValkeyDeadLetterQueue:
+    """Dead letters of `queue_name`'s stream go to their own stream next to
+    it, so each stage's failures can be inspected/replayed separately."""
+    return ValkeyDeadLetterQueue(_client(url), stream_key=f"{_stream_key(queue_name)}:dead-letter")

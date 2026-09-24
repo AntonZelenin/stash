@@ -11,9 +11,9 @@ from app.items.models import Description, ImageMetadata, Item, ItemStatus, ItemT
 
 @dataclass(frozen=True)
 class DeletedItem:
-    # Where the item's image lived in object storage, for the caller to
-    # clean up once the delete is committed; None for non-image items.
-    storage_key: str | None
+    # Objects the item had in storage (original image, thumbnail), for the
+    # caller to clean up once the delete is committed; empty for non-images.
+    storage_keys: list[str]
 
 
 class ItemRepository:
@@ -84,7 +84,7 @@ class ItemRepository:
         """
         row = (
             await self._session.execute(
-                select(Item.id, ImageMetadata.storage_key)
+                select(Item.id, ImageMetadata.storage_key, ImageMetadata.thumbnail_key)
                 .outerjoin(ImageMetadata, ImageMetadata.item_id == Item.id)
                 .where(Item.id == item_id, Item.user_id == user_id)
             )
@@ -92,7 +92,7 @@ class ItemRepository:
         if row is None:
             return None
         await self._session.execute(delete(Item).where(Item.id == item_id))
-        return DeletedItem(storage_key=row.storage_key)
+        return DeletedItem(storage_keys=[key for key in (row.storage_key, row.thumbnail_key) if key is not None])
 
     async def search_items(self, *, user_id: uuid.UUID, tsquery: str, limit: int) -> list[Item]:
         """The user's items whose description matches `tsquery` (a

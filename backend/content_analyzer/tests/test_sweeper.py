@@ -12,14 +12,30 @@ _STALE_AFTER = 1800
 
 @pytest.fixture
 def queue() -> FakeJobQueue:
+    """The thumbnail stage's queue: where an item without a thumbnail yet
+    is re-published (most tests' items)."""
     return FakeJobQueue()
 
 
 @pytest.fixture
-def sweeper(engine, queue) -> StaleItemSweeper:
+def analysis_queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+def _sweeper(engine, queue, analysis_queue) -> StaleItemSweeper:
     return StaleItemSweeper(
-        queue=queue, engine=engine, stale_after_seconds=_STALE_AFTER, max_requeues=3, interval_seconds=60
+        thumbnail_queue=queue,
+        analysis_queue=analysis_queue,
+        engine=engine,
+        stale_after_seconds=_STALE_AFTER,
+        max_requeues=3,
+        interval_seconds=60,
     )
+
+
+@pytest.fixture
+def sweeper(engine, queue, analysis_queue) -> StaleItemSweeper:
+    return _sweeper(engine, queue, analysis_queue)
 
 
 @pytest.mark.parametrize("status", ["pending", "processing"])
@@ -102,15 +118,27 @@ async def test_non_image_items_are_never_swept(sweeper, engine, queue, item_type
     assert await fetch_status(engine, item_id) == "pending"
 
 
-async def test_concurrent_sweepers_publish_once(engine, queue):
+async def test_concurrent_sweepers_publish_once(engine, queue, analysis_queue):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, age_seconds=_STALE_AFTER + 60)
-    sweepers = [
-        StaleItemSweeper(queue=queue, engine=engine, stale_after_seconds=_STALE_AFTER, max_requeues=3, interval_seconds=60)
-        for _ in range(2)
-    ]
+    sweepers = [_sweeper(engine, queue, analysis_queue) for _ in range(2)]
 
     for sweeper in sweepers:
         await sweeper.sweep_once()
 
     assert len(queue.published) == 1
+
+
+async def test_item_with_thumbnail_resumes_at_content_analysis(sweeper, engine, queue, analysis_queue):
+    """It got stuck after the thumbnail stage, so redoing that stage would be
+    wasted work: it goes straight to analysis, pointed at the thumbnail."""
+    item_id = uuid.uuid4()
+    await insert_item(
+        engine, item_id, status="processing", age_seconds=_STALE_AFTER + 60, thumbnail_key=f"thumbnails/{item_id}.webp"
+    )
+
+    await sweeper.sweep_once()
+
+    assert queue.published == []
+    [job] = analysis_queue.published
+    assert job.image == ImageRef(storage_key=f"thumbnails/{item_id}.webp", content_type="image/webp")

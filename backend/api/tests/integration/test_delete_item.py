@@ -83,3 +83,23 @@ async def test_delete_requires_token(client: AsyncClient):
     response = await client.delete(f"/items/{uuid.uuid4()}")
 
     assert response.status_code == 401
+
+
+async def test_delete_image_item_also_removes_thumbnail(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    _, token = await register_and_login(client)
+    created = await client.post(
+        "/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, headers=_auth(token)
+    )
+    item_id = UUID(created.json()["id"])
+    # As the thumbnail worker would have left it.
+    image = await session.get(ImageMetadata, item_id)
+    image.thumbnail_key = f"thumbnails/{item_id}.webp"
+    await session.commit()
+    storage.uploads[image.thumbnail_key] = (b"webp", "image/webp")
+
+    response = await client.delete(f"/items/{item_id}", headers=_auth(token))
+
+    assert response.status_code == 204
+    assert storage.uploads == {}

@@ -4,6 +4,15 @@ from enum import Enum
 from uuid import UUID
 
 
+# The image-processing pipeline's queues, in order:
+#   API -> THUMBNAIL_JOBS -> thumbnail worker
+#       -> CONTENT_ANALYSIS_JOBS -> content-analyzer worker
+# Both carry a `ProcessingJob`; its `image` points at whatever that stage
+# should read (the original upload, then the thumbnail).
+THUMBNAIL_JOBS = "thumbnail_jobs"
+CONTENT_ANALYSIS_JOBS = "content_analysis_jobs"
+
+
 class ItemType(str, Enum):
     """Mirrors `app.items.models.ItemType` on the API side. Duplicated
     rather than imported so the worker never depends on the API's ORM

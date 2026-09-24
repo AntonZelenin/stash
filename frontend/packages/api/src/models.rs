@@ -48,6 +48,11 @@ pub struct ListedItem {
     pub text: Option<String>,
     /// Temporary, pre-signed — set only for `type == "image"`.
     pub download_url: Option<String>,
+    /// Temporary, pre-signed URL of a small WebP version, for display. Set
+    /// for images once the backend has generated it; until then, use
+    /// `download_url`. `default` keeps older API responses deserializable.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

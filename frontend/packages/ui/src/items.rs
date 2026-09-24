@@ -76,7 +76,10 @@ pub fn ItemGrid(items: Vec<ListedItem>, on_delete: EventHandler<String>) -> Elem
 /// nested button would also follow the link.
 #[component]
 fn ItemCard(item: ListedItem, on_delete: EventHandler<String>) -> Element {
-    let body = match (item.r#type.as_str(), &item.download_url, &item.text) {
+    // Grid cards show the small thumbnail; the full original is only the
+    // fallback while the thumbnail is still being generated.
+    let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
+    let body = match (item.r#type.as_str(), image_url, &item.text) {
         ("image", Some(url), caption) => rsx! {
             ImageCard { url: url.clone(), caption: caption.clone() }
         },

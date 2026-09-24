@@ -44,6 +44,10 @@ class ListedItem(BaseModel):
     # Temporary, pre-signed — set only for `type == image`, and only while
     # the underlying object storage URL remains valid.
     download_url: str | None = None
+    # Temporary, pre-signed URL of a small WebP version for display. Set
+    # only for images, once the thumbnail worker has produced it; until then
+    # clients should fall back to `download_url`.
+    thumbnail_url: str | None = None
 
 
 class ListItemsResponse(BaseModel):

@@ -63,6 +63,9 @@ class ImageMetadata(Base):
     storage_key: Mapped[str] = mapped_column(String)
     content_type: Mapped[str] = mapped_column(String)
     size_bytes: Mapped[int] = mapped_column(Integer)
+    # Small WebP version for display, written by the thumbnail worker; None
+    # until it has run (clients fall back to the original).
+    thumbnail_key: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     item: Mapped[Item] = relationship(back_populates="image")
 

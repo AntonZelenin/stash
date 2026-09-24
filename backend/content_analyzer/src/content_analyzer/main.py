@@ -1,17 +1,18 @@
+"""Content-analyzer worker: consumes `CONTENT_ANALYSIS_JOBS` (fed by the
+thumbnail worker) and runs the stale-item sweeper for the whole pipeline."""
+
 import asyncio
-import logging
 
-from stash_shared.queue.factory import build_dead_letter_queue, build_job_queue
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, THUMBNAIL_JOBS
 
+from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
 from content_analyzer.describer import OpenAIImageDescriber
-from content_analyzer.processing import ItemProcessor
-from content_analyzer.storage import S3ImageStore
+from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
 from content_analyzer.sweeper import StaleItemSweeper
-from content_analyzer.worker import Worker
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 
 
 async def main() -> None:
@@ -19,34 +20,24 @@ async def main() -> None:
     if not settings.openai_api_key:
         raise SystemExit("OPENAI_API_KEY is not set")
 
-    processor = ItemProcessor(
-        storage=S3ImageStore(
-            endpoint_url=settings.s3_endpoint_url,
-            access_key=settings.s3_access_key,
-            secret_key=settings.s3_secret_key,
-            bucket=settings.s3_bucket,
-        ),
-        describer=OpenAIImageDescriber(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            timeout_seconds=settings.openai_timeout_seconds,
-        ),
-    )
-
-    queue = build_job_queue(settings.queue_provider, settings)
     engine = create_engine()
-
-    worker = Worker(
-        queue=queue,
-        dead_letters=build_dead_letter_queue(settings.queue_provider, settings),
+    worker = build_stage_worker(
+        settings,
+        queue_name=CONTENT_ANALYSIS_JOBS,
         engine=engine,
-        processor=processor,
-        max_attempts=settings.max_delivery_attempts,
-        retry_base_delay_seconds=settings.retry_base_delay_seconds,
-        retry_max_delay_seconds=settings.retry_max_delay_seconds,
+        handler=ContentAnalysisHandler(
+            storage=build_object_store(settings),
+            describer=OpenAIImageDescriber(
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                timeout_seconds=settings.openai_timeout_seconds,
+            ),
+            engine=engine,
+        ),
     )
     sweeper = StaleItemSweeper(
-        queue=queue,
+        thumbnail_queue=build_queue(settings, THUMBNAIL_JOBS),
+        analysis_queue=build_queue(settings, CONTENT_ANALYSIS_JOBS),
         engine=engine,
         stale_after_seconds=settings.stale_item_after_seconds,
         max_requeues=settings.max_stale_requeues,

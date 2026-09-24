@@ -378,6 +378,16 @@ components:
           type:
             - string
             - "null"
+        thumbnail_url:
+          description: >-
+            Temporary, pre-signed URL of a small WebP version of the image,
+            meant for display in lists. Set only for `type == image`, once
+            the thumbnail has been generated (shortly after upload); until
+            then, or if generation failed, it is null and clients should
+            fall back to `download_url`.
+          type:
+            - string
+            - "null"
 
     ListItemsResponse:
       type: object

@@ -135,4 +135,5 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
         created_at=listed.item.created_at,
         text=listed.item.text_content.text if listed.item.text_content else None,
         download_url=listed.download_url,
+        thumbnail_url=listed.thumbnail_url,
     )

@@ -93,6 +93,18 @@ async def complete_item(engine: AsyncEngine, item_id: UUID, *, description: str 
         return True
 
 
+async def record_thumbnail(engine: AsyncEngine, item_id: UUID, *, thumbnail_key: str) -> bool:
+    """Points the item's image at its stored thumbnail. Returns False if the
+    item (and so its `item_images` row) no longer exists. Re-recording the
+    same key is a harmless no-op change."""
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text("UPDATE item_images SET thumbnail_key = :thumbnail_key WHERE item_id = :item_id"),
+            {"item_id": str(item_id), "thumbnail_key": thumbnail_key},
+        )
+        return result.rowcount == 1
+
+
 async def fail_item(engine: AsyncEngine, item_id: UUID) -> bool:
     """Moves an unfinished item to `failed`. Returns whether this call did
     it (a `completed` item is never downgraded)."""
@@ -112,6 +124,7 @@ class StaleItem:
     requeue_count: int
     storage_key: str | None
     content_type: str | None
+    thumbnail_key: str | None
 
 
 async def find_stale_items(engine: AsyncEngine, *, stale_after_seconds: float, limit: int) -> list[StaleItem]:
@@ -120,7 +133,7 @@ async def find_stale_items(engine: AsyncEngine, *, stale_after_seconds: float, l
     async with engine.connect() as conn:
         result = await conn.execute(
             _sql(
-                "SELECT i.id, i.user_id, i.type, i.requeue_count, img.storage_key, img.content_type "
+                "SELECT i.id, i.user_id, i.type, i.requeue_count, img.storage_key, img.content_type, img.thumbnail_key "
                 "FROM items i LEFT JOIN item_images img ON img.item_id = i.id "
                 f"WHERE i.type = 'image' AND i.{_NOT_FINISHED} AND i.status_updated_at < :cutoff "
                 "ORDER BY i.status_updated_at LIMIT :limit"
@@ -135,6 +148,7 @@ async def find_stale_items(engine: AsyncEngine, *, stale_after_seconds: float, l
                 requeue_count=row.requeue_count,
                 storage_key=row.storage_key,
                 content_type=row.content_type,
+                thumbnail_key=row.thumbnail_key,
             )
             for row in result
         ]

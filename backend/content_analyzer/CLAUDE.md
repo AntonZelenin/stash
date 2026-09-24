@@ -1,6 +1,7 @@
-# Processing Worker
+# Processing Workers
 
 Processes saved content asynchronously. Responsibilities:
+- Generate image thumbnails.
 - Generate image descriptions.
 - Generate tags.
 - Generate embeddings.
@@ -8,33 +9,45 @@ Processes saved content asynchronously. Responsibilities:
 
 ## Current implementation
 
-Consumes item-processing jobs published by the API via the `JobQueue` in
-`backend/shared` (currently Valkey Streams), looks up each item's status in
-Postgres by id, and drives `pending -> processing -> completed`/`failed`.
-Never trusts the queue payload as the source of truth for item state —
-always re-reads from Postgres. (The image's storage location *is* taken from
-the payload; it's immutable once the item exists.)
+This package is the image-processing pipeline. It runs as two services from
+the same Docker image, one per stage, each consuming its own queue from
+`backend/shared` (currently Valkey Streams):
+
+1. `content_analyzer.thumbnail_main` (compose service `thumbnailer`):
+   consumes `THUMBNAIL_JOBS` (published by the API on upload), makes and
+   stores a thumbnail, then publishes to `CONTENT_ANALYSIS_JOBS`.
+2. `content_analyzer.main` (compose service `content_analyzer`): consumes
+   `CONTENT_ANALYSIS_JOBS`, describes the thumbnail via OpenAI and completes
+   the item. Also runs the stale-item sweeper for the whole pipeline.
+
+Each stage looks up the item's status in Postgres by id and drives
+`pending -> processing -> completed`/`failed` (`processing` spans both
+stages). Never trusts the queue payload as the source of truth for item
+state — always re-reads from Postgres. (The image location *is* taken from
+the payload; it's immutable once written.)
 
 Layout:
-- `worker.Worker` — delivery handling: status checks, retry/backoff,
-  dead-lettering, ack ordering. See its docstring for the guarantees.
-- `processing.ItemProcessor` — the actual analysis; computes results only,
-  never writes to Postgres, so a retried attempt leaves no partial state.
-  Only image descriptions are implemented (tags/embeddings are not).
+- `worker.Worker` — stage-agnostic delivery handling: status checks,
+  retry/backoff, dead-lettering, ack ordering. See its docstring for the
+  guarantees. Takes a `JobHandler` with the stage's actual work.
+- `thumbnails.ThumbnailHandler` / `analysis.ContentAnalysisHandler` — the
+  two stages' handlers. Each makes its outcome durable before returning
+  (Worker acks right after) and must be safe to re-run; see their
+  docstrings for how.
 - `describer` — `ImageDescriber` + the OpenAI implementation, which maps
   OpenAI errors to permanent (`errors.PermanentProcessingError`) vs.
   transient (anything else).
-- `storage` — read-only S3 image download.
-- `sweeper.StaleItemSweeper` — runs alongside the worker loop; re-publishes
-  jobs for items stuck `pending`/`processing` (by `status_updated_at`) whose
-  job was lost, and fails them after too many requeues.
-- `items` — the guarded SQL status/result writes. Every write stamps
+- `storage` — small S3 object store (download/upload/delete).
+- `sweeper.StaleItemSweeper` — re-publishes jobs for items stuck
+  `pending`/`processing` (by `status_updated_at`) whose job was lost, to the
+  stage they got stuck before, and fails them after too many requeues.
+- `items` — the guarded SQL status/result writes. Every status write stamps
   `status_updated_at`; keep it that way or the sweeper will misjudge items.
+- `runtime` — wiring shared by the two entrypoints.
 
 Deliberately does not depend on the API's ORM models or storage code — it
-talks to the `items`/`item_descriptions` tables directly via a few small SQL
-statements in `content_analyzer.items`, and has its own tiny S3 reader, so
-the worker's dependency footprint stays small and independent of the API
-package.
+talks to the item tables directly via a few small SQL statements in
+`content_analyzer.items`, and has its own tiny S3 client, so the workers'
+dependency footprint stays small and independent of the API package.
 
 See [../../docs/architecture.md](../../docs/architecture.md) for full architecture context.

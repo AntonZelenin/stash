@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "stash"
 
+    # Thumbnails fit in this many pixels on their longest side: enough for
+    # the grid on high-DPI screens and for OpenAI to read text in
+    # screenshots, while typically tens to low hundreds of KB as WebP.
+    thumbnail_max_size: int = 1024
+    thumbnail_quality: int = 80
+
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"
     openai_timeout_seconds: float = 90.0

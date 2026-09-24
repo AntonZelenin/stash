@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob
 
+from content_analyzer.errors import PermanentProcessingError
+
 
 @pytest.fixture
 async def engine() -> AsyncGenerator[AsyncEngine]:
@@ -30,7 +32,10 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
         await conn.execute(text("CREATE TABLE item_descriptions (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(text("CREATE TABLE item_text_contents (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(
-            text("CREATE TABLE item_images (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, content_type TEXT NOT NULL)")
+            text(
+                "CREATE TABLE item_images (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "
+                "content_type TEXT NOT NULL, thumbnail_key TEXT)"
+            )
         )
     yield engine
     await engine.dispose()
@@ -46,6 +51,7 @@ async def insert_item(
     requeue_count: int = 0,
     storage_key: str | None = "images/cat.png",
     caption: str | None = None,
+    thumbnail_key: str | None = None,
 ) -> None:
     """`age_seconds` backdates `status_updated_at`. Image items also get an
     `item_images` row unless `storage_key` is None, and an
@@ -68,8 +74,11 @@ async def insert_item(
         )
         if item_type == "image" and storage_key is not None:
             await conn.execute(
-                text("INSERT INTO item_images (item_id, storage_key, content_type) VALUES (:id, :key, 'image/png')"),
-                {"id": str(item_id), "key": storage_key},
+                text(
+                    "INSERT INTO item_images (item_id, storage_key, content_type, thumbnail_key) "
+                    "VALUES (:id, :key, 'image/png', :thumbnail_key)"
+                ),
+                {"id": str(item_id), "key": storage_key, "thumbnail_key": thumbnail_key},
             )
         if caption is not None:
             await conn.execute(
@@ -127,3 +136,32 @@ class FakeDeadLetterQueue(DeadLetterQueue):
 
     async def send(self, letter: DeadLetter) -> None:
         self.letters.append(letter)
+
+
+async def fetch_thumbnail_key(engine: AsyncEngine, item_id: UUID) -> str | None:
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("SELECT thumbnail_key FROM item_images WHERE item_id = :id"), {"id": str(item_id)}
+        )
+        return result.scalar_one_or_none()
+
+
+class FakeObjectStore:
+    """In-memory stand-in for S3/MinIO. Missing keys fail the same way the
+    real store does (permanently)."""
+
+    def __init__(self, objects: dict[str, bytes] | None = None):
+        self.objects: dict[str, bytes] = dict(objects or {})
+        self.content_types: dict[str, str] = {}
+
+    async def download(self, key: str) -> bytes:
+        if key not in self.objects:
+            raise PermanentProcessingError(f"{key} not found")
+        return self.objects[key]
+
+    async def upload(self, key: str, data: bytes, *, content_type: str) -> None:
+        self.objects[key] = data
+        self.content_types[key] = content_type
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)

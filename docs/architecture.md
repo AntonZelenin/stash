@@ -35,13 +35,28 @@ Responsibilities:
 - Generate embeddings.
 - Store processing results in PostgreSQL.
 
-Current implementation (MVP): consumes item-processing jobs from the queue,
-loads the item's status from PostgreSQL by id, and drives it through
-`pending -> processing -> completed`/`failed`. For image items it downloads
-the image from object storage (location carried in the job), sends it to the
-OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`) and stores
-the returned text in `item_descriptions`. Tag and embedding generation are
-not implemented yet; text/link items complete with no analysis.
+Current implementation (MVP): only images are processed (text/link items are
+stored already `completed`). Images go through a two-stage pipeline, each
+stage a separate worker service built from this same package:
+
+1. Thumbnail worker (`thumbnailer` service, consumes `thumbnail_jobs`):
+   downloads the original, makes a WebP thumbnail with Pillow (max 1024px
+   on the longest side, EXIF orientation applied), stores it at
+   `thumbnails/{item_id}.webp`, records it in `item_images.thumbnail_key`,
+   and only then publishes to `content_analysis_jobs`, pointing that job at
+   the thumbnail. Undecodable uploads fail here.
+2. Content-analyzer worker (`content_analyzer` service, consumes
+   `content_analysis_jobs`): sends the thumbnail — not the original — to the
+   OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), stores
+   the text in `item_descriptions` and completes the item. Tag and embedding
+   generation are not implemented yet.
+
+The item is `processing` across both stages. Clients display the thumbnail
+(`thumbnail_url`), falling back to the original until it exists. Both
+stages share the same `Worker` (status handling, retries, dead-lettering,
+acking) with a stage-specific handler, and each stage is idempotent, so a
+redelivered job — including a duplicate hand-off between stages — never
+causes duplicate or incorrect state.
 
 Failure handling:
 - Each attempt is one queue delivery; nothing is retried in-process.
@@ -110,8 +125,12 @@ reclaimed with XAUTOCLAIM, SQS-style. The API and worker never talk to
 Valkey directly — both depend only on the `JobQueue` and `DeadLetterQueue`
 interfaces in `backend/shared/`, so the concrete backend (e.g. SQS + an SQS
 DLQ on AWS) can be replaced without touching either service. Valkey has no
-native DLQ; dead letters go to a separate stream
-(`stash:item-processing:dead-letter`).
+native DLQ; each queue's dead letters go to a stream next to it.
+
+Queues (stream key `stash:<name>`, one consumer group each, dead letters in
+`stash:<name>:dead-letter`):
+- `thumbnail_jobs`: API → thumbnail worker.
+- `content_analysis_jobs`: thumbnail worker → content-analyzer worker.
 
 ## Environments
 
@@ -121,7 +140,7 @@ The complete application runs locally using Docker Compose.
 
 Expected services:
 - API
-- Worker
+- Workers (thumbnailer, content analyzer)
 - PostgreSQL
 - MinIO
 - Queue
@@ -153,7 +172,10 @@ Client → API → PostgreSQL → Queue → Worker → PostgreSQL
 
 Client → API → Object Storage
              → PostgreSQL
-             → Queue → Worker → PostgreSQL
+             → thumbnail_jobs → Thumbnail Worker → Object Storage (thumbnail)
+                                                → PostgreSQL
+                                                → content_analysis_jobs → Content Analyzer → OpenAI
+                                                                                           → PostgreSQL
 
 ### Search
 
