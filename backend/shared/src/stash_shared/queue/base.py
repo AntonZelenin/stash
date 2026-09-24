@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import ClassVar
 from uuid import UUID
 
 
@@ -111,6 +112,21 @@ class QueueStats:
     oldest_message_age_seconds: float | None
 
 
+class RetryMode(str, Enum):
+    """Who decides when a delivery the consumer failed to process
+    (`JobQueue.retry_later`) is delivered again. Either way it's the same
+    message, with its `delivery_count` incremented: no copy is published
+    and no separate attempt counter is kept."""
+
+    # The consumer: it passes its backoff delay, and the queue redelivers
+    # the message after it (Valkey Streams).
+    BACKOFF = "backoff"
+    # The platform: the message is simply left unacked and reappears once
+    # its visibility timeout expires (SQS, polled or via Lambda); retry
+    # timing is the queue's configuration, not the consumer's.
+    VISIBILITY_TIMEOUT = "visibility_timeout"
+
+
 class JobQueue(ABC):
     """At-least-once queue of item-processing jobs between the API
     (producer) and the content-analyzer worker (consumer). Callers depend
@@ -120,7 +136,13 @@ class JobQueue(ABC):
     A received message stays owned by the consumer until it is `ack`ed. If
     it isn't acked (the consumer crashed, or called `retry_later`), it is
     redelivered later with an incremented `delivery_count`.
+
+    `retry_mode` says who decides when a delivery released with
+    `retry_later` comes back (see `RetryMode`); a consumer computes a
+    backoff only for `RetryMode.BACKOFF`.
     """
+
+    retry_mode: ClassVar[RetryMode] = RetryMode.BACKOFF
 
     @abstractmethod
     async def publish(self, job: ProcessingJob) -> None:
@@ -144,9 +166,12 @@ class JobQueue(ABC):
         ...
 
     @abstractmethod
-    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
-        """Releases the delivery so it is redelivered no sooner than
-        `delay_seconds` from now (best effort; backends may clamp it)."""
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
+        """Releases a delivery the consumer failed to process, unacked, to
+        be redelivered. `RetryMode.BACKOFF`: no sooner than `delay_seconds`
+        from now (best effort; backends may clamp it).
+        `RetryMode.VISIBILITY_TIMEOUT`: `delay_seconds` is None; it comes
+        back when the platform redelivers it."""
         ...
 
     async def abandon(self, delivery: Delivery) -> None:

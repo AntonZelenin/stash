@@ -15,6 +15,7 @@ from stash_shared.queue.base import (
     ItemType,
     PlatformDeadLetterQueue,
     ProcessingJob,
+    RetryMode,
 )
 from stash_shared.queue.sqs_queue import SqsJobQueue
 
@@ -161,18 +162,15 @@ async def test_ack_deletes_the_message_by_its_receipt_handle(client):
     await _queue(client).ack(_delivery())
 
 
-@pytest.mark.parametrize(
-    ("delay_seconds", "visibility_timeout"),
-    [(2.1, 3), (0, 0), (-1, 0), (120, 120), (100_000, 43_200)],
-)
-async def test_retry_later_hides_the_message_for_the_delay(client, delay_seconds, visibility_timeout):
-    client.stubber.add_response(
-        "change_message_visibility",
-        {},
-        {"QueueUrl": QUEUE_URL, "ReceiptHandle": "receipt-handle-of-this-receive", "VisibilityTimeout": visibility_timeout},
-    )
+async def test_retries_are_left_to_the_visibility_timeout(client):
+    """No backoff from the consumer: `retry_later` leaves the message
+    unacked for SQS to redeliver. No stubbed responses: any SQS call (a
+    delete, a visibility change, a re-send) would fail the test."""
+    queue = _queue(client)
 
-    await _queue(client).retry_later(_delivery(), delay_seconds=delay_seconds)
+    await queue.retry_later(_delivery(), delay_seconds=None)
+
+    assert queue.retry_mode is RetryMode.VISIBILITY_TIMEOUT
 
 
 async def test_abandon_leaves_the_message_for_sqs_redrive(client):

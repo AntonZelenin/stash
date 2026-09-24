@@ -1,5 +1,4 @@
 import asyncio
-import math
 
 import boto3
 from opentelemetry import trace
@@ -7,15 +6,13 @@ from opentelemetry.trace import SpanKind
 
 from stash_shared import tracing
 from stash_shared.queue import codec
-from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
+from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob, RetryMode
 
 # Tracing metadata (`Delivery.trace_context`, as JSON), as a message
 # attribute so the body stays the business contract alone.
 TRACE_CONTEXT_ATTRIBUTE = "trace_context"
-# SQS's limits: long polls wait at most 20s, and a message can be hidden
-# for at most 12 hours.
+# SQS's limit: long polls wait at most 20s.
 _MAX_WAIT_SECONDS = 20
-_MAX_VISIBILITY_TIMEOUT_SECONDS = 12 * 60 * 60
 
 _tracer = trace.get_tracer(__name__)
 
@@ -25,13 +22,15 @@ class SqsJobQueue(JobQueue):
 
     SQS provides the at-least-once semantics directly: a received message is
     hidden for the visibility timeout and reappears unless it's deleted
-    (`ack`). `retry_later` changes the message's visibility timeout so it
-    reappears after the requested delay. `Delivery.delivery_count` is SQS's
-    `ApproximateReceiveCount`.
+    (`ack`). `Delivery.delivery_count` is SQS's `ApproximateReceiveCount`.
+
+    Retries are SQS's own (`RetryMode.VISIBILITY_TIMEOUT`): `retry_later`
+    leaves the message unacked, and it reappears once its visibility timeout
+    expires. Nothing is deleted, re-sent or re-timed by the consumer.
 
     `Delivery.message_id` is the SQS `MessageId` (the same on every delivery);
     `Delivery.receipt` is the receipt handle of this particular receive, the
-    only thing SQS accepts for deleting it or changing its visibility.
+    only thing SQS accepts for deleting it.
 
     `visibility_timeout_seconds`, if given, overrides the queue's own default
     on every receive; like on Valkey, it must comfortably exceed the longest
@@ -44,6 +43,8 @@ class SqsJobQueue(JobQueue):
     `stats` isn't reported (returns None): SQS publishes queue depth and
     oldest-message age to CloudWatch itself.
     """
+
+    retry_mode = RetryMode.VISIBILITY_TIMEOUT
 
     def __init__(
         self,
@@ -100,15 +101,10 @@ class SqsJobQueue(JobQueue):
     async def ack(self, delivery: Delivery) -> None:
         await asyncio.to_thread(self._client.delete_message, QueueUrl=self._queue_url, ReceiptHandle=delivery.receipt)
 
-    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
-        # Whole seconds, rounded up so it's never sooner than asked.
-        visibility = min(max(0, math.ceil(delay_seconds)), _MAX_VISIBILITY_TIMEOUT_SECONDS)
-        await asyncio.to_thread(
-            self._client.change_message_visibility,
-            QueueUrl=self._queue_url,
-            ReceiptHandle=delivery.receipt,
-            VisibilityTimeout=visibility,
-        )
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
+        """Leaves the message unacked: it reappears once its visibility
+        timeout expires (`RetryMode.VISIBILITY_TIMEOUT`), with its receive
+        count incremented."""
 
     async def abandon(self, delivery: Delivery) -> None:
         """Leaves the message unacked (never deleted, never copied): it

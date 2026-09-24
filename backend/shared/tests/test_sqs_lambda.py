@@ -9,7 +9,7 @@ import pytest
 from botocore.stub import Stubber
 
 from stash_shared.queue import codec
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob, RetryMode
 from stash_shared.queue.sqs_lambda import LambdaSqsQueue, delivery_from_record, process_sqs_batch
 from stash_shared.queue.sqs_queue import SqsJobQueue
 
@@ -55,12 +55,12 @@ class _RecordingSqs:
 
     def __init__(self):
         self.published: list[ProcessingJob] = []
-        self.retried: list[tuple[str, float]] = []
+        self.retried: list[tuple[str, float | None]] = []
 
     async def publish(self, job: ProcessingJob) -> None:
         self.published.append(job)
 
-    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
         self.retried.append((delivery.message_id, delay_seconds))
 
 
@@ -79,7 +79,7 @@ class _Consumer:
         if action == "ack":
             await self.queue.ack(delivery)
         elif action == "retry":
-            await self.queue.retry_later(delivery, delay_seconds=4)
+            await self.queue.retry_later(delivery, delay_seconds=None)
         elif action == "abandon":
             await self.queue.abandon(delivery)
         elif action == "raise":
@@ -89,7 +89,9 @@ class _Consumer:
 async def _run(event: dict, script: dict[str, str] | None = None) -> tuple[dict, _Consumer, _RecordingSqs]:
     sqs = _RecordingSqs()
     consumer = _Consumer(LambdaSqsQueue(sqs), script or {})
-    response = await process_sqs_batch(event, queue=consumer.queue, process=consumer.process, queue_name="thumbnail_jobs")
+    response = await process_sqs_batch(
+        event, queue=consumer.queue, process=consumer.process, queue_name="thumbnail_jobs"
+    )
     return response, consumer, sqs
 
 
@@ -137,11 +139,12 @@ async def test_a_message_left_unsettled_is_reported_failed():
     assert response == {"batchItemFailures": [{"itemIdentifier": "m1"}]}
 
 
-async def test_a_retry_changes_the_visibility_to_the_backoff_and_is_reported_failed():
+async def test_a_retry_is_only_reported_failed_for_the_visibility_timeout_to_redeliver():
     response, _, sqs = await _run(_event(_record("m1")), {"m1": "retry"})
 
-    assert sqs.retried == [("m1", 4)]
     assert response == {"batchItemFailures": [{"itemIdentifier": "m1"}]}
+    # No backoff of its own: SQS redelivers it when it becomes visible.
+    assert sqs.retried == []
 
 
 async def test_a_settlement_does_not_leak_into_the_next_batch():
@@ -228,25 +231,19 @@ def test_undecodable_trace_context_only_costs_the_trace_link():
 # ---- the queue itself ----
 
 
-async def test_the_lambda_queue_never_deletes_and_delegates_retries_to_sqs():
-    """Against a stubbed SQS client: a retry is exactly one
-    ChangeMessageVisibility; ack and abandon make no call at all (the
-    stubber fails on any unexpected request)."""
+async def test_the_lambda_queue_settles_without_any_sqs_call():
+    """Against a stubbed SQS client with no responses queued, so any call —
+    a delete, a visibility change, a re-send, a send to a DLQ — fails the
+    test. Retries are the visibility timeout's."""
     client = boto3.client("sqs", region_name="eu-west-1", aws_access_key_id="test", aws_secret_access_key="test")
     queue = LambdaSqsQueue(SqsJobQueue(client, queue_url=QUEUE_URL, queue_name="thumbnail_jobs"))
     delivery = delivery_from_record(_record("m1"))
-    with Stubber(client) as stubber:
-        stubber.add_response(
-            "change_message_visibility",
-            {},
-            {"QueueUrl": QUEUE_URL, "ReceiptHandle": "receipt-m1", "VisibilityTimeout": 5},
-        )
-
+    with Stubber(client):
         await queue.ack(delivery)
         await queue.abandon(delivery)
-        await queue.retry_later(delivery, delay_seconds=4.2)
+        await queue.retry_later(delivery, delay_seconds=None)
 
-        stubber.assert_no_pending_responses()
+    assert queue.retry_mode is RetryMode.VISIBILITY_TIMEOUT
 
 
 async def test_the_lambda_queue_publishes_to_sqs_and_cannot_receive():

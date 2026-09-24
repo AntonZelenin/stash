@@ -260,7 +260,7 @@ async def test_malformed_payload_is_dead_lettered(worker, queue, dead_letters):
     assert letter.raw_payload == "not json"
 
 
-# ---- a queue whose platform dead-letters on its own (SQS redrive) ----
+# ---- a queue whose platform retries and dead-letters on its own (SQS) ----
 
 
 @pytest.fixture
@@ -282,6 +282,44 @@ def platform_worker(engine, platform_queue, describer) -> Worker:
         ),
         max_attempts=_MAX_ATTEMPTS,
     )
+
+
+async def test_platform_transient_error_is_left_for_the_visibility_timeout(
+    platform_worker, engine, platform_queue, describer
+):
+    """No backoff computed and nothing re-sent: released unacked, and SQS
+    redelivers it once its visibility timeout expires."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    describer.errors = [RuntimeError("429 rate limited")]
+    delivery = _delivery(_image_job(item_id), delivery_count=2)
+
+    await platform_worker.process_message(delivery)
+
+    assert await fetch_status(engine, item_id) == "processing"
+    assert platform_queue.retried == [(delivery, None)]
+    assert platform_queue.acked == []
+    assert platform_queue.abandoned == []
+    assert platform_queue.published == []
+
+
+async def test_platform_last_attempt_is_the_receive_count(platform_worker, engine, platform_queue, describer):
+    """The attempt number is SQS's receive count: one short of
+    `max_attempts` is still retried, `max_attempts` fails the item."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    describer.errors = [RuntimeError("503"), RuntimeError("503")]
+    before_last = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS - 1)
+    last = _delivery(_image_job(item_id), delivery_count=_MAX_ATTEMPTS)
+
+    await platform_worker.process_message(before_last)
+    assert await fetch_status(engine, item_id) == "processing"
+    await platform_worker.process_message(last)
+
+    assert await fetch_status(engine, item_id) == "failed"
+    assert platform_queue.retried == [(before_last, None)]
+    assert platform_queue.abandoned == [last]
+    assert platform_queue.acked == []
 
 
 async def test_platform_dead_lettered_job_is_left_unacked(platform_worker, engine, platform_queue, describer):

@@ -17,7 +17,7 @@ from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.worker import Worker
-from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, insert_item
+from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item
 
 _QUEUE = "content_analysis_jobs"
 _exporter = InMemorySpanExporter()
@@ -45,9 +45,11 @@ class _FlakyDescriber:
         return "A cat."
 
 
-def _worker(engine, describer, embedding_queue: FakeJobQueue | None = None) -> Worker:
+def _worker(
+    engine, describer, embedding_queue: FakeJobQueue | None = None, queue: FakeJobQueue | None = None
+) -> Worker:
     return Worker(
-        queue=FakeJobQueue(),
+        queue=queue or FakeJobQueue(),
         queue_name=_QUEUE,
         dead_letters=FakeDeadLetterQueue(),
         engine=engine,
@@ -160,6 +162,26 @@ async def test_each_attempt_is_a_span_in_the_same_trace(engine, spans):
     assert dead.attributes["item_status"] == "failed"
     assert dead.attributes["permanent"] is False
     assert dead.status.status_code == StatusCode.ERROR
+
+
+async def test_a_retry_span_records_who_schedules_the_retry(engine, spans):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    valkey_delivery, _ = _published_delivery(item_id)
+    sqs_delivery, _ = _published_delivery(item_id)
+
+    await _worker(engine, _FlakyDescriber([TimeoutError("slow")])).process_message(valkey_delivery)
+    sqs_worker = _worker(engine, _FlakyDescriber([TimeoutError("slow")]), queue=FakePlatformDeadLetteringQueue())
+    await sqs_worker.process_message(sqs_delivery)
+
+    valkey, sqs = _process_spans(spans)
+    assert (valkey.attributes["outcome"], valkey.attributes["retry_mode"]) == ("retry", "backoff")
+    assert valkey.attributes["retry_delay_seconds"] > 0
+    # SQS: the visibility timeout decides, so there's no delay to record.
+    assert (sqs.attributes["outcome"], sqs.attributes["retry_mode"]) == ("retry", "visibility_timeout")
+    assert "retry_delay_seconds" not in sqs.attributes
+    assert sqs.attributes["attempt"] == 1
+    assert sqs.status.status_code == StatusCode.ERROR
 
 
 async def test_permanent_error_is_recorded_on_the_delivery_span(engine, spans):

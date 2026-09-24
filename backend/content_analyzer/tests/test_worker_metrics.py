@@ -13,7 +13,7 @@ from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.storage import S3ObjectStore
 from content_analyzer.worker import Worker
-from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, insert_item
+from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item
 
 _QUEUE = "content_analysis_jobs"
 
@@ -92,6 +92,17 @@ async def test_failed_attempt_that_is_retried(engine, recorded):
     await insert_item(engine, item_id)
 
     await _worker(engine, _FlakyDescriber([TimeoutError()])).process_message(_delivery(item_id))
+
+    assert recorded.counts() == {"JobDuration": 1, "JobFailures": 1, "JobRetries": 1}
+
+
+async def test_a_retry_left_to_sqs_counts_the_same(engine, recorded):
+    """A failure released for SQS to redeliver is still a retry."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    worker = _worker(engine, _FlakyDescriber([TimeoutError()]), queue=FakePlatformDeadLetteringQueue())
+
+    await worker.process_message(_delivery(item_id))
 
     assert recorded.counts() == {"JobDuration": 1, "JobFailures": 1, "JobRetries": 1}
 

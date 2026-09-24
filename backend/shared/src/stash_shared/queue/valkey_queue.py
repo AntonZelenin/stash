@@ -17,6 +17,7 @@ from stash_shared.queue.base import (
     JobQueue,
     ProcessingJob,
     QueueStats,
+    RetryMode,
 )
 
 # One consumer group per stream: each stream has exactly one kind of consumer
@@ -55,7 +56,12 @@ class ValkeyJobQueue(JobQueue):
     `visibility_timeout_seconds` must comfortably exceed the longest time a
     consumer may spend on one message, or a healthy consumer's in-flight
     message gets reclaimed and processed twice.
+
+    Retries are `RetryMode.BACKOFF`: the consumer's delay decides when a
+    released message comes back (Valkey has no retry policy of its own).
     """
+
+    retry_mode = RetryMode.BACKOFF
 
     def __init__(
         self,

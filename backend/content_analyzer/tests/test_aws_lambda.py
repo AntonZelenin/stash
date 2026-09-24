@@ -11,10 +11,11 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 from stash_shared import metrics, tracing
 from stash_shared.queue import codec
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import ImageRef, ItemType, ProcessingJob
 from stash_shared.queue.sqs_lambda import LambdaSqsQueue, process_sqs_batch
 
 from content_analyzer import aws_lambda
+from content_analyzer import worker as worker_module
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.worker import Worker
 from conftest import FakeDeadLetterQueue, FakeJobQueue, create_schema, fetch_status, insert_item
@@ -79,7 +80,10 @@ class _Stage:
 
     async def run(self, *records: dict) -> dict:
         return await process_sqs_batch(
-            {"Records": list(records)}, queue=self.queue, process=self.worker.process_message, queue_name="thumbnail_jobs"
+            {"Records": list(records)},
+            queue=self.queue,
+            process=self.worker.process_message,
+            queue_name="thumbnail_jobs",
         )
 
 
@@ -98,7 +102,7 @@ async def test_a_fully_successful_batch(engine):
     assert stage.sqs.acked == [] and stage.sqs.retried == []
 
 
-async def test_a_partially_failed_batch_retries_only_the_failed_message(engine):
+async def test_a_partially_failed_batch_reports_only_the_failed_message(engine):
     ok_before, failing, ok_after = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     for item_id in (ok_before, failing, ok_after):
         await insert_item(engine, item_id)
@@ -109,12 +113,28 @@ async def test_a_partially_failed_batch_retries_only_the_failed_message(engine):
 
     assert _failures(response) == [f"msg-{failing}"]
     assert handler.handled == [ok_before, failing, ok_after]
-    # The retry's backoff is the message's visibility timeout on SQS.
-    [(retried, delay)] = stage.sqs.retried
-    assert retried.message_id == f"msg-{failing}"
-    assert delay > 0
+    # Retryable: the item waits for the redelivery, which is SQS's (after
+    # the visibility timeout) — nothing is deleted, re-sent or re-timed.
     assert await fetch_status(engine, failing) == "processing"
+    assert stage.sqs.acked == [] and stage.sqs.retried == [] and stage.sqs.published == []
     assert stage.dead_letters.letters == []
+
+
+async def test_a_retryable_failure_is_retried_by_redelivery_until_it_succeeds(engine):
+    """SQS redelivers the same message with a higher receive count; the
+    worker keeps no attempt counter of its own."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    handler = _ScriptedHandler(transient={item_id})
+    stage = _Stage(engine, handler, max_attempts=3)
+
+    first = await stage.run(_record(item_id, receive_count=1))
+    handler.transient = set()
+    second = await stage.run(_record(item_id, receive_count=2))
+
+    assert _failures(first) == [f"msg-{item_id}"]
+    assert _failures(second) == []
+    assert await fetch_status(engine, item_id) == "processing"
 
 
 async def test_a_fully_failed_batch(engine):
@@ -126,12 +146,27 @@ async def test_a_fully_failed_batch(engine):
     response = await stage.run(_record(transient), _record(permanent), _record(exhausted, receive_count=3))
 
     assert _failures(response) == [f"msg-{transient}", f"msg-{permanent}", f"msg-{exhausted}"]
-    # Given up on: the item is failed, and the message is left for SQS
-    # redrive (reported failed, never deleted).
+    # Permanent, or SQS's last receive: the item fails now, and the message
+    # is left for SQS redrive to move to the DLQ. Retryable: it just waits.
     assert await fetch_status(engine, permanent) == "failed"
     assert await fetch_status(engine, exhausted) == "failed"
     assert await fetch_status(engine, transient) == "processing"
-    assert [d.message_id for d, _ in stage.sqs.retried] == [f"msg-{transient}"]
+    assert stage.sqs.acked == [] and stage.sqs.retried == [] and stage.sqs.published == []
+
+
+async def test_a_permanent_failure_is_not_re_run_when_sqs_redelivers_it(engine):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    handler = _ScriptedHandler(permanent={item_id})
+    stage = _Stage(engine, handler)
+
+    first = await stage.run(_record(item_id, receive_count=1))
+    redelivered = await stage.run(_record(item_id, receive_count=2))
+
+    # Still reported, so it stays on its way to the DLQ, but the handler
+    # ran only once.
+    assert _failures(first) == _failures(redelivered) == [f"msg-{item_id}"]
+    assert handler.handled == [item_id]
 
 
 async def test_a_malformed_message_is_reported_failed_without_affecting_the_batch(engine):
@@ -162,17 +197,20 @@ async def test_skipped_jobs_are_processed_but_a_failed_items_job_goes_on_to_the_
     assert handler.handled == []
 
 
-async def test_a_message_that_cannot_be_settled_is_reported_failed(engine, caplog):
+async def test_a_message_that_cannot_be_settled_is_reported_failed(engine, caplog, monkeypatch):
     caplog.set_level(logging.INFO)
     unreachable, ok = uuid.uuid4(), uuid.uuid4()
     await insert_item(engine, unreachable)
     await insert_item(engine, ok)
-    stage = _Stage(engine, _ScriptedHandler(transient={unreachable}))
+    stage = _Stage(engine, _ScriptedHandler())
+    get_item_status = worker_module.get_item_status
 
-    async def change_visibility_fails(delivery: Delivery, *, delay_seconds: float) -> None:
-        raise ConnectionError("SQS unreachable")
+    async def status_or_outage(engine, item_id):
+        if item_id == unreachable:
+            raise ConnectionError("Postgres unreachable")
+        return await get_item_status(engine, item_id)
 
-    stage.sqs.retry_later = change_visibility_fails
+    monkeypatch.setattr(worker_module, "get_item_status", status_or_outage)
 
     response = await stage.run(_record(unreachable), _record(ok))
 
@@ -234,7 +272,9 @@ def test_the_handler_returns_the_batch_response_and_flushes_telemetry(lambda_db,
             handler=_ScriptedHandler(transient={failing}),
         )
 
-    handler = aws_lambda.SqsWorkerFunction(service="thumbnailer", queue_name="thumbnail_jobs", build_worker=build_worker)
+    handler = aws_lambda.SqsWorkerFunction(
+        service="thumbnailer", queue_name="thumbnail_jobs", build_worker=build_worker
+    )
 
     first = handler({"Records": [_record(ok), _record(failing)]}, None)
     # A second invocation reuses the worker, its engine and its event loop.

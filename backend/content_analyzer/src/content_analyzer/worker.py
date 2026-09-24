@@ -8,7 +8,7 @@ from opentelemetry.trace import SpanKind
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import metrics, tracing
 from stash_shared.log import get_logger, log_context
-from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob
+from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob, RetryMode
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import fail_item, get_item_status, start_attempt
@@ -60,14 +60,24 @@ class Worker:
     for the item's status); `processing` spans all stages, and only the last
     stage's handler marks the item `completed`.
 
-    Every attempt is one queue delivery; nothing is retried in-process:
+    Every attempt is one queue delivery; nothing is retried in-process, and
+    the attempt number is the queue's own delivery count
+    (`Delivery.delivery_count`: Valkey's, or SQS's `ApproximateReceiveCount`),
+    never a counter kept here:
     - success: the handler has made its outcome durable, then it's acked;
-    - transient error: `retry_later` with exponential backoff, item stays
-      `processing`;
+    - transient error: released unacked with `retry_later`, item stays
+      `processing`. When it comes back is the queue's `retry_mode`: after
+      this worker's exponential backoff (Valkey), or once its visibility
+      timeout expires (SQS: no backoff is computed, and nothing is sent);
     - permanent error, or `max_attempts` deliveries used up: dead-lettered,
       item marked `failed`, then abandoned (`JobQueue.abandon`) — acked,
-      unless the queue's platform dead-letters on its own, in which case it
-      stays unacked for the platform to move to its DLQ.
+      unless the queue's platform dead-letters on its own (SQS redrive), in
+      which case it stays unacked for the platform to move to its DLQ. On
+      SQS `max_attempts` should equal the redrive policy's
+      `maxReceiveCount`, so the last attempt the item gets is SQS's last.
+    The distinction still matters where the platform retries: a permanent
+    error fails the item at once, and redeliveries of it are skipped (the
+    item is `failed`) instead of re-running the handler.
     A message is only ever acked after its outcome is durable, so a crash at
     any point means redelivery, never loss. Redelivery is safe because every
     status write is guarded (see `content_analyzer.items`) and an item
@@ -93,6 +103,9 @@ class Worker:
     changes it — a failure there is dead-lettered like anywhere else, but
     doesn't turn a finished item into a failed one. Retries, backoff,
     dead-lettering and ack ordering are the same.
+
+    `retry_base_delay_seconds`/`retry_max_delay_seconds` only apply to a
+    queue with `RetryMode.BACKOFF`.
     """
 
     def __init__(
@@ -297,23 +310,7 @@ class Worker:
                     duration_ms=_elapsed_ms(started),
                 )
                 return
-            delay = backoff_delay(
-                delivery.delivery_count,
-                base_seconds=self._retry_base_delay_seconds,
-                max_seconds=self._retry_max_delay_seconds,
-            )
-            logger.warning(
-                "Job attempt failed; retrying",
-                exc_info=exc,
-                max_attempts=self._max_attempts,
-                delay_seconds=delay,
-                duration_ms=_elapsed_ms(started),
-            )
-            span = trace.get_current_span()
-            tracing.mark_failed(span, f"Attempt failed; retrying: {exc!r}", error=exc)
-            _set_outcome("retry", retry_delay_seconds=delay)
-            await self._queue.retry_later(delivery, delay_seconds=delay)
-            metrics.count("JobRetries", queue=self._queue_label)
+            await self._retry(delivery, exc, started)
             return
 
         self._record_attempt(started)
@@ -321,6 +318,33 @@ class Worker:
         metrics.count("JobsCompleted", queue=self._queue_label)
         _set_outcome("completed")
         logger.info("Job completed", duration_ms=_elapsed_ms(started))
+
+    async def _retry(self, delivery: Delivery, exc: Exception, started: float) -> None:
+        """Releases a failed attempt for redelivery, when the queue's
+        `retry_mode` says: after a backoff computed here, or when the
+        platform redelivers it (no delay: `delay_seconds` is left out of
+        the log and span)."""
+        retry_mode = self._queue.retry_mode
+        delay = None
+        if retry_mode is RetryMode.BACKOFF:
+            delay = backoff_delay(
+                delivery.delivery_count,
+                base_seconds=self._retry_base_delay_seconds,
+                max_seconds=self._retry_max_delay_seconds,
+            )
+        logger.warning(
+            "Job attempt failed; retrying",
+            exc_info=exc,
+            max_attempts=self._max_attempts,
+            retry_mode=retry_mode,
+            delay_seconds=delay,
+            duration_ms=_elapsed_ms(started),
+        )
+        span = trace.get_current_span()
+        tracing.mark_failed(span, f"Attempt failed; retrying: {exc!r}", error=exc)
+        _set_outcome("retry", retry_mode=retry_mode, retry_delay_seconds=delay)
+        await self._queue.retry_later(delivery, delay_seconds=delay)
+        metrics.count("JobRetries", queue=self._queue_label)
 
     async def _dead_letter(
         self,
@@ -360,6 +384,7 @@ class Worker:
             "Job moved to dead-letter queue",
             exc_info=error,
             reason=reason,
+            retry_mode=self._queue.retry_mode,
             permanent=isinstance(error, PermanentProcessingError),
             max_attempts=self._max_attempts,
             duration_ms=duration_ms,

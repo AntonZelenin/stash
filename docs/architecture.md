@@ -74,12 +74,22 @@ causes duplicate or incorrect state. Each delivery is processed by
 Each stage's worker is built once, in `content_analyzer.stages`, for both.
 
 Failure handling:
-- Each attempt is one queue delivery; nothing is retried in-process.
+- Each attempt is one queue delivery; nothing is retried in-process, and
+  the attempt number is the queue's own delivery count (Valkey's, or SQS's
+  `ApproximateReceiveCount`), never an application counter.
 - Transient errors (OpenAI 429/5xx, timeouts, network, storage outages) are
-  retried via the queue with exponential backoff + jitter; the item stays
-  `processing` in between.
+  released unacked for redelivery; the item stays `processing` in between.
+  When they come back is the queue's `RetryMode` (`stash_shared.queue.base`):
+  - Valkey (`backoff`): after the worker's exponential backoff + jitter
+    (`RETRY_BASE_DELAY_SECONDS`/`RETRY_MAX_DELAY_SECONDS`).
+  - SQS (`visibility_timeout`): once the message's visibility timeout
+    expires. The worker computes no delay, and nothing is deleted,
+    re-sent or re-timed; retry timing is the queue's configuration.
 - Permanent errors (OpenAI rejecting the input as invalid, missing object in
-  storage, malformed job) skip the remaining attempts.
+  storage, malformed job) skip the remaining attempts: the item fails at
+  once. On SQS the message still goes round until redrive moves it to the
+  DLQ, but those redeliveries find the item `failed` and don't re-run the
+  handler.
 - After 5 deliveries, or on a permanent error, the job is sent to the
   dead-letter queue and the item is marked `failed`.
 - A message is acked only after its outcome is durable (description +
@@ -159,9 +169,9 @@ The backend is picked by `stash_shared.queue.factory` from `PLATFORM`
   URL comes from `SQS_QUEUE_URLS` (JSON, queue name → URL); credentials and
   region come from boto3's default chain (the execution role), never from
   settings. `ack` deletes the message by its receipt handle, `retry_later`
-  changes its visibility timeout, and the delivery count is
-  `ApproximateReceiveCount`. Queue backlog metrics come from SQS's own
-  CloudWatch metrics.
+  leaves it unacked (retried after its visibility timeout), and the
+  delivery count is `ApproximateReceiveCount`. Queue backlog metrics come
+  from SQS's own CloudWatch metrics.
 
 Dead-lettering goes through `JobQueue.abandon`, which the worker calls for
 every delivery it gives up on (after marking the item `failed`), and for
@@ -171,10 +181,12 @@ redeliveries of jobs whose item has already failed:
 - SQS: nothing is sent (`PlatformDeadLetterQueue`) and `abandon` leaves the
   message unacked: it reappears after its visibility timeout and, once
   received `maxReceiveCount` times, the queue's redrive policy (configured
-  in Terraform) moves it to its DLQ. `maxReceiveCount` should be at least
-  `MAX_DELIVERY_ATTEMPTS` (default 5); lower, SQS moves messages before the
-  worker's last attempt, leaving their items `processing` until the stale
-  sweeper re-publishes or fails them. Any message for a `failed` item ends
+  in Terraform) moves it to its DLQ. `maxReceiveCount` should equal
+  `MAX_DELIVERY_ATTEMPTS` (default 5), so the worker's last attempt (which
+  marks the item `failed`) is SQS's last receive. Lower, SQS moves messages
+  before the worker's last attempt, leaving their items `processing` until
+  the stale sweeper re-publishes or fails them; higher, the extra receives
+  are only skipped/abandoned on their way to the DLQ. Any message for a `failed` item ends
   up in the DLQ, including one left over after the sweeper gave up on it.
   The embedding worker doesn't track item status, so each redelivery of a
   message it gave up on is processed again (dead-lettered straight away
@@ -187,13 +199,14 @@ on. The handler runs the same worker as locally, settling deliveries on a
 `stash_shared.queue.sqs_lambda.LambdaSqsQueue` instead of the queue itself,
 and returns the partial batch response (`process_sqs_batch`):
 - acked (completed, or skipped) → not reported; Lambda deletes it.
-- `retry_later` → its visibility timeout is changed to the backoff delay,
-  and it's reported in `batchItemFailures`.
+- `retry_later` → reported in `batchItemFailures`, nothing else: SQS
+  redelivers it once its visibility timeout expires.
 - `abandon` (dead-lettered, or an already-failed item) → reported; SQS
   redrive moves it to the DLQ, as above.
 - `process_message` raised, or the record isn't a readable SQS message →
   reported, redelivered after the visibility timeout.
-The handler never deletes or dead-letters anything itself, and one
+The handler makes no SQS call to settle anything (no delete, visibility
+change, re-send or DLQ send), and one
 record's failure never fails the others. A record without a `messageId`
 fails the invocation (whole batch retried). The worker, engine and event
 loop are set up on the first invocation and reused; metrics and spans are
@@ -249,10 +262,11 @@ delivery with `queue`, `job_id`, `attempt`, `item_id`, `user_id` and
 `item_type`. Everything logged inside, third-party libraries included,
 carries those fields. So an item's history can be followed by `item_id`
 from the API request through each stage: `Job started`, `Job attempt
-failed; retrying` (WARNING, with `error_type`, `delay_seconds` and the stack
-trace), then `Job completed`, or `Job moved to dead-letter queue` (ERROR,
-with `reason`, `permanent`, and `item_status=failed` when the item was
-failed). External calls (OpenAI) are logged as `External call
+failed; retrying` (WARNING, with `error_type`, `retry_mode`, `delay_seconds`
+on Valkey only, and the stack trace), then `Job completed`, or `Job moved to
+dead-letter queue` (ERROR, with `reason`, `permanent`, `retry_mode`, and
+`item_status=failed` when the item was failed; with `retry_mode=
+visibility_timeout` it's SQS redrive that moves the message). External calls (OpenAI) are logged as `External call
 succeeded/failed` with `operation`, `model` and `duration_ms`; storage
 failures with `storage_key`.
 
@@ -304,7 +318,7 @@ one trace:
 
 Each delivery span has the log fields (`queue`, `job_id`, `attempt`,
 `item_id`, ...) as attributes and an `outcome`: `completed`, `retry` (with
-`retry_delay_seconds`), `dead_lettered` (with `dead_letter_reason`,
+`retry_mode`, and `retry_delay_seconds` on Valkey), `dead_lettered` (with `dead_letter_reason`,
 `permanent`) or `skipped` (with `skip_reason`). A retried job's attempts
 are sibling spans under the same publish span — a redelivery is the same
 message, with the same trace context — and failed attempts are marked as

@@ -37,8 +37,11 @@ class Settings(BaseSettings):
     queue_visibility_timeout_seconds: int = 300
 
     # Total deliveries (first attempt included) before a message is
-    # dead-lettered and its item marked `failed`.
+    # dead-lettered and its item marked `failed`. On SQS, set it to the
+    # redrive policy's `maxReceiveCount`.
     max_delivery_attempts: int = 5
+    # The retry backoff; Valkey only. On SQS a failed message is retried
+    # once its visibility timeout expires (see `stash_shared.queue.base.RetryMode`).
     retry_base_delay_seconds: float = 2.0
     retry_max_delay_seconds: float = 120.0
 

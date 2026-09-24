@@ -20,7 +20,7 @@ from typing import Any
 
 from stash_shared.log import get_logger
 from stash_shared.queue import codec
-from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob, QueueStats
+from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob, QueueStats, RetryMode
 from stash_shared.queue.sqs_queue import TRACE_CONTEXT_ATTRIBUTE
 
 logger = get_logger(__name__)
@@ -40,15 +40,18 @@ class LambdaSqsQueue(JobQueue):
     into the batch response, instead of deleting anything.
 
     - `ack`: reported as processed; Lambda deletes it after the invocation.
-    - `retry_later`: the message's visibility timeout is changed to the
-      delay (on `sqs`, the queue it came from), and it's reported as failed,
-      so it reappears after the backoff.
+    - `retry_later`: reported as failed, and nothing else: the message
+      reappears once its visibility timeout expires
+      (`RetryMode.VISIBILITY_TIMEOUT`, like `SqsJobQueue`).
     - `abandon`: reported as failed, never deleted, so it keeps coming back
       until SQS redrive moves it to the DLQ (as `SqsJobQueue.abandon`).
+    No SQS call is made to settle anything.
 
     `receive` isn't supported: Lambda delivers the messages. `publish` goes
     to `sqs`. `stats` is None: SQS publishes its own queue metrics.
     """
+
+    retry_mode = RetryMode.VISIBILITY_TIMEOUT
 
     def __init__(self, sqs: JobQueue):
         """`sqs` is the queue the event source mapping reads from (an
@@ -65,8 +68,7 @@ class LambdaSqsQueue(JobQueue):
     async def ack(self, delivery: Delivery) -> None:
         self._settlements[delivery.receipt] = Settlement.ACKED
 
-    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
-        await self._sqs.retry_later(delivery, delay_seconds=delay_seconds)
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
         self._settlements[delivery.receipt] = Settlement.RETRY
 
     async def abandon(self, delivery: Delivery) -> None:

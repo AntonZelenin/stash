@@ -11,7 +11,7 @@ from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.worker import Worker
-from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, insert_item
+from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item
 
 _QUEUE = "content_analysis_jobs"
 
@@ -26,9 +26,9 @@ class _FlakyDescriber:
         return "A cat."
 
 
-def _worker(engine, describer) -> Worker:
+def _worker(engine, describer, queue: FakeJobQueue | None = None) -> Worker:
     return Worker(
-        queue=FakeJobQueue(),
+        queue=queue or FakeJobQueue(),
         queue_name=_QUEUE,
         dead_letters=FakeDeadLetterQueue(),
         engine=engine,
@@ -109,6 +109,39 @@ async def test_retry_then_dead_letter_is_traceable(engine, caplog):
     assert fields["item_status"] == "failed"
     assert fields["permanent"] is False
     assert _records(caplog, "Job completed") == []
+
+
+async def test_retries_log_who_schedules_them(engine, caplog):
+    """Valkey: this worker's backoff, with its delay. SQS: the visibility
+    timeout, so no delay — and the attempt is SQS's receive count."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+
+    await _worker(engine, _FlakyDescriber([TimeoutError("slow")])).process_message(
+        _delivery(item_id, uuid.uuid4(), attempt=1)
+    )
+    sqs_worker = _worker(engine, _FlakyDescriber([TimeoutError("slow")]), queue=FakePlatformDeadLetteringQueue())
+    await sqs_worker.process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
+
+    valkey, sqs = (_fields(record) for record in _records(caplog, "Job attempt failed; retrying"))
+    assert valkey["retry_mode"] == "backoff"
+    assert valkey["delay_seconds"] > 0
+    assert sqs["retry_mode"] == "visibility_timeout"
+    assert "delay_seconds" not in sqs
+    assert (sqs["attempt"], sqs["max_attempts"], sqs["error_type"]) == (1, 2, "TimeoutError")
+
+
+async def test_sqs_dead_letter_log_says_redrive_moves_it(engine, caplog):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    worker = _worker(engine, _FlakyDescriber([TimeoutError("slow")]), queue=FakePlatformDeadLetteringQueue())
+
+    await worker.process_message(_delivery(item_id, uuid.uuid4(), attempt=2))
+
+    [dead] = _records(caplog, "Job moved to dead-letter queue")
+    assert _fields(dead)["retry_mode"] == "visibility_timeout"
+    assert _fields(dead)["attempt"] == 2
+    assert _fields(dead)["item_status"] == "failed"
 
 
 async def test_permanent_error_is_dead_lettered_with_its_reason(engine, caplog):

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import DateTime, bindparam, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
-from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob
+from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob, RetryMode
 
 from content_analyzer.errors import PermanentProcessingError
 
@@ -144,13 +144,16 @@ async def fetch_descriptions(engine: AsyncEngine, item_id: UUID) -> list[str]:
 
 
 class FakeJobQueue(JobQueue):
-    """Records what the worker/sweeper did instead of talking to Valkey.
-    Neither calls `receive` from the code under test."""
+    """Records what the worker/sweeper did instead of talking to Valkey
+    (retries after the consumer's backoff, like Valkey). Neither calls
+    `receive` from the code under test."""
+
+    retry_mode = RetryMode.BACKOFF
 
     def __init__(self):
         self.published: list[ProcessingJob] = []
         self.acked: list[Delivery] = []
-        self.retried: list[tuple[Delivery, float]] = []
+        self.retried: list[tuple[Delivery, float | None]] = []
 
     async def publish(self, job: ProcessingJob) -> None:
         self.published.append(job)
@@ -161,13 +164,16 @@ class FakeJobQueue(JobQueue):
     async def ack(self, delivery: Delivery) -> None:
         self.acked.append(delivery)
 
-    async def retry_later(self, delivery: Delivery, *, delay_seconds: float) -> None:
+    async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
         self.retried.append((delivery, delay_seconds))
 
 
 class FakePlatformDeadLetteringQueue(FakeJobQueue):
-    """A queue whose platform dead-letters on its own (like SQS redrive):
-    abandoned deliveries are recorded, never acked."""
+    """A queue whose platform retries and dead-letters on its own, like
+    SQS: released deliveries come back after their visibility timeout, and
+    abandoned ones are recorded, never acked (redrive moves them)."""
+
+    retry_mode = RetryMode.VISIBILITY_TIMEOUT
 
     def __init__(self):
         super().__init__()

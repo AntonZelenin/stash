@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from stash_shared.queue import sqs_queue
-from stash_shared.queue.base import THUMBNAIL_JOBS, Delivery, PlatformDeadLetterQueue
+from stash_shared.queue.base import THUMBNAIL_JOBS, Delivery, PlatformDeadLetterQueue, RetryMode
 from stash_shared.queue.factory import SQS, VALKEY, build_dead_letter_queue, build_job_queue, queue_provider
 from stash_shared.queue.sqs_queue import SqsJobQueue
 from stash_shared.queue.valkey_queue import ValkeyDeadLetterQueue, ValkeyJobQueue
@@ -81,6 +81,11 @@ def test_a_publisher_without_consumer_settings_gets_the_queue_default_visibility
 def test_aws_without_a_url_for_the_queue_fails_clearly():
     with pytest.raises(ValueError, match="thumbnail_jobs"):
         build_job_queue(_settings(platform="aws", sqs_queue_urls={}), THUMBNAIL_JOBS)
+
+
+def test_local_retries_after_the_consumers_backoff_and_aws_after_the_visibility_timeout():
+    assert build_job_queue(_settings(), THUMBNAIL_JOBS).retry_mode is RetryMode.BACKOFF
+    assert build_job_queue(_settings(platform="aws"), THUMBNAIL_JOBS).retry_mode is RetryMode.VISIBILITY_TIMEOUT
 
 
 def test_aws_leaves_dead_lettering_to_sqs():
