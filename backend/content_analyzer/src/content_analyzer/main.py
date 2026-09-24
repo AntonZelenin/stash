@@ -10,10 +10,10 @@ from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
 from content_analyzer.describer import OpenAIImageDescriber
-from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
+from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_observability
 from content_analyzer.sweeper import StaleItemSweeper
 
-configure_logging(service="content_analyzer")
+configure_observability(service="content_analyzer")
 
 
 async def main() -> None:

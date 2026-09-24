@@ -66,6 +66,17 @@ services:
       minio:
         condition: service_healthy
 
+  # Local tracing backend: every backend service exports its spans here
+  # over OTLP/HTTP (see stash_shared.tracing). UI: http://localhost:16686.
+  # Traces are kept in memory, so they're gone after a restart.
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    restart: unless-stopped
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      # OTLP/HTTP, for services run outside Docker.
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+
   api:
     build:
       context: ./backend
@@ -77,6 +88,9 @@ services:
       PLATFORM: ${PLATFORM:-local}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
       CORS_ALLOWED_ORIGINS: '["http://localhost:${FRONTEND_PORT:-8080}", "http://127.0.0.1:${FRONTEND_PORT:-8080}"]'
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
@@ -100,6 +114,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      jaeger:
+        condition: service_started
       minio-init:
         condition: service_completed_successfully
 
@@ -118,6 +134,9 @@ services:
       PLATFORM: ${PLATFORM:-local}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -128,6 +147,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      jaeger:
+        condition: service_started
       minio-init:
         condition: service_completed_successfully
 
@@ -146,6 +167,9 @@ services:
       PLATFORM: ${PLATFORM:-local}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -159,6 +183,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      jaeger:
+        condition: service_started
       minio-init:
         condition: service_completed_successfully
 
@@ -176,6 +202,9 @@ services:
       PLATFORM: ${PLATFORM:-local}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
       VALKEY_URL: redis://valkey:6379
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
@@ -184,6 +213,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      jaeger:
+        condition: service_started
 
   content_analyzer:
     build:
@@ -196,6 +227,9 @@ services:
       PLATFORM: ${PLATFORM:-local}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
       VALKEY_URL: redis://valkey:6379
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -208,6 +242,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      jaeger:
+        condition: service_started
       minio-init:
         condition: service_completed_successfully
 

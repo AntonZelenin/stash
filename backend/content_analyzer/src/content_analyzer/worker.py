@@ -3,7 +3,10 @@ import random
 import time
 from typing import Protocol
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import tracing
 from stash_shared.log import get_logger, log_context
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob
 
@@ -11,6 +14,7 @@ from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import fail_item, get_item_status, start_attempt
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 _STATUS_COMPLETED = "completed"
 _STATUS_FAILED = "failed"
@@ -64,6 +68,13 @@ class Worker:
     any point means redelivery, never loss. Redelivery is safe because every
     status write is guarded (see `content_analyzer.items`) and an item
     already `completed`/`failed` is simply acked and skipped.
+
+    Each delivery is traced as one consumer span, a child of the span that
+    published the job (`Delivery.trace_context`), so the API request and
+    every stage after it form one trace. A retried job's attempts are
+    sibling spans under the same publish, each with its `attempt` and
+    `outcome` (completed, retry, dead_lettered, skipped); failed attempts
+    are marked as errors with their exception.
 
     A stage that works on items *after* they're finished (embeddings) sets
     `manages_item_status=False`: it runs for items in any status, and never
@@ -128,8 +139,24 @@ class Worker:
 
     async def handle_delivery(self, delivery: Delivery) -> None:
         # Everything logged while handling it — here, in the handler, in
-        # storage/OpenAI calls — carries the job's identifiers.
-        with log_context(**self._delivery_fields(delivery)):
+        # storage/OpenAI calls — carries the job's identifiers, and the
+        # trace/span ids of this delivery's span.
+        fields = self._delivery_fields(delivery)
+        queue = self._queue_name or "jobs"
+        with (
+            _tracer.start_as_current_span(
+                f"process {queue}",
+                context=tracing.extract_context(delivery.trace_context),
+                kind=SpanKind.CONSUMER,
+                attributes={
+                    "messaging.destination.name": queue,
+                    "messaging.operation.type": "process",
+                    "messaging.message.id": delivery.receipt,
+                },
+            ) as span,
+            log_context(**fields),
+        ):
+            tracing.set_attributes(span, **fields, max_attempts=self._max_attempts)
             await self._handle_delivery(delivery)
 
     def _delivery_fields(self, delivery: Delivery) -> dict:
@@ -148,18 +175,21 @@ class Worker:
             # are never enqueued at all). Anything else is stray, so drop it
             # without touching the item.
             logger.warning("Ignoring job for another item type", expected_item_type=self._item_type)
+            _set_outcome("skipped", skip_reason="other_item_type")
             await self._queue.ack(delivery)
             return
 
         status = await get_item_status(self._engine, job.item_id)
         if status is None:
             logger.warning("Item not found; dropping job")
+            _set_outcome("skipped", skip_reason="item_not_found")
             await self._queue.ack(delivery)
             return
         if self._manages_item_status and status in (_STATUS_COMPLETED, _STATUS_FAILED):
             # A duplicate/redelivery of a job whose outcome is already
             # durable (e.g. the worker crashed between commit and ack).
             logger.info("Item already finished; skipping job", item_status=status)
+            _set_outcome("skipped", skip_reason="item_finished", item_status=status)
             await self._queue.ack(delivery)
             return
         if delivery.delivery_count > self._max_attempts:
@@ -180,6 +210,7 @@ class Worker:
                 # Deleted by the user mid-processing (which also removes its
                 # image, hence the error) — nothing left to fail or report.
                 logger.info("Item was deleted during processing; dropping job", duration_ms=_elapsed_ms(started))
+                _set_outcome("skipped", skip_reason="item_deleted")
                 await self._queue.ack(delivery)
                 return
             await self._dead_letter(delivery, reason=str(exc), error=exc, duration_ms=_elapsed_ms(started))
@@ -205,10 +236,14 @@ class Worker:
                 delay_seconds=delay,
                 duration_ms=_elapsed_ms(started),
             )
+            span = trace.get_current_span()
+            tracing.mark_failed(span, f"Attempt failed; retrying: {exc!r}", error=exc)
+            _set_outcome("retry", retry_delay_seconds=delay)
             await self._queue.retry_later(delivery, delay_seconds=delay)
             return
 
         await self._queue.ack(delivery)
+        _set_outcome("completed")
         logger.info("Job completed", duration_ms=_elapsed_ms(started))
 
     async def _dead_letter(
@@ -235,6 +270,13 @@ class Worker:
         if delivery.job is not None and self._manages_item_status:
             marked_failed = await fail_item(self._engine, delivery.job.item_id)
         await self._queue.ack(delivery)
+        tracing.mark_failed(trace.get_current_span(), reason, error=error)
+        _set_outcome(
+            "dead_lettered",
+            dead_letter_reason=reason,
+            permanent=isinstance(error, PermanentProcessingError),
+            item_status=_STATUS_FAILED if marked_failed else None,
+        )
         logger.error(
             "Job moved to dead-letter queue",
             exc_info=error,
@@ -244,6 +286,11 @@ class Worker:
             duration_ms=duration_ms,
             item_status=_STATUS_FAILED if marked_failed else None,
         )
+
+
+def _set_outcome(outcome: str, **attributes) -> None:
+    """Records how this delivery ended on its span."""
+    tracing.set_attributes(trace.get_current_span(), outcome=outcome, **attributes)
 
 
 def _elapsed_ms(started: float) -> float:

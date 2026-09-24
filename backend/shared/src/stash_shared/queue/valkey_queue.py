@@ -3,9 +3,12 @@ import socket
 from datetime import UTC, datetime
 from uuid import UUID
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
+from stash_shared import tracing
 from stash_shared.log import get_logger
 
 from stash_shared.queue.base import (
@@ -23,6 +26,9 @@ from stash_shared.queue.base import (
 # (its pipeline stage), whose replicas share the group's work.
 _GROUP = "workers"
 _PAYLOAD_FIELD = "payload"
+# Tracing metadata (`Delivery.trace_context`, as JSON), in its own field so
+# the payload stays the business contract alone.
+_TRACE_CONTEXT_FIELD = "trace_context"
 # Acked entries stay in a stream until trimmed. Approximate trimming on
 # publish keeps it bounded; the cap is far above any healthy backlog, so it
 # never trims entries that are still waiting to be processed in practice.
@@ -31,6 +37,7 @@ _DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 _SOCKET_TIMEOUT_SECONDS = 60
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 class ValkeyJobQueue(JobQueue):
@@ -61,9 +68,12 @@ class ValkeyJobQueue(JobQueue):
         group: str = _GROUP,
         consumer: str | None = None,
         visibility_timeout_seconds: int = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+        queue_name: str | None = None,
     ):
+        """`queue_name` only labels traces (default: `stream_key`)."""
         self._client = client
         self._stream_key = stream_key
+        self._queue_name = queue_name or stream_key
         self._group = group
         # Hostname is the container id under Docker: stable across restarts
         # of the same container, so a restarted worker naturally owns its
@@ -74,12 +84,20 @@ class ValkeyJobQueue(JobQueue):
         self._autoclaim_cursor = "0-0"
 
     async def publish(self, job: ProcessingJob) -> None:
-        await self._client.xadd(
-            self._stream_key,
-            {_PAYLOAD_FIELD: json.dumps(_to_payload(job))},
-            maxlen=_STREAM_MAX_LEN,
-            approximate=True,
-        )
+        with _tracer.start_as_current_span(
+            f"publish {self._queue_name}",
+            kind=SpanKind.PRODUCER,
+            attributes=_messaging_attributes(self._queue_name, "publish"),
+        ) as span:
+            tracing.set_attributes(span, item_id=job.item_id, item_type=job.item_type)
+            fields = {_PAYLOAD_FIELD: json.dumps(_to_payload(job))}
+            # Injected inside the publish span, so it's what the consumer's
+            # span hangs off.
+            trace_context = tracing.inject_context()
+            if trace_context:
+                fields[_TRACE_CONTEXT_FIELD] = json.dumps(trace_context)
+            message_id = await self._client.xadd(self._stream_key, fields, maxlen=_STREAM_MAX_LEN, approximate=True)
+            span.set_attribute("messaging.message.id", message_id)
 
     async def receive(self, *, timeout_seconds: int) -> Delivery | None:
         await self._ensure_group()
@@ -164,21 +182,28 @@ class ValkeyDeadLetterQueue(DeadLetterQueue):
     entries are expected to be rare and kept until someone inspects or
     replays them."""
 
-    def __init__(self, client: Redis, *, stream_key: str):
+    def __init__(self, client: Redis, *, stream_key: str, queue_name: str | None = None):
+        """`queue_name` only labels traces (default: `stream_key`)."""
         self._client = client
         self._stream_key = stream_key
+        self._queue_name = queue_name or stream_key
 
     async def send(self, letter: DeadLetter) -> None:
-        await self._client.xadd(
-            self._stream_key,
-            {
-                _PAYLOAD_FIELD: letter.raw_payload,
-                "reason": letter.reason,
-                "delivery_count": str(letter.delivery_count),
-                "source_id": letter.source_receipt,
-                "dead_lettered_at": datetime.now(UTC).isoformat(),
-            },
-        )
+        with _tracer.start_as_current_span(
+            f"publish {self._queue_name}",
+            kind=SpanKind.PRODUCER,
+            attributes=_messaging_attributes(self._queue_name, "publish"),
+        ):
+            await self._client.xadd(
+                self._stream_key,
+                {
+                    _PAYLOAD_FIELD: letter.raw_payload,
+                    "reason": letter.reason,
+                    "delivery_count": str(letter.delivery_count),
+                    "source_id": letter.source_receipt,
+                    "dead_lettered_at": datetime.now(UTC).isoformat(),
+                },
+            )
 
 
 def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Delivery:
@@ -193,7 +218,35 @@ def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Deliv
             payload_chars=len(raw),
         )
         job = None
-    return Delivery(receipt=message_id, delivery_count=delivery_count, raw_payload=raw, job=job)
+    return Delivery(
+        receipt=message_id,
+        delivery_count=delivery_count,
+        raw_payload=raw,
+        job=job,
+        trace_context=_trace_context(fields.get(_TRACE_CONTEXT_FIELD)),
+    )
+
+
+def _trace_context(raw: str | None) -> dict[str, str]:
+    """Undecodable tracing metadata only costs the trace link, never the job."""
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    return {str(key): str(value) for key, value in decoded.items()}
+
+
+def _messaging_attributes(queue_name: str, operation: str) -> dict[str, str]:
+    """OpenTelemetry messaging semantic-convention attributes."""
+    return {
+        "messaging.system": "valkey",
+        "messaging.destination.name": queue_name,
+        "messaging.operation.type": operation,
+    }
 
 
 def _to_payload(job: ProcessingJob) -> dict:
@@ -247,10 +300,13 @@ def build_valkey_job_queue(
         _client(url),
         stream_key=_stream_key(queue_name),
         visibility_timeout_seconds=visibility_timeout_seconds or _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+        queue_name=queue_name,
     )
 
 
 def build_valkey_dead_letter_queue(url: str, queue_name: str) -> ValkeyDeadLetterQueue:
     """Dead letters of `queue_name`'s stream go to their own stream next to
     it, so each stage's failures can be inspected/replayed separately."""
-    return ValkeyDeadLetterQueue(_client(url), stream_key=f"{_stream_key(queue_name)}:dead-letter")
+    return ValkeyDeadLetterQueue(
+        _client(url), stream_key=f"{_stream_key(queue_name)}:dead-letter", queue_name=f"{queue_name}:dead-letter"
+    )

@@ -187,6 +187,67 @@ failures with `storage_key`.
 Never logged: passwords, tokens, emails, note text, captions, filenames,
 search queries (only their length), or document/image content.
 
+Inside a trace span (see "Tracing"), every record — third-party ones
+included — also carries that span's `trace_id` and `span_id`, added by
+`stash_shared.log` itself; application code never fetches them.
+
+## Tracing
+
+Distributed tracing uses OpenTelemetry, set up by `stash_shared.tracing`.
+Each process calls `configure_tracing(service=..., environment=...,
+enabled=TRACING_ENABLED, otlp_endpoint=TRACING_OTLP_ENDPOINT)` once, next
+to `configure_logging` (the API in `app.main`, the workers via
+`content_analyzer.runtime.configure_observability`). Spans are exported
+over OTLP/HTTP to whatever collector `TRACING_OTLP_ENDPOINT` names —
+Jaeger locally. With tracing off nothing is set up and every span is a
+no-op, so application code never checks whether it's enabled. A service's
+name in traces is the same as in its logs (its compose service name;
+`SERVICE_NAME` overrides it for both).
+
+What's traced:
+- Automatically: incoming HTTP requests (FastAPI; not `/health`), every
+  SQL statement (SQLAlchemy), every S3 call (botocore).
+- `stash_shared.log.logged_call` — every external API call (OpenAI) —
+  opens a client span with its log fields as attributes.
+- Business operations: the API's item create/update/delete/search, the
+  thumbnail stage's image processing, the document stage's text
+  extraction, each stale-item sweep.
+- The queue: `publish <queue>` (producer) for every published job and
+  dead letter, `process <queue>` (consumer) for every delivery.
+
+The trace follows an item through the queues. `JobQueue.publish` injects
+the current W3C trace context into the message as metadata — on Valkey, a
+`trace_context` stream field next to `payload`; the payload itself is
+unchanged — and the `Worker` opens each delivery's span as a child of the
+publish span that sent it. So an upload and every stage it triggers are
+one trace:
+
+    POST /items/image (api)
+      └ publish thumbnail_jobs
+          └ process thumbnail_jobs (thumbnailer)
+              └ publish content_analysis_jobs
+                  └ process content_analysis_jobs (content_analyzer)
+                      └ publish embedding_jobs
+                          └ process embedding_jobs (embedding_worker)
+
+Each delivery span has the log fields (`queue`, `job_id`, `attempt`,
+`item_id`, ...) as attributes and an `outcome`: `completed`, `retry` (with
+`retry_delay_seconds`), `dead_lettered` (with `dead_letter_reason`,
+`permanent`) or `skipped` (with `skip_reason`). A retried job's attempts
+are sibling spans under the same publish span — a redelivery is the same
+message, with the same trace context — and failed attempts are marked as
+errors with their exception recorded. Messages published without trace
+context (e.g. before tracing existed) start a new trace. Tracing never
+changes processing: retries, dead-lettering and acking are the same with
+it on or off.
+
+The API also sets the request's `request_id` on its HTTP span, so a
+trace can be found from a log line and the other way round.
+
+The same content rules as for logs apply to span attributes: no user
+content, only ids, sizes, types and outcomes. SQL spans carry the
+statement text with bind-parameter placeholders, never the values.
+
 ## Environments
 
 ### Local
@@ -199,6 +260,8 @@ Expected services:
 - PostgreSQL
 - MinIO
 - Queue
+- Jaeger (traces from every backend service; UI at http://localhost:16686,
+  in-memory, so traces are lost on restart)
 
 Configuration is provided through local environment variables / `.env`.
 

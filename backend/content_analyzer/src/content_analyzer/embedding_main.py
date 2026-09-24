@@ -10,9 +10,9 @@ from stash_shared.queue.base import EMBEDDING_JOBS
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
 from content_analyzer.embeddings import EmbeddingHandler
-from content_analyzer.runtime import build_stage_worker, configure_logging
+from content_analyzer.runtime import build_stage_worker, configure_observability
 
-configure_logging(service="embedding_worker")
+configure_observability(service="embedding_worker")
 
 
 async def main() -> None:

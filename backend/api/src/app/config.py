@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     # Deployment stage (local, dev, stage, prod...). Only labels logs.
     environment: str = "local"
     log_level: str = "INFO"
+    # Names this process in logs and traces.
+    service_name: str = "api"
+    # Distributed tracing (see `stash_shared.tracing`): spans are exported
+    # over OTLP/HTTP to this collector (Jaeger locally).
+    tracing_enabled: bool = False
+    tracing_otlp_endpoint: str = "http://localhost:4318"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14

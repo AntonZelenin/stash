@@ -1,5 +1,6 @@
 import asyncio
 
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared.log import get_logger
 from stash_shared.queue.base import (
@@ -24,6 +25,7 @@ from content_analyzer.items import (
 from content_analyzer.thumbnails import THUMBNAIL_CONTENT_TYPE
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 _BATCH_SIZE = 100
 
@@ -93,6 +95,9 @@ class StaleItemSweeper:
                 )
             await asyncio.sleep(self._interval_seconds)
 
+    # One trace per sweep: its queries and any re-published jobs (which
+    # start the requeued item's new trace) hang off it.
+    @_tracer.start_as_current_span("stale_item_sweep")
     async def sweep_once(self) -> None:
         await self._sweep_stale_items()
         await self._sweep_embeddings()

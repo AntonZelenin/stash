@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit
 
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared import descriptions
 from stash_shared.log import bind_context, get_logger
@@ -21,6 +22,7 @@ from app.tags.repos import TagRepository
 from app.storage.base import ObjectStorage
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 _MAX_IMAGE_SIZE_BYTES = 100 * 1024 * 1024
 
@@ -194,6 +196,7 @@ class ItemService:
         next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
         return await self._with_download_urls(rows), next_cursor
 
+    @_tracer.start_as_current_span("items.search")
     async def search_items(
         self,
         *,
@@ -237,6 +240,7 @@ class ItemService:
             raise ItemNotFoundError()
         await self._session.commit()
 
+    @_tracer.start_as_current_span("items.update")
     async def update_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID, edit: ItemEdit) -> ListedItem:
         """Applies `edit` to the item in place — same id, whatever changes —
         and returns it as updated.
@@ -343,6 +347,7 @@ class ItemService:
             item.description.text = description
         return True
 
+    @_tracer.start_as_current_span("items.delete")
     async def delete_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
         """Deletes the item (all its rows) and then its image file, if any.
 
@@ -398,6 +403,7 @@ class ItemService:
             key=key, expires_in=get_settings().image_download_url_ttl_seconds, filename=filename, inline=inline
         )
 
+    @_tracer.start_as_current_span("items.create_text")
     async def create_text_item(self, *, user_id: uuid.UUID, text: str, tags: list[str] = ()) -> Item:
         """`tags` are tag names to put on the new item (see `_link_tags`)."""
         resolved_tags = await self._link_tags(user_id, normalize_tag_names(list(tags)))
@@ -413,6 +419,7 @@ class ItemService:
         await self._publish_embedding_job(item)
         return item
 
+    @_tracer.start_as_current_span("items.create_image")
     async def create_image_item(
         self, *, user_id: uuid.UUID, data: bytes, text: str | None = None, tags: list[str] = ()
     ) -> Item:
@@ -467,6 +474,7 @@ class ItemService:
             await self._publish_embedding_job(item)
         return item
 
+    @_tracer.start_as_current_span("items.create_file")
     async def create_file_item(
         self,
         *,

@@ -2,8 +2,10 @@ import asyncio
 import io
 from uuid import UUID
 
+from opentelemetry import trace
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import tracing
 from stash_shared.log import get_logger
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, JobQueue, ProcessingJob
 
@@ -12,6 +14,7 @@ from content_analyzer.items import record_thumbnail
 from content_analyzer.storage import ObjectStore
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 THUMBNAIL_CONTENT_TYPE = "image/webp"
 
@@ -82,9 +85,11 @@ class ThumbnailHandler:
             raise PermanentProcessingError("Image job has no storage reference")
 
         original = await self._storage.download(job.image.storage_key)
-        thumbnail = await asyncio.to_thread(
-            make_thumbnail, original, max_size=self._max_size, quality=self._quality
-        )
+        with _tracer.start_as_current_span("thumbnail.generate") as span:
+            thumbnail = await asyncio.to_thread(
+                make_thumbnail, original, max_size=self._max_size, quality=self._quality
+            )
+            tracing.set_attributes(span, original_bytes=len(original), thumbnail_bytes=len(thumbnail))
 
         key = thumbnail_key(job.item_id)
         await self._storage.upload(key, thumbnail, content_type=THUMBNAIL_CONTENT_TYPE)

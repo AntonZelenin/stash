@@ -1,6 +1,8 @@
 import asyncio
 
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import tracing
 from stash_shared.log import get_logger
 from stash_shared.queue.base import JobQueue, ProcessingJob
 
@@ -13,6 +15,7 @@ from content_analyzer.items import complete_item
 from content_analyzer.storage import ObjectStore
 
 logger = get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 class DocumentAnalysisHandler:
@@ -56,12 +59,16 @@ class DocumentAnalysisHandler:
             raise PermanentProcessingError(f"No parser for {job.file.content_type!r}")
 
         data = await self._storage.download(job.file.storage_key)
-        try:
-            raw_text = await asyncio.to_thread(parser.extract_text, data)
-        except Exception as exc:
-            raise PermanentProcessingError(f"Could not extract text: {exc!r}") from exc
-
-        text = normalize_text(raw_text)
+        with _tracer.start_as_current_span("document.extract_text") as span:
+            tracing.set_attributes(
+                span, parser=type(parser).__name__, content_type=job.file.content_type, size_bytes=len(data)
+            )
+            try:
+                raw_text = await asyncio.to_thread(parser.extract_text, data)
+            except Exception as exc:
+                raise PermanentProcessingError(f"Could not extract text: {exc!r}") from exc
+            text = normalize_text(raw_text)
+            span.set_attribute("text_chars", len(text))
         if not text:
             raise PermanentProcessingError("Document has no extractable text")
 

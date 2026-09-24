@@ -1,17 +1,26 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from stash_shared import tracing
 from stash_shared.log import configure_logging
 
 from app.api.routers import auth, items, search, tags, users
 from app.config import get_settings
+from app.db import engine
 from app.request_logging import RequestLoggingMiddleware
 
 configure_logging(
-    service="api",
+    service=get_settings().service_name,
     platform=get_settings().platform,
     environment=get_settings().environment,
     level=get_settings().log_level,
 )
+tracing.configure_tracing(
+    service=get_settings().service_name,
+    environment=get_settings().environment,
+    enabled=get_settings().tracing_enabled,
+    otlp_endpoint=get_settings().tracing_otlp_endpoint,
+)
+tracing.instrument_sqlalchemy(engine)
 
 app = FastAPI(
     title="Stash API",
@@ -35,6 +44,14 @@ app.add_middleware(
 # Added last so it's outermost: requests CORS answers itself (preflights)
 # are logged too.
 app.add_middleware(RequestLoggingMiddleware)
+
+if tracing.is_enabled():
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    # One server span per request, outside every middleware above, so the
+    # request log line carries its trace id. Not the healthcheck (polled
+    # every few seconds), and not the per-message send/receive spans.
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="/health", exclude_spans=["receive", "send"])
 
 app.include_router(users.router)
 app.include_router(auth.router)

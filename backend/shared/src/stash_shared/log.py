@@ -29,7 +29,9 @@ stage and prod on AWS all log the same way.
 
 `log_context` / `bind_context` attach fields (request id, job id, item
 id...) to every record logged while they're active, including records from
-third-party libraries, so deep code doesn't need them passed down.
+third-party libraries, so deep code doesn't need them passed down. Inside
+an OpenTelemetry span, records also carry its `trace_id` and `span_id`
+(see `stash_shared.tracing`), with no work from the caller.
 """
 
 import json
@@ -44,6 +46,11 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
+
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+
+from stash_shared import tracing
 
 # Field names used across services. Not enforced — a log carries whichever
 # apply — but use these spellings rather than inventing synonyms.
@@ -63,6 +70,9 @@ FIELDS = (
     "max_attempts",
     "duration_ms",
     "error_type",
+    # Added automatically inside a span (see `stash_shared.tracing`).
+    "trace_id",
+    "span_id",
 )
 
 # Levels, for `logged_call(success_level=...)`, so callers needn't import `logging`.
@@ -74,6 +84,8 @@ AWS_PLATFORM = "aws"
 # Libraries that log every request at INFO; their failures still surface
 # through our own logs (as exceptions), so only their warnings are kept.
 _QUIET_LOGGERS = ("httpx", "httpcore", "openai", "botocore", "boto3", "urllib3", "s3transfer")
+
+_tracer = trace.get_tracer(__name__)
 
 _EXTRA_ATTR = "stash_fields"
 _EMPTY: dict[str, Any] = {}
@@ -162,30 +174,38 @@ def logged_call(
     `error_type` (and `status_code` for HTTP errors), re-raising. No stack
     trace: whoever handles the exception decides whether it's worth one.
 
+    Also traces it: a client span named `operation`, with `fields` and the
+    result fields as attributes, marked failed with the exception on error.
+
     Yields a dict the block can put result fields in (e.g. output size)."""
     result: dict[str, Any] = {}
-    started = time.perf_counter()
-    logger.debug("External call started", operation=operation, **fields)
-    try:
-        yield result
-    except Exception as exc:
-        logger.warning(
-            "External call failed",
-            operation=operation,
-            duration_ms=(time.perf_counter() - started) * 1000,
-            error_type=type(exc).__name__,
-            status_code=getattr(exc, "status_code", None),
-            **fields,
+    with _tracer.start_as_current_span(operation, kind=SpanKind.CLIENT) as span:
+        tracing.set_attributes(span, **fields)
+        started = time.perf_counter()
+        logger.debug("External call started", operation=operation, **fields)
+        try:
+            yield result
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            tracing.set_attributes(span, status_code=status_code)
+            logger.warning(
+                "External call failed",
+                operation=operation,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                error_type=type(exc).__name__,
+                status_code=status_code,
+                **fields,
+            )
+            raise
+        tracing.set_attributes(span, **result)
+        duration_ms = (time.perf_counter() - started) * 1000
+        _backend.log(
+            logger.name,
+            success_level,
+            "External call succeeded",
+            None,
+            _drop_none({"operation": operation, "duration_ms": duration_ms, **fields, **result}),
         )
-        raise
-    duration_ms = (time.perf_counter() - started) * 1000
-    _backend.log(
-        logger.name,
-        success_level,
-        "External call succeeded",
-        None,
-        _drop_none({"operation": operation, "duration_ms": duration_ms, **fields, **result}),
-    )
 
 
 def get_logger(name: str) -> Logger:
@@ -305,7 +325,7 @@ class _PowertoolsBackend(_Backend):
 def _merged_fields(fields: dict[str, Any], exc_info: Any) -> dict[str, Any]:
     """The active context plus `fields` (which win), and `error_type` when
     there's an exception."""
-    merged = {**_context.get(), **fields}
+    merged = {**_context.get(), **fields, **tracing.current_trace_ids()}
     if exc_info and "error_type" not in merged:
         error_type = _error_type(exc_info)
         if error_type is not None:

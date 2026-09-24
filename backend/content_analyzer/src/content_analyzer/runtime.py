@@ -1,7 +1,7 @@
 """Wiring shared by the worker entrypoints (`main`, `thumbnail_main`)."""
 
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared import log
+from stash_shared import log, tracing
 from stash_shared.queue.factory import build_dead_letter_queue, build_job_queue
 from stash_shared.queue.base import ItemType, JobQueue
 
@@ -10,12 +10,20 @@ from content_analyzer.storage import S3ObjectStore
 from content_analyzer.worker import JobHandler, Worker
 
 
-def configure_logging(*, service: str) -> None:
-    """`service` is the entrypoint's compose service name, which every log
-    record carries."""
+def configure_observability(*, service: str) -> None:
+    """Sets up logging and tracing for this process. `service` is the
+    entrypoint's compose service name, which every log record and span
+    carries (unless overridden by the `SERVICE_NAME` setting)."""
     settings = get_settings()
+    service = settings.service_name or service
     log.configure_logging(
         service=service, platform=settings.platform, environment=settings.environment, level=settings.log_level
+    )
+    tracing.configure_tracing(
+        service=service,
+        environment=settings.environment,
+        enabled=settings.tracing_enabled,
+        otlp_endpoint=settings.tracing_otlp_endpoint,
     )
 
 

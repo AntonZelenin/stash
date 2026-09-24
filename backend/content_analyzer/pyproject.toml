@@ -5,7 +5,10 @@ description = "Stash content-analyzer processing worker"
 requires-python = ">=3.14"
 dependencies = [
     "pydantic-settings>=2.4",
-    "sqlalchemy>=2.0",
+    # [asyncio]: greenlet, which the async engine needs (2.1 stopped
+    # installing it by default). <2.1: what the app is tested on, and what
+    # opentelemetry-instrumentation-sqlalchemy supports so far.
+    "sqlalchemy[asyncio]>=2.0,<2.1",
     "asyncpg>=0.29",
     "boto3>=1.34",
     "openai>=1.66",

@@ -21,6 +21,13 @@ implementation per environment. Never use `logging.getLogger` in
 application code. See "Logging" in the architecture doc for the field names
 and what must never be logged.
 
+Also holds `stash_shared.tracing`: OpenTelemetry setup (`configure_tracing`,
+once per process; `instrument_sqlalchemy` for a service's engine) and the
+trace-context propagation the queue uses (`inject_context` on publish,
+`extract_context` in the worker). Application code creates spans with the
+plain OpenTelemetry API (`trace.get_tracer(__name__)`), only for
+meaningful operations. See "Tracing" in the architecture doc.
+
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before

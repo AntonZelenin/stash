@@ -1,6 +1,7 @@
 import time
 import uuid
 
+from opentelemetry import trace
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from stash_shared.log import get_logger, log_context
 
@@ -15,6 +16,9 @@ class RequestLoggingMiddleware:
     while handling it (see `stash_shared.log.log_context`), and logs one
     line per request once it's done: method, route, status and duration —
     plus the `user_id` if it was authenticated (bound by `get_current_user`).
+
+    The `request_id` is also set on the request's trace span (when tracing
+    is on), so a trace can be found from a log line and vice versa.
 
     Unhandled exceptions are logged here with their stack trace and the
     request's context, then re-raised unchanged.
@@ -39,7 +43,9 @@ class RequestLoggingMiddleware:
                 status_code = message["status"]
             await send(message)
 
-        with log_context(request_id=str(uuid.uuid4())):
+        request_id = str(uuid.uuid4())
+        trace.get_current_span().set_attribute("request_id", request_id)
+        with log_context(request_id=request_id):
             started = time.perf_counter()
             try:
                 await self._app(scope, receive, send_with_status)

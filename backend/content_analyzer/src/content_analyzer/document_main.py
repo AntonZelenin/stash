@@ -10,9 +10,9 @@ from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
 from content_analyzer.documents.analysis import DocumentAnalysisHandler
 from content_analyzer.documents.describer import OpenAIDocumentDescriber
-from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
+from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_observability
 
-configure_logging(service="document_analyzer")
+configure_observability(service="document_analyzer")
 
 
 async def main() -> None:

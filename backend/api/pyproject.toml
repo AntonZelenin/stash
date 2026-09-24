@@ -9,11 +9,16 @@ dependencies = [
     "pydantic[email]>=2.7",
     "pydantic-settings>=2.4",
     "python-multipart>=0.0.9",
-    "sqlalchemy>=2.0",
+    # [asyncio]: greenlet, which the async engine needs (2.1 stopped
+    # installing it by default). <2.1: what the app is tested on, and what
+    # opentelemetry-instrumentation-sqlalchemy supports so far.
+    "sqlalchemy[asyncio]>=2.0,<2.1",
     "asyncpg>=0.29",
     "alembic>=1.13",
     "bcrypt>=4.1",
     "boto3>=1.34",
+    # HTTP request spans; the rest of tracing comes from stash-shared.
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
 ]
 
 [project.optional-dependencies]

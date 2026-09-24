@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import Enum
 from uuid import UUID
 
@@ -82,12 +83,16 @@ class Delivery:
     should dead-letter it rather than retry. `raw_payload` is kept either
     way so a dead-lettered message can be inspected or replayed verbatim.
     `receipt` is an opaque, backend-specific handle for `ack`/`retry_later`.
+    `trace_context` is the publisher's trace context (see
+    `stash_shared.tracing.inject_context`), carried as message metadata
+    next to the payload, never inside it; empty if it had none.
     """
 
     receipt: str
     delivery_count: int
     raw_payload: str
     job: ProcessingJob | None
+    trace_context: Mapping[str, str] = field(default_factory=dict)
 
 
 class JobQueue(ABC):
@@ -102,7 +107,12 @@ class JobQueue(ABC):
     """
 
     @abstractmethod
-    async def publish(self, job: ProcessingJob) -> None: ...
+    async def publish(self, job: ProcessingJob) -> None:
+        """Implementations trace the publish and send the current trace
+        context with the message (`stash_shared.tracing.inject_context`),
+        for `Delivery.trace_context`, so the consumer continues the same
+        trace."""
+        ...
 
     @abstractmethod
     async def receive(self, *, timeout_seconds: int) -> Delivery | None:

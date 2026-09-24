@@ -7,10 +7,10 @@ from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, THUMBNAIL_JOBS
 
 from content_analyzer.config import get_settings
 from content_analyzer.db import create_engine
-from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_logging
+from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker, configure_observability
 from content_analyzer.thumbnails import ThumbnailHandler
 
-configure_logging(service="thumbnailer")
+configure_observability(service="thumbnailer")
 
 
 async def main() -> None:
