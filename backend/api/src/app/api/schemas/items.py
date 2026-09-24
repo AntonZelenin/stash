@@ -67,6 +67,7 @@ class ListedItem(BaseModel):
     file: ListedFile | None = None
     # The user's tags on this item, by name.
     tags: list[ListedTag] = Field(default_factory=list)
+    is_favorite: bool = False
     # Temporary, pre-signed URL of a small WebP version for display. Set
     # only for images, once the thumbnail worker has produced it; until then
     # clients should fall back to `download_url`.

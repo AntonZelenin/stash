@@ -191,6 +191,12 @@ class ItemService:
         )
         return await self._with_download_urls(rows)
 
+    async def set_favorite(self, *, user_id: uuid.UUID, item_id: uuid.UUID, is_favorite: bool) -> None:
+        """Idempotent: marking a favorite as favorite again is a no-op."""
+        if not await self._repo.set_favorite(item_id=item_id, user_id=user_id, is_favorite=is_favorite):
+            raise ItemNotFoundError()
+        await self._session.commit()
+
     async def delete_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
         """Deletes the item (all its rows) and then its image file, if any.
 

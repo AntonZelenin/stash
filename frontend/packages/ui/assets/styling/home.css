@@ -327,11 +327,23 @@ button.home-input-attach:disabled {
     width: 100%;
 }
 
+/* [ Type ▾ ] [ ♡ Favorites ]: kept together, left of the search. */
+.stash-controls-group {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+}
+
 /* Narrow screens: stack them, each full width, rather than squeeze. */
 @media (max-width: 700px) {
     .stash-controls {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .stash-controls-group > * {
+        flex: 1;
     }
 }
 

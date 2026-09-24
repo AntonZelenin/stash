@@ -402,6 +402,61 @@ paths:
         "404":
           description: No such item for the current user
 
+  /items/{item_id}/favorite:
+    put:
+      summary: Mark an item as a favorite
+      description: Idempotent.
+      operationId: markFavorite
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "204":
+          description: Marked as favorite
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+    delete:
+      summary: Unmark an item as a favorite
+      description: Idempotent.
+      operationId: unmarkFavorite
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "204":
+          description: No longer a favorite
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
   /items/{item_id}:
     delete:
       summary: Delete an item
@@ -477,6 +532,13 @@ paths:
               format: uuid
           style: form
           explode: true
+        - name: favorite
+          in: query
+          required: false
+          description: If true, only favorite items.
+          schema:
+            type: boolean
+            default: false
 
       responses:
         "200":
@@ -527,6 +589,10 @@ paths:
                   items:
                     type: string
                     format: uuid
+                favorite:
+                  description: If true, only favorite items (same as `GET /items`).
+                  type: boolean
+                  default: false
 
       responses:
         "200":
@@ -676,6 +742,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Tag"
+        is_favorite:
+          type: boolean
         thumbnail_url:
           description: >-
             Temporary, pre-signed URL of a small WebP version of the image,

@@ -5,7 +5,9 @@ use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::filters::TAG_SEARCH_DEBOUNCE;
-use crate::icons::{IconClose, IconFile, IconLink, IconMoreHorizontal, IconTrash};
+use crate::icons::{
+    IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconTrash,
+};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -42,8 +44,9 @@ fn column_count(grid_width: f64) -> usize {
 /// since the number of column elements is decided here, not in CSS.
 ///
 /// `on_delete` receives the id of an item the user chose to delete from
-/// its card menu, and `on_tags_changed` fires after a tag was added to or
-/// removed from a card; the caller acts on them and refreshes `items`.
+/// its card menu, `on_tags_changed` fires after a tag was added to or
+/// removed from a card, and `on_favorite_changed` after a card's favorite
+/// state was saved; the caller acts on them and refreshes `items` as needed.
 ///
 /// Clicking an image card opens it full size in a `Lightbox` over the page.
 #[component]
@@ -51,6 +54,7 @@ pub fn ItemGrid(
     items: Vec<ListedItem>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
+    on_favorite_changed: EventHandler<()>,
 ) -> Element {
     let mut columns = use_signal(|| MAX_COLUMNS);
     // URL of the image open in the lightbox, if any.
@@ -84,6 +88,7 @@ pub fn ItemGrid(
                             item,
                             on_delete,
                             on_tags_changed,
+                            on_favorite_changed,
                             on_view: move |url| viewing.set(Some(url)),
                         }
                     }
@@ -148,14 +153,23 @@ fn CardDate(date: Option<UploadDate>) -> Element {
 /// short cards.
 ///
 /// `on_view` receives the full-size URL of an image card the user clicked;
-/// `on_tags_changed` fires after a tag was added to or removed from it.
+/// `on_tags_changed` fires after a tag was added to or removed from it, and
+/// `on_favorite_changed` after its favorite state was saved.
 #[component]
 fn ItemCard(
     item: ListedItem,
     on_delete: EventHandler<String>,
     on_view: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
+    on_favorite_changed: EventHandler<()>,
 ) -> Element {
+    let session = use_context::<AuthSession>();
+    // The user's latest choice, shown immediately (optimistically) while it
+    // saves; None until they toggle, i.e. show the server's value.
+    let mut favorite_override = use_signal(|| None::<bool>);
+    let mut favorite_saving = use_signal(|| false);
+    let is_favorite = favorite_override().unwrap_or(item.is_favorite);
+
     // Grid cards show the small thumbnail; the full original is only the
     // fallback while the thumbnail is still being generated. Viewing an
     // image opens the original.
@@ -209,9 +223,32 @@ fn ItemCard(
         _ => return rsx! {},
     };
 
+    let toggle_favorite = {
+        let item_id = item.id.clone();
+        move |_| {
+            if favorite_saving() {
+                return;
+            }
+            let session = session.clone();
+            let item_id = item_id.clone();
+            let previous = is_favorite;
+            let wanted = !previous;
+            favorite_override.set(Some(wanted));
+            spawn(async move {
+                favorite_saving.set(true);
+                match session.set_favorite(item_id, wanted).await {
+                    Ok(()) => on_favorite_changed.call(()),
+                    // Didn't stick: show the real state again.
+                    Err(_) => favorite_override.set(Some(previous)),
+                }
+                favorite_saving.set(false);
+            });
+        }
+    };
+
     let item_id = item.id.clone();
     rsx! {
-        div { class: "item-card-shell",
+        div { class: if is_favorite { "item-card-shell is-favorite" } else { "item-card-shell" },
             div { class: "item-card {kind}",
                 {body}
                 div { class: "item-card-footer",
@@ -223,7 +260,23 @@ fn ItemCard(
                     CardDate { date }
                 }
             }
-            ItemMenu { on_delete: move |_| on_delete.call(item_id.clone()) }
+            // Top-right, over the card: ♡ then ⋯.
+            div { class: "item-card-actions",
+                button {
+                    class: if is_favorite { "item-favorite-button item-favorite-active" } else { "item-favorite-button" },
+                    r#type: "button",
+                    title: if is_favorite { "Remove from favorites" } else { "Add to favorites" },
+                    aria_label: if is_favorite { "Remove from favorites" } else { "Add to favorites" },
+                    aria_pressed: if is_favorite { "true" } else { "false" },
+                    onclick: toggle_favorite,
+                    if is_favorite {
+                        IconHeartFilled {}
+                    } else {
+                        IconHeart {}
+                    }
+                }
+                ItemMenu { on_delete: move |_| on_delete.call(item_id.clone()) }
+            }
         }
     }
 }

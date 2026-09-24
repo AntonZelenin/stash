@@ -105,6 +105,31 @@
     color: #5b6bf0;
 }
 
+/* ---- Favorites ---- */
+
+.favorites-toggle {
+    flex-shrink: 0;
+    width: auto;
+    padding: 0 16px;
+}
+
+.favorites-toggle .icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* Clearly on: tinted, with a filled red heart. */
+.favorites-toggle-active {
+    background: #fff1f3;
+    border-color: #fda4b4;
+    color: #be123c;
+}
+
+.favorites-toggle-active:hover {
+    border-color: #fb7185;
+}
+
 /* ---- Tags ---- */
 
 /* Grows with its chips up to a cap, instead of pushing the search aside;

@@ -41,7 +41,7 @@ async def search_items(
             query=payload.query,
             limit=payload.limit,
             embedder=embedder,
-            filters=item_filters(payload.type, payload.tag_ids),
+            filters=item_filters(payload.type, payload.tag_ids, payload.favorite),
         )
     except SearchUnavailableError:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Search is temporarily unavailable") from None

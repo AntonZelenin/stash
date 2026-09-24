@@ -144,6 +144,7 @@ async def list_items(
     limit: int = Query(default=30, ge=1, le=100),
     type: ItemType | None = None,
     tag_id: list[UUID] = Query(default=[], max_length=20),
+    favorite: bool = False,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
@@ -151,12 +152,50 @@ async def list_items(
 ) -> ListItemsResponse:
     try:
         listed_items, next_cursor = await ItemService(session, storage, queue).list_items(
-            user_id=current_user.id, limit=limit, cursor=cursor, filters=item_filters(type, tag_id)
+            user_id=current_user.id, limit=limit, cursor=cursor, filters=item_filters(type, tag_id, favorite)
         )
     except InvalidCursorError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
 
     return ListItemsResponse(items=[to_listed_item(listed) for listed in listed_items], next_cursor=next_cursor)
+
+
+@router.put(
+    "/items/{item_id}/favorite",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
+)
+async def mark_favorite(
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
+) -> Response:
+    return await _set_favorite(ItemService(session, storage, queue), current_user, item_id, is_favorite=True)
+
+
+@router.delete(
+    "/items/{item_id}/favorite",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
+)
+async def unmark_favorite(
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+    queue: JobQueue = Depends(get_job_queue),
+) -> Response:
+    return await _set_favorite(ItemService(session, storage, queue), current_user, item_id, is_favorite=False)
+
+
+async def _set_favorite(service: ItemService, user: User, item_id: UUID, *, is_favorite: bool) -> Response:
+    try:
+        await service.set_favorite(user_id=user.id, item_id=item_id, is_favorite=is_favorite)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
@@ -178,11 +217,12 @@ async def delete_item(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def item_filters(item_type: ItemType | None, tag_ids: list[UUID]) -> ItemFilters:
+def item_filters(item_type: ItemType | None, tag_ids: list[UUID], favorites_only: bool) -> ItemFilters:
     """API filter parameters -> repository filters (shared with search)."""
     return ItemFilters(
         item_type=DomainItemType(item_type.value) if item_type is not None else None,
         tag_ids=tuple(dict.fromkeys(tag_ids)),
+        favorites_only=favorites_only,
     )
 
 
@@ -207,4 +247,5 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
             else None
         ),
         tags=[ListedTag(id=tag.id, name=tag.name) for tag in listed.item.tags],
+        is_favorite=listed.item.is_favorite,
     )

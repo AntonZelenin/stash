@@ -239,15 +239,16 @@ results). Items further than `SEARCH_MAX_COSINE_DISTANCE` (default 0.8) are
 left out, so unrelated items aren't returned. Items without an embedding
 yet aren't searchable.
 
-### Tags and filtering
+### Tags, favorites and filtering
 
 Users label items with their own tags (`tags`: one row per user and name,
 unique per user case-insensitively; `item_tags`: the many-to-many link).
 Tags are private to their owner. Assigning by name reuses the user's
 existing tag of that name or creates it; removing a tag from an item keeps
 the tag. Listing (`GET /items`) and semantic search (`POST /search`) share
-the same server-side filters: an item type, and any number of tags (an item
-must carry all of them).
+the same server-side filters: an item type, any number of tags (an item
+must carry all of them), and favorites only (`items.is_favorite`, toggled
+per item).
 
 ## Repository
 

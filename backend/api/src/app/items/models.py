@@ -2,7 +2,20 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, Uuid, func, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Table,
+    Uuid,
+    false,
+    func,
+    text,
+)
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
@@ -56,6 +69,7 @@ class Item(Base):
     status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # How many times the sweeper has re-published this item's job.
     requeue_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     text_content: Mapped["TextContent | None"] = relationship(back_populates="item", uselist=False)
     image: Mapped["ImageMetadata | None"] = relationship(back_populates="item", uselist=False)

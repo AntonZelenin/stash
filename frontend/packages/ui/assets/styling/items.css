@@ -113,10 +113,56 @@
     position: relative;
 }
 
-.item-menu {
+/* ♡ and ⋯, top-right over the card. */
+.item-card-actions {
     position: absolute;
     top: 8px;
     right: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.item-menu {
+    position: relative;
+}
+
+/* Same subtle look as the ⋯ button: hidden until the card is hovered —
+   except on a favorite, whose filled heart always shows. */
+.item-favorite-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 8px rgba(20, 22, 27, 0.15);
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.item-favorite-button:hover {
+    color: #e11d48;
+}
+
+.item-card-shell:hover .item-favorite-button,
+.item-favorite-button:focus-visible,
+.item-favorite-active {
+    opacity: 1;
+}
+
+.item-favorite-active {
+    color: #e11d48;
+}
+
+.item-favorite-button .icon {
+    width: 16px;
+    height: 16px;
 }
 
 .item-menu-button {
@@ -145,7 +191,8 @@
 
 /* Touch screens have no hover to reveal it. */
 @media (hover: none) {
-    .item-menu-button {
+    .item-menu-button,
+    .item-favorite-button {
         opacity: 1;
     }
 }
@@ -203,6 +250,12 @@
 }
 
 /* ---- note: height follows the text, up to a limit ---- */
+
+/* A favorite's heart stays visible, so keep the note's text clear of it
+   (other notes only show the controls on hover, over the text). */
+.is-favorite .item-card-note-text {
+    padding-right: 72px;
+}
 
 .item-card-note-text {
     margin: 0;
@@ -288,8 +341,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    /* Room for the card's "⋯" menu button in the top-right corner. */
-    padding-right: 28px;
+    /* Room for the card's ♡ and ⋯ buttons in the top-right corner. */
+    padding-right: 60px;
 }
 
 .item-card-file-icon {
@@ -361,8 +414,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    /* Room for the card's "⋯" menu button in the top-right corner. */
-    padding-right: 28px;
+    /* Room for the card's ♡ and ⋯ buttons in the top-right corner. */
+    padding-right: 60px;
 }
 
 .item-card-link:hover {

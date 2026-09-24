@@ -12,6 +12,8 @@ class SearchRequest(BaseModel):
     # all of these tags.
     type: ItemType | None = None
     tag_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    # True: only the user's favorites.
+    favorite: bool = False
 
 
 class SearchResponse(BaseModel):

@@ -222,6 +222,16 @@ impl AuthSession {
         .await
     }
 
+    pub async fn set_favorite(&self, item_id: String, favorite: bool) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            async move { client.set_favorite(&access_token, &item_id, favorite).await }
+        })
+        .await
+    }
+
     pub async fn remove_tag(&self, item_id: String, tag_id: String) -> Result<(), ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {

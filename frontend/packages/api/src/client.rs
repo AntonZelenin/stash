@@ -202,6 +202,31 @@ impl ApiClient {
         }
     }
 
+    /// Marks (`favorite`) or unmarks the item as a favorite. Idempotent.
+    pub async fn set_favorite(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        favorite: bool,
+    ) -> Result<(), ApiError> {
+        let method = if favorite {
+            Method::PUT
+        } else {
+            Method::DELETE
+        };
+        let response = self
+            .authenticated(method, &format!("/items/{item_id}/favorite"), access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
     pub async fn delete_item(&self, access_token: &str, item_id: &str) -> Result<(), ApiError> {
         let response = self
             .authenticated(Method::DELETE, &format!("/items/{item_id}"), access_token)
@@ -232,6 +257,7 @@ impl ApiClient {
                 limit,
                 item_type: filters.item_type.clone(),
                 tag_ids: filters.tag_ids.clone(),
+                favorite: filters.favorites_only,
             })
             .send()
             .await
@@ -347,6 +373,9 @@ impl ApiClient {
         }
         for tag_id in &filters.tag_ids {
             params.push(("tag_id", tag_id.clone()));
+        }
+        if filters.favorites_only {
+            params.push(("favorite", "true".to_string()));
         }
 
         let response = self

@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::icons::IconClose;
+use crate::icons::{IconClose, IconHeart, IconHeartFilled};
 
 const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -104,6 +104,30 @@ pub fn TypeDropdown(value: Signal<TypeFilter>) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// `[ ♡ Favorites ]`: on/off toggle for showing only favorites.
+#[component]
+pub fn FavoritesToggle(value: Signal<bool>) -> Element {
+    let mut value = value;
+
+    rsx! {
+        document::Link { rel: "stylesheet", href: FILTERS_CSS }
+
+        button {
+            class: if value() { "filter-button favorites-toggle favorites-toggle-active" } else { "filter-button favorites-toggle" },
+            r#type: "button",
+            aria_pressed: if value() { "true" } else { "false" },
+            title: if value() { "Showing favorites only" } else { "Show favorites only" },
+            onclick: move |_| value.toggle(),
+            if value() {
+                IconHeartFilled {}
+            } else {
+                IconHeart {}
+            }
+            span { "Favorites" }
         }
     }
 }

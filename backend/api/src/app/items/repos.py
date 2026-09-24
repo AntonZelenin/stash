@@ -35,14 +35,18 @@ _LISTED_ITEM_LOADS = (
 @dataclass(frozen=True)
 class ItemFilters:
     """Narrows listing and search. `tag_ids`: the item must carry *all* of
-    them (each selected tag narrows the results further)."""
+    them (each selected tag narrows the results further). `favorites_only`:
+    just the user's favorites."""
 
     item_type: ItemType | None = None
     tag_ids: tuple[uuid.UUID, ...] = ()
+    favorites_only: bool = False
 
     def apply(self, stmt):
         if self.item_type is not None:
             stmt = stmt.where(Item.type == self.item_type)
+        if self.favorites_only:
+            stmt = stmt.where(Item.is_favorite.is_(True))
         for tag_id in self.tag_ids:
             stmt = stmt.where(
                 exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
@@ -156,6 +160,14 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
+
+    async def set_favorite(self, *, item_id: uuid.UUID, user_id: uuid.UUID, is_favorite: bool) -> bool:
+        """Marks or unmarks the user's item as a favorite. Returns False if
+        there's no such item *owned by this user*."""
+        result = await self._session.execute(
+            update(Item).where(Item.id == item_id, Item.user_id == user_id).values(is_favorite=is_favorite)
+        )
+        return result.rowcount == 1
 
     async def delete_item(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> DeletedItem | None:
         """Deletes the user's item and, via `ON DELETE CASCADE`, every row

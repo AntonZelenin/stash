@@ -59,11 +59,13 @@ pub(crate) struct AssignTagRequest {
 }
 
 /// Narrows listing and search: only items of `item_type` (the API's
-/// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`.
+/// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`, and
+/// with `favorites_only`, only favorites.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemQuery {
     pub item_type: Option<String>,
     pub tag_ids: Vec<String>,
+    pub favorites_only: bool,
 }
 
 /// Metadata of a `"file"` item's stored file.
@@ -97,6 +99,8 @@ pub struct ListedItem {
     /// The item's tags, sorted by name.
     #[serde(default)]
     pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub is_favorite: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +110,7 @@ pub(crate) struct SearchRequest {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
     pub tag_ids: Vec<String>,
+    pub favorite: bool,
 }
 
 /// Same item shape as `ListItemsResponse`, best match first; no paging.

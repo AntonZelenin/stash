@@ -7,7 +7,7 @@ use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::filters::{TagFilter, TypeDropdown, TypeFilter};
+use crate::filters::{FavoritesToggle, TagFilter, TypeDropdown, TypeFilter};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconHelp, IconLogout, IconMenu, IconPaperclip, IconSearch,
     IconSliders, IconStash, IconTag, IconUser,
@@ -108,9 +108,11 @@ pub fn Home() -> Element {
     // search alike; changing either refetches whichever is showing.
     let active_type = use_signal(|| TypeFilter::All);
     let selected_tags = use_signal(Vec::<Tag>::new);
+    let favorites_only = use_signal(|| false);
     let current_filters = move || ItemQuery {
         item_type: active_type().api_value().map(str::to_string),
         tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
+        favorites_only: favorites_only(),
     };
 
     // Re-runs whenever the filters change (they're read below, outside the
@@ -189,6 +191,15 @@ pub fn Home() -> Element {
     let refresh_items = use_callback(move |()| {
         saved_items.restart();
         search_results.restart();
+    });
+
+    // A card's favorite state changed. The card already shows it, so only
+    // refetch when showing favorites only, where it may need to drop out.
+    let favorite_changed = use_callback(move |()| {
+        if favorites_only() {
+            saved_items.restart();
+            search_results.restart();
+        }
     });
 
     let mut submit = {
@@ -500,7 +511,10 @@ pub fn Home() -> Element {
                     // search swaps the list below for semantic search
                     // results; the type and tag filters apply to either.
                     div { class: "stash-controls",
-                        TypeDropdown { value: active_type }
+                        div { class: "stash-controls-group",
+                            TypeDropdown { value: active_type }
+                            FavoritesToggle { value: favorites_only }
+                        }
                         div { class: "stash-search-wrap",
                             IconSearch {}
                             input {
@@ -537,6 +551,7 @@ pub fn Home() -> Element {
                                 "Nothing matches these filters.".to_string(),
                                 delete_item,
                                 refresh_items,
+                                favorite_changed,
                             ),
                         }}
                     } else {
@@ -546,6 +561,7 @@ pub fn Home() -> Element {
                                 format!("Nothing matches “{query}”."),
                                 delete_item,
                                 refresh_items,
+                                favorite_changed,
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
@@ -573,6 +589,7 @@ fn item_results(
     empty_message: String,
     on_delete: Callback<String>,
     on_tags_changed: Callback<()>,
+    on_favorite_changed: Callback<()>,
 ) -> Element {
     if items.is_empty() {
         rsx! {
@@ -582,7 +599,12 @@ fn item_results(
         }
     } else {
         rsx! {
-            ItemGrid { items: items.to_vec(), on_delete, on_tags_changed }
+            ItemGrid {
+                items: items.to_vec(),
+                on_delete,
+                on_tags_changed,
+                on_favorite_changed,
+            }
         }
     }
 }
