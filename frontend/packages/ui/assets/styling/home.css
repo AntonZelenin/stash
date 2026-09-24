@@ -77,6 +77,14 @@
     height: 18px;
 }
 
+/* Catches clicks outside the open menu (see TopBar). Below the dropdown
+   (z-index 10) so clicks on menu items still reach them. */
+.menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+}
+
 .menu-dropdown {
     position: absolute;
     top: calc(100% + 12px);

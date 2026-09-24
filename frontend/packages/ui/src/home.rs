@@ -540,6 +540,13 @@ fn TopBar() -> Element {
                 }
 
                 if menu_open() {
+                    // Invisible full-screen layer under the dropdown: a
+                    // click anywhere outside the menu lands here and
+                    // closes it.
+                    div {
+                        class: "menu-backdrop",
+                        onclick: move |_| menu_open.set(false),
+                    }
                     div { class: "menu-dropdown",
                         button { class: "menu-item", r#type: "button", IconUser {} "Account settings" }
                         button { class: "menu-item", r#type: "button", IconSliders {} "Preferences" }
