@@ -49,7 +49,7 @@ def _delivery(item_id: uuid.UUID, user_id: uuid.UUID, attempt: int) -> Delivery:
         item_type=ItemType.image,
         image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
-    return Delivery(receipt="7-0", delivery_count=attempt, raw_payload="{}", job=job)
+    return Delivery(message_id="7-0", receipt="receipt-7", delivery_count=attempt, raw_payload="{}", job=job)
 
 
 def _records(caplog, message: str) -> list[logging.LogRecord]:

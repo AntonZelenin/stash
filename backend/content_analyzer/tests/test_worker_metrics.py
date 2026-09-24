@@ -69,7 +69,7 @@ def _delivery(item_id: uuid.UUID, attempt: int = 1) -> Delivery:
         item_type=ItemType.image,
         image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
-    return Delivery(receipt="7-0", delivery_count=attempt, raw_payload="{}", job=job)
+    return Delivery(message_id="7-0", receipt="7-0", delivery_count=attempt, raw_payload="{}", job=job)
 
 
 async def test_completed_job(engine, recorded):
@@ -115,7 +115,7 @@ async def test_permanent_failure_is_dead_lettered(engine, recorded):
 
 
 async def test_malformed_payload_is_dead_lettered_without_running_the_handler(engine, recorded):
-    delivery = Delivery(receipt="7-0", delivery_count=1, raw_payload="not json", job=None)
+    delivery = Delivery(message_id="7-0", receipt="7-0", delivery_count=1, raw_payload="not json", job=None)
 
     await _worker(engine, _FlakyDescriber([])).handle_delivery(delivery)
 

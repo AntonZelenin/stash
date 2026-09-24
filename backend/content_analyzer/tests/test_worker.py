@@ -45,7 +45,9 @@ def _image_job(item_id: uuid.UUID, *, storage_key: str = "images/cat.png") -> Pr
 
 
 def _delivery(job: ProcessingJob | None, *, delivery_count: int = 1, raw_payload: str = "{}") -> Delivery:
-    return Delivery(receipt="1-0", delivery_count=delivery_count, raw_payload=raw_payload, job=job)
+    return Delivery(
+        message_id="1-0", receipt="receipt-1", delivery_count=delivery_count, raw_payload=raw_payload, job=job
+    )
 
 
 @pytest.fixture
@@ -163,7 +165,7 @@ async def test_transient_error_on_last_attempt_dead_letters(worker, engine, queu
     [letter] = dead_letters.letters
     assert letter.raw_payload == '{"x": 1}'
     assert letter.delivery_count == _MAX_ATTEMPTS
-    assert letter.source_receipt == "1-0"
+    assert letter.source_message_id == "1-0"
 
 
 async def test_permanent_error_dead_letters_on_first_attempt(worker, engine, queue, dead_letters, describer):

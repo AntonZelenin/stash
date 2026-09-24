@@ -72,7 +72,14 @@ def _published_delivery(item_id: uuid.UUID, attempt: int = 1) -> tuple[Delivery,
         item_type=ItemType.image,
         image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
-    delivery = Delivery(receipt="7-0", delivery_count=attempt, raw_payload="{}", job=job, trace_context=trace_context)
+    delivery = Delivery(
+        message_id="7-0",
+        receipt="7-0",
+        delivery_count=attempt,
+        raw_payload="{}",
+        job=job,
+        trace_context=trace_context,
+    )
     return delivery, upstream.get_span_context()
 
 
@@ -129,7 +136,12 @@ async def test_each_attempt_is_a_span_in_the_same_trace(engine, spans):
     first, upstream = _published_delivery(item_id, attempt=1)
     # A redelivery carries the same message, so the same trace context.
     second = Delivery(
-        receipt=first.receipt, delivery_count=2, raw_payload="{}", job=first.job, trace_context=first.trace_context
+        message_id=first.message_id,
+        receipt=first.receipt,
+        delivery_count=2,
+        raw_payload="{}",
+        job=first.job,
+        trace_context=first.trace_context,
     )
 
     await worker.handle_delivery(first)
@@ -177,7 +189,7 @@ async def test_delivery_without_trace_context_starts_a_new_trace(engine, spans):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
     delivery, _upstream = _published_delivery(item_id)
-    untraced = Delivery(receipt="7-0", delivery_count=1, raw_payload="{}", job=delivery.job)
+    untraced = Delivery(message_id="7-0", receipt="7-0", delivery_count=1, raw_payload="{}", job=delivery.job)
 
     await _worker(engine, _FlakyDescriber([])).handle_delivery(untraced)
 

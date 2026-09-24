@@ -54,7 +54,7 @@ async def _embedding_hash(engine, item_id) -> str | None:
 
 def _delivery(item_id, item_type=ItemType.text, delivery_count: int = 1) -> Delivery:
     job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=item_type)
-    return Delivery(receipt="1-0", delivery_count=delivery_count, raw_payload="{}", job=job)
+    return Delivery(message_id="1-0", receipt="1-0", delivery_count=delivery_count, raw_payload="{}", job=job)
 
 
 def _worker(engine, embedder, queue, dead_letters) -> Worker:

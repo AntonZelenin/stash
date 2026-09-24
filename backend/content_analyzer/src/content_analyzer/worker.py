@@ -195,7 +195,7 @@ class Worker:
                 attributes={
                     "messaging.destination.name": queue,
                     "messaging.operation.type": "process",
-                    "messaging.message.id": delivery.receipt,
+                    "messaging.message.id": delivery.message_id,
                 },
             ) as span,
             log_context(**fields),
@@ -204,7 +204,7 @@ class Worker:
             await self._handle_delivery(delivery)
 
     def _delivery_fields(self, delivery: Delivery) -> dict:
-        fields: dict = {"queue": self._queue_name, "job_id": delivery.receipt, "attempt": delivery.delivery_count}
+        fields: dict = {"queue": self._queue_name, "job_id": delivery.message_id, "attempt": delivery.delivery_count}
         if delivery.job is not None:
             fields.update(item_id=delivery.job.item_id, user_id=delivery.job.user_id, item_type=delivery.job.item_type)
         return fields
@@ -313,7 +313,7 @@ class Worker:
                 raw_payload=delivery.raw_payload,
                 reason=reason,
                 delivery_count=delivery.delivery_count,
-                source_receipt=delivery.receipt,
+                source_message_id=delivery.message_id,
             )
         )
         marked_failed = False

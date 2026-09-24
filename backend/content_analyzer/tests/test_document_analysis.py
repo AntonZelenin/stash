@@ -40,7 +40,7 @@ def _job(item_id: uuid.UUID, *, content_type: str = "text/plain; charset=utf-8",
 
 
 def _delivery(job: ProcessingJob, delivery_count: int = 1) -> Delivery:
-    return Delivery(receipt="1-0", delivery_count=delivery_count, raw_payload="{}", job=job)
+    return Delivery(message_id="1-0", receipt="1-0", delivery_count=delivery_count, raw_payload="{}", job=job)
 
 
 @pytest.fixture

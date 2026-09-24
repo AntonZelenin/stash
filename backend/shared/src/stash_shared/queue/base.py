@@ -82,12 +82,17 @@ class Delivery:
     `job` is `None` when the payload couldn't be decoded — the consumer
     should dead-letter it rather than retry. `raw_payload` is kept either
     way so a dead-lettered message can be inspected or replayed verbatim.
-    `receipt` is an opaque, backend-specific handle for `ack`/`retry_later`.
-    `trace_context` is the publisher's trace context (see
+    `message_id` identifies the message itself: the same on every delivery
+    of it, so it's what logs, traces and dead letters refer to. `receipt`
+    is an opaque, backend-specific handle for `ack`/`retry_later` that is
+    only valid for this delivery — it may differ between deliveries of the
+    same message (an SQS receipt handle does), so never use it as an id.
+    (On Valkey both are the stream entry id.) `trace_context` is the publisher's trace context (see
     `stash_shared.tracing.inject_context`), carried as message metadata
     next to the payload, never inside it; empty if it had none.
     """
 
+    message_id: str
     receipt: str
     delivery_count: int
     raw_payload: str
@@ -156,7 +161,7 @@ class DeadLetter:
     raw_payload: str
     reason: str
     delivery_count: int
-    source_receipt: str
+    source_message_id: str
 
 
 class DeadLetterQueue(ABC):

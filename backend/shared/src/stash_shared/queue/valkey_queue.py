@@ -232,7 +232,7 @@ class ValkeyDeadLetterQueue(DeadLetterQueue):
                     _PAYLOAD_FIELD: letter.raw_payload,
                     "reason": letter.reason,
                     "delivery_count": str(letter.delivery_count),
-                    "source_id": letter.source_receipt,
+                    "source_id": letter.source_message_id,
                     "dead_lettered_at": datetime.now(UTC).isoformat(),
                 },
             )
@@ -251,6 +251,7 @@ def _to_delivery(message_id: str, fields: dict, *, delivery_count: int) -> Deliv
         )
         job = None
     return Delivery(
+        message_id=message_id,
         receipt=message_id,
         delivery_count=delivery_count,
         raw_payload=raw,

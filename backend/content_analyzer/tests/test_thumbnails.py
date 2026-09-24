@@ -184,7 +184,7 @@ class _RecordingDescriber:
 
 
 def _delivery(job: ProcessingJob) -> Delivery:
-    return Delivery(receipt="1-0", delivery_count=1, raw_payload="{}", job=job)
+    return Delivery(message_id="1-0", receipt="1-0", delivery_count=1, raw_payload="{}", job=job)
 
 
 async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, analysis_queue, handler):
