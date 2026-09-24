@@ -3,8 +3,9 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    CreateTextItemRequest, ItemCreated, ListItemsResponse, LoginRequest, RefreshRequest,
-    RegisterRequest, RegisterResponse, SearchRequest, SearchResponse, TokenPair,
+    AssignTagRequest, CreateTextItemRequest, ItemCreated, ItemQuery, ListItemsResponse,
+    ListTagsResponse, LoginRequest, RefreshRequest, RegisterRequest, RegisterResponse,
+    SearchRequest, SearchResponse, Tag, TokenPair,
 };
 
 #[derive(Clone)]
@@ -95,15 +96,18 @@ impl ApiClient {
             .bearer_auth(access_token)
     }
 
+    /// `tags`: names of tags to put on the new item.
     pub async fn create_text_item(
         &self,
         access_token: &str,
         text: &str,
+        tags: &[String],
     ) -> Result<ItemCreated, ApiError> {
         let response = self
             .authenticated(Method::POST, "/items/text", access_token)
             .json(&CreateTextItemRequest {
                 text: text.to_string(),
+                tags: tags.to_vec(),
             })
             .send()
             .await
@@ -122,6 +126,82 @@ impl ApiClient {
     /// Permanently deletes an item. A 404 counts as success: either way the
     /// item is gone, which is all the caller asked for (e.g. it was already
     /// deleted from another tab).
+    /// The user's tags containing `query` (all of them if empty), names
+    /// starting with it first.
+    pub async fn list_tags(
+        &self,
+        access_token: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<ListTagsResponse, ApiError> {
+        let response = self
+            .authenticated(Method::GET, "/tags", access_token)
+            .query(&[("query", query.to_string()), ("limit", limit.to_string())])
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// Tags the item with `name`, reusing the user's existing tag of that
+    /// name (ignoring case) or creating it. Returns the tag.
+    pub async fn assign_tag(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        name: &str,
+    ) -> Result<Tag, ApiError> {
+        let response = self
+            .authenticated(
+                Method::POST,
+                &format!("/items/{item_id}/tags"),
+                access_token,
+            )
+            .json(&AssignTagRequest {
+                name: name.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    pub async fn remove_tag(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        tag_id: &str,
+    ) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(
+                Method::DELETE,
+                &format!("/items/{item_id}/tags/{tag_id}"),
+                access_token,
+            )
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
     pub async fn delete_item(&self, access_token: &str, item_id: &str) -> Result<(), ApiError> {
         let response = self
             .authenticated(Method::DELETE, &format!("/items/{item_id}"), access_token)
@@ -136,19 +216,22 @@ impl ApiClient {
         }
     }
 
-    /// Full-text search over the user's item descriptions, best match
-    /// first.
+    /// Semantic search over the user's items, most similar first,
+    /// narrowed by `filters`.
     pub async fn search_items(
         &self,
         access_token: &str,
         query: &str,
         limit: u32,
+        filters: &ItemQuery,
     ) -> Result<SearchResponse, ApiError> {
         let response = self
             .authenticated(Method::POST, "/search", access_token)
             .json(&SearchRequest {
                 query: query.to_string(),
                 limit,
+                item_type: filters.item_type.clone(),
+                tag_ids: filters.tag_ids.clone(),
             })
             .send()
             .await
@@ -171,6 +254,7 @@ impl ApiClient {
         content_type: &str,
         data: Vec<u8>,
         text: Option<&str>,
+        tags: &[String],
     ) -> Result<ItemCreated, ApiError> {
         self.upload_file(
             "/items/image",
@@ -178,7 +262,7 @@ impl ApiClient {
             file_name,
             content_type,
             data,
-            text,
+            ItemFields { text, tags },
         )
         .await
     }
@@ -192,6 +276,7 @@ impl ApiClient {
         content_type: &str,
         data: Vec<u8>,
         text: Option<&str>,
+        tags: &[String],
     ) -> Result<ItemCreated, ApiError> {
         self.upload_file(
             "/items/file",
@@ -199,7 +284,7 @@ impl ApiClient {
             file_name,
             content_type,
             data,
-            text,
+            ItemFields { text, tags },
         )
         .await
     }
@@ -213,8 +298,9 @@ impl ApiClient {
         file_name: &str,
         content_type: &str,
         data: Vec<u8>,
-        text: Option<&str>,
+        fields: ItemFields<'_>,
     ) -> Result<ItemCreated, ApiError> {
+        let ItemFields { text, tags } = fields;
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(file_name.to_string())
             .mime_str(content_type)
@@ -222,6 +308,10 @@ impl ApiClient {
         let mut form = reqwest::multipart::Form::new().part("file", part);
         if let Some(text) = text {
             form = form.text("text", text.to_string());
+        }
+        // One `tags` field per tag name.
+        for tag in tags {
+            form = form.text("tags", tag.clone());
         }
 
         let response = self
@@ -246,10 +336,17 @@ impl ApiClient {
         access_token: &str,
         cursor: Option<&str>,
         limit: u32,
+        filters: &ItemQuery,
     ) -> Result<ListItemsResponse, ApiError> {
         let mut params: Vec<(&str, String)> = vec![("limit", limit.to_string())];
         if let Some(cursor) = cursor {
             params.push(("cursor", cursor.to_string()));
+        }
+        if let Some(item_type) = &filters.item_type {
+            params.push(("type", item_type.clone()));
+        }
+        for tag_id in &filters.tag_ids {
+            params.push(("tag_id", tag_id.clone()));
         }
 
         let response = self
@@ -268,6 +365,13 @@ impl ApiClient {
             _ => Err(ApiError::Server),
         }
     }
+}
+
+/// The optional fields sent along with an uploaded file: its caption and
+/// tag names.
+struct ItemFields<'a> {
+    text: Option<&'a str>,
+    tags: &'a [String],
 }
 
 /// FastAPI's shape for a 422 from request-body validation:

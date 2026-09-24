@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, Uuid, func, text
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
@@ -62,7 +62,8 @@ class Item(Base):
     file: Mapped["FileMetadata | None"] = relationship(back_populates="item", uselist=False)
     description: Mapped["Description | None"] = relationship(back_populates="item", uselist=False)
     embedding: Mapped["Embedding | None"] = relationship(back_populates="item", uselist=False)
-    tags: Mapped[list["ItemTag"]] = relationship(back_populates="item")
+    # Sorted by name so every client shows them in the same order.
+    tags: Mapped[list["Tag"]] = relationship(secondary="item_tags", order_by="Tag.name")
 
 
 class TextContent(Base):
@@ -112,13 +113,33 @@ class Description(Base):
     item: Mapped[Item] = relationship(back_populates="description")
 
 
-class ItemTag(Base):
-    __tablename__ = "item_tags"
+# Many-to-many: which tags are assigned to which items. Rows go away with
+# either side (ON DELETE CASCADE).
+item_tags = Table(
+    "item_tags",
+    Base.metadata,
+    Column("item_id", Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Uuid, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+    # The primary key covers lookups by item; this covers filtering by tag.
+    Index("ix_item_tags_tag_id", "tag_id"),
+)
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
-    tag: Mapped[str] = mapped_column(String, primary_key=True)
 
-    item: Mapped[Item] = relationship(back_populates="tags")
+class Tag(Base):
+    """A user's custom label for items. Each user has their own set: names
+    are unique per user, case-insensitively ("Python" and "python" are the
+    same tag), and one user never sees another's tags."""
+
+    __tablename__ = "tags"
+    # lower(name) as SQL text: `func.lower("name")` would lower the *string*
+    # "name", indexing a constant.
+    __table_args__ = (Index("uq_tags_user_id_lower_name", "user_id", text("lower(name)"), unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
+    # As first entered (e.g. "Python"); matched case-insensitively.
+    name: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Embedding(Base):

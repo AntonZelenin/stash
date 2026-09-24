@@ -1,0 +1,121 @@
+/* ---- tag chips: shared by item cards and the Tags filter ----
+   Loaded by both (see items.rs, filters.rs), so neither relies on the other
+   being on the page. */
+
+.tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    max-width: 160px;
+    height: 24px;
+    padding: 0 4px 0 10px;
+    border-radius: 999px;
+    background: #eef1ff;
+    color: #3f4bd1;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.tag-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tag-chip-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.tag-chip-remove:hover {
+    background: rgba(63, 75, 209, 0.12);
+    opacity: 1;
+}
+
+.tag-chip-remove:disabled {
+    cursor: not-allowed;
+}
+
+.tag-chip-remove .icon {
+    width: 12px;
+    height: 12px;
+}
+
+/* ---- tag picker ("Add tag" on cards and in the capture box) ---- */
+
+.tag-picker {
+    position: relative;
+}
+
+.tag-picker-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+}
+
+.tag-picker-input {
+    position: relative;
+    z-index: 31;
+    width: 140px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid #c7cdfb;
+    border-radius: 999px;
+    outline: none;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.tag-picker-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 31;
+    min-width: 180px;
+    max-width: 240px;
+    max-height: 240px;
+    padding: 4px;
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(20, 22, 27, 0.16);
+}
+
+.tag-picker-option {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    overflow: hidden;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.tag-picker-option:hover {
+    background: #f5f6f8;
+}
+
+.tag-picker-create {
+    color: #3f4bd1;
+    font-weight: 600;
+}

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.embeddings import Embedder
 from stash_shared.queue.base import JobQueue
 
-from app.api.routers.items import to_listed_item
+from app.api.routers.items import item_filters, to_listed_item
 from app.api.schemas.search import SearchRequest, SearchResponse
 from app.db import DbSession
 from app.dependencies import get_current_user
@@ -37,7 +37,11 @@ async def search_items(
 ) -> SearchResponse:
     try:
         results = await ItemService(session, storage, queue).search_items(
-            user_id=current_user.id, query=payload.query, limit=payload.limit, embedder=embedder
+            user_id=current_user.id,
+            query=payload.query,
+            limit=payload.limit,
+            embedder=embedder,
+            filters=item_filters(payload.type, payload.tag_ids),
         )
     except SearchUnavailableError:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Search is temporarily unavailable") from None

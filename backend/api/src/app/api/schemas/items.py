@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.tags.names import MAX_TAGS_PER_ITEM
+
 
 class ItemType(str, Enum):
     text = "text"
@@ -21,6 +23,9 @@ class ItemStatus(str, Enum):
 
 class CreateTextItemRequest(BaseModel):
     text: str = Field(min_length=1)
+    # Tag names to put on the new item (existing tags reused, missing ones
+    # created).
+    tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
 
     @field_validator("text")
     @classmethod
@@ -34,6 +39,11 @@ class CreateTextItemRequest(BaseModel):
 class ItemCreated(BaseModel):
     id: UUID
     status: ItemStatus
+
+
+class ListedTag(BaseModel):
+    id: UUID
+    name: str
 
 
 class ListedFile(BaseModel):
@@ -55,6 +65,8 @@ class ListedItem(BaseModel):
     download_url: str | None = None
     # Set only for `type == file`.
     file: ListedFile | None = None
+    # The user's tags on this item, by name.
+    tags: list[ListedTag] = Field(default_factory=list)
     # Temporary, pre-signed URL of a small WebP version for display. Set
     # only for images, once the thumbnail worker has produced it; until then
     # clients should fall back to `download_url`.

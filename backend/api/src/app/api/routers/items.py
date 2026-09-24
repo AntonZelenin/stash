@@ -12,9 +12,12 @@ from app.api.schemas.items import (
     ItemType,
     ListedFile,
     ListedItem,
+    ListedTag,
     ListItemsResponse,
 )
 from app.db import DbSession
+from app.items.models import ItemType as DomainItemType
+from app.items.repos import ItemFilters
 from app.items.services import (
     EmptyFileError,
     FileTooLargeError,
@@ -27,11 +30,14 @@ from app.items.services import (
 )
 from app.items.services import ListedItem as ListedItemResult
 from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
+from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM, InvalidTagNameError
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
 
 router = APIRouter(tags=["items"])
+
+_INVALID_TAGS = f"Tag names must be 1-{MAX_TAG_NAME_LENGTH} characters, at most {MAX_TAGS_PER_ITEM} tags"
 
 _RESPONSES = {
     401: {"description": "Unauthorized"},
@@ -53,7 +59,12 @@ async def create_text_item(
     queue: JobQueue = Depends(get_job_queue),
     embedding_queue: JobQueue = Depends(get_embedding_queue),
 ) -> ItemCreated:
-    item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_text_item(user_id=current_user.id, text=payload.text)
+    try:
+        item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_text_item(
+            user_id=current_user.id, text=payload.text, tags=payload.tags
+        )
+    except InvalidTagNameError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
 
@@ -66,6 +77,7 @@ async def create_text_item(
 async def create_image_item(
     file: UploadFile = File(...),
     text: str | None = Form(default=None),
+    tags: list[str] = Form(default=[]),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
@@ -75,7 +87,7 @@ async def create_image_item(
     data = await file.read()
     try:
         item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_image_item(
-            user_id=current_user.id, data=data, text=text
+            user_id=current_user.id, data=data, text=text, tags=tags
         )
     except EmptyImageError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
@@ -83,6 +95,8 @@ async def create_image_item(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is too large") from None
     except UnsupportedImageTypeError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unsupported image type") from None
+    except InvalidTagNameError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
 
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
@@ -96,6 +110,7 @@ async def create_image_item(
 async def create_file_item(
     file: UploadFile = File(...),
     text: str | None = Form(default=None),
+    tags: list[str] = Form(default=[]),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
@@ -106,12 +121,14 @@ async def create_file_item(
     data = await file.read()
     try:
         item = await ItemService(session, storage, queue, document_queue, embedding_queue).create_file_item(
-            user_id=current_user.id, filename=file.filename, data=data, text=text
+            user_id=current_user.id, filename=file.filename, data=data, text=text, tags=tags
         )
     except EmptyFileError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
     except FileTooLargeError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is too large (max 50 MB)") from None
+    except InvalidTagNameError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
 
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
@@ -125,6 +142,8 @@ async def create_file_item(
 async def list_items(
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
+    type: ItemType | None = None,
+    tag_id: list[UUID] = Query(default=[], max_length=20),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
@@ -132,7 +151,7 @@ async def list_items(
 ) -> ListItemsResponse:
     try:
         listed_items, next_cursor = await ItemService(session, storage, queue).list_items(
-            user_id=current_user.id, limit=limit, cursor=cursor
+            user_id=current_user.id, limit=limit, cursor=cursor, filters=item_filters(type, tag_id)
         )
     except InvalidCursorError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
@@ -159,6 +178,14 @@ async def delete_item(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def item_filters(item_type: ItemType | None, tag_ids: list[UUID]) -> ItemFilters:
+    """API filter parameters -> repository filters (shared with search)."""
+    return ItemFilters(
+        item_type=DomainItemType(item_type.value) if item_type is not None else None,
+        tag_ids=tuple(dict.fromkeys(tag_ids)),
+    )
+
+
 def to_listed_item(listed: ListedItemResult) -> ListedItem:
     """Response shape shared by listing and search, so the client renders
     both with the same item cards."""
@@ -179,4 +206,5 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
             if listed.item.file
             else None
         ),
+        tags=[ListedTag(id=tag.id, name=tag.name) for tag in listed.item.tags],
     )

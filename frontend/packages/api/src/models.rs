@@ -31,12 +31,39 @@ pub struct TokenPair {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CreateTextItemRequest {
     pub text: String,
+    /// Tag names for the new item (existing tags reused, missing created).
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ItemCreated {
     pub id: String,
     pub status: String,
+}
+
+/// A user's tag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ListTagsResponse {
+    pub tags: Vec<Tag>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AssignTagRequest {
+    pub name: String,
+}
+
+/// Narrows listing and search: only items of `item_type` (the API's
+/// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ItemQuery {
+    pub item_type: Option<String>,
+    pub tag_ids: Vec<String>,
 }
 
 /// Metadata of a `"file"` item's stored file.
@@ -67,12 +94,18 @@ pub struct ListedItem {
     /// Set for `type == "file"`.
     #[serde(default)]
     pub file: Option<ListedFile>,
+    /// The item's tags, sorted by name.
+    #[serde(default)]
+    pub tags: Vec<Tag>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SearchRequest {
     pub query: String,
     pub limit: u32,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    pub tag_ids: Vec<String>,
 }
 
 /// Same item shape as `ListItemsResponse`, best match first; no paging.

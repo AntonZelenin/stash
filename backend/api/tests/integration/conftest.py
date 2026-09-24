@@ -11,7 +11,7 @@ from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
-from app.items.models import Description, FileMetadata, ImageMetadata, Item, TextContent
+from app.items.models import Description, FileMetadata, ImageMetadata, Item, Tag, TextContent, item_tags
 from app.main import app
 from app.embeddings import get_embedder
 from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
@@ -28,6 +28,8 @@ _TEST_TABLES = [
     ImageMetadata.__table__,
     Description.__table__,
     FileMetadata.__table__,
+    Tag.__table__,
+    item_tags,
 ]
 
 

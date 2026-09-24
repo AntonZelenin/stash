@@ -128,6 +128,15 @@ paths:
                 text:
                   type: string
                   minLength: 1
+                tags:
+                  description: >-
+                    Tag names to put on the new item (existing tags reused
+                    case-insensitively, missing ones created); at most 20,
+                    each 1-50 characters.
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
 
       responses:
         "202":
@@ -169,6 +178,15 @@ paths:
                     Optional caption stored on the same item (returned as its
                     `text`, and searchable). Blank is treated as absent.
                   type: string
+                tags:
+                  description: >-
+                    Tag names to put on the new item (existing tags reused
+                    case-insensitively, missing ones created). Repeat the
+                    field once per tag; at most 20, each 1-50 characters.
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
             encoding:
               file:
                 contentType: image/png, image/jpeg, image/gif, image/webp
@@ -225,6 +243,15 @@ paths:
                     Optional caption stored on the same item (returned as its
                     `text`, and searchable). Blank is treated as absent.
                   type: string
+                tags:
+                  description: >-
+                    Tag names to put on the new item (existing tags reused
+                    case-insensitively, missing ones created). Repeat the
+                    field once per tag; at most 20, each 1-50 characters.
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
 
       responses:
         "202":
@@ -239,6 +266,141 @@ paths:
 
         "422":
           description: Invalid content (empty file, or file larger than 50 MB)
+
+  /tags:
+    get:
+      summary: List or search the current user's tags
+      description: >-
+        Tags are per user. Returns the user's tags whose name contains
+        `query` (case-insensitive; all of them if empty), names starting
+        with it first, then alphabetically.
+      operationId: listTags
+      tags: [tags]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            default: ""
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+
+      responses:
+        "200":
+          description: Matching tags
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - tags
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tag"
+
+        "401":
+          description: Unauthorized
+
+  /items/{item_id}/tags:
+    post:
+      summary: Assign a tag to an item
+      description: >-
+        Assigns the user's tag called `name` to the item, reusing the
+        user's existing tag with that name (compared case-insensitively,
+        after trimming and collapsing whitespace) or creating it. Assigning
+        an already-assigned tag is a no-op. Returns the tag.
+      operationId: assignTag
+      tags: [tags]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  description: 1-50 characters after trimming.
+                  type: string
+
+      responses:
+        "200":
+          description: The assigned tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tag"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+        "422":
+          description: Invalid tag name
+
+  /items/{item_id}/tags/{tag_id}:
+    delete:
+      summary: Remove a tag from an item
+      description: >-
+        Removes the tag from the item (a no-op if it wasn't assigned). The
+        tag itself stays in the user's tag list.
+      operationId: removeTag
+      tags: [tags]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "204":
+          description: Tag removed
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
 
   /items/{item_id}:
     delete:
@@ -295,6 +457,26 @@ paths:
             minimum: 1
             maximum: 100
             default: 30
+        - name: type
+          in: query
+          required: false
+          description: Only items of this type.
+          schema:
+            $ref: "#/components/schemas/ItemType"
+        - name: tag_id
+          in: query
+          required: false
+          description: >-
+            Only items carrying this tag. Repeatable: with several, an item
+            must carry all of them.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              type: string
+              format: uuid
+          style: form
+          explode: true
 
       responses:
         "200":
@@ -335,6 +517,16 @@ paths:
                   minimum: 1
                   maximum: 100
                   default: 20
+                type:
+                  description: Only items of this type (same as `GET /items`).
+                  $ref: "#/components/schemas/ItemType"
+                tag_ids:
+                  description: Only items carrying all of these tags (same as `GET /items`).
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
+                    format: uuid
 
       responses:
         "200":
@@ -394,6 +586,26 @@ components:
             - processing
             - completed
             - failed
+
+    ItemType:
+      type: string
+      enum:
+        - text
+        - link
+        - image
+        - file
+
+    Tag:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
 
     ListedFile:
       type: object
@@ -459,6 +671,11 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ListedFile"
             - type: "null"
+        tags:
+          description: The item's tags, sorted by name.
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
         thumbnail_url:
           description: >-
             Temporary, pre-signed URL of a small WebP version of the image,

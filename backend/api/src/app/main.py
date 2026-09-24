@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import auth, items, search, users
+from app.api.routers import auth, items, search, tags, users
 from app.config import get_settings
 
 app = FastAPI(
@@ -12,6 +12,7 @@ app = FastAPI(
         {"name": "auth"},
         {"name": "items"},
         {"name": "search"},
+        {"name": "tags"},
     ],
 )
 
@@ -27,6 +28,7 @@ app.include_router(users.router)
 app.include_router(auth.router)
 app.include_router(items.router)
 app.include_router(search.router)
+app.include_router(tags.router)
 
 
 @app.get("/health", include_in_schema=False)

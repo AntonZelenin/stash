@@ -1,60 +1,24 @@
 use std::time::Duration;
 
-use api::ListedItem;
+use api::{ItemQuery, ListedItem, Tag};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::filters::{TagFilter, TypeDropdown, TypeFilter};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconHelp, IconLogout, IconMenu, IconPaperclip, IconSearch,
-    IconSliders, IconStash, IconUser,
+    IconSliders, IconStash, IconTag, IconUser,
 };
-use crate::items::ItemGrid;
+use crate::items::{ItemGrid, TagPicker};
 use crate::routes::Route;
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// How long typing must pause before a search request is sent.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const SEARCH_LIMIT: u32 = 50;
-
-/// Which of the filter chips is active. Filtering happens purely
-/// client-side over the already-fetched page of items — there's no
-/// separate "filtered" fetch.
-#[derive(Clone, Copy, PartialEq)]
-enum ItemFilter {
-    All,
-    Links,
-    Images,
-    Files,
-    Notes,
-}
-
-impl ItemFilter {
-    /// `item_type` is the backend's raw `type` string (`"text"`, `"link"`,
-    /// `"image"`, `"file"`) — "Notes" is this UI's name for a plain
-    /// `"text"` item.
-    fn matches(self, item_type: &str) -> bool {
-        match self {
-            ItemFilter::All => true,
-            ItemFilter::Links => item_type == "link",
-            ItemFilter::Images => item_type == "image",
-            ItemFilter::Files => item_type == "file",
-            ItemFilter::Notes => item_type == "text",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            ItemFilter::All => "All",
-            ItemFilter::Links => "Links",
-            ItemFilter::Images => "Images",
-            ItemFilter::Files => "Files",
-            ItemFilter::Notes => "Notes",
-        }
-    }
-}
 
 /// Image content types by file extension; any other file is uploaded as a
 /// generic file item.
@@ -123,6 +87,8 @@ async fn stage_file(file: FileData) -> Option<PendingFile> {
 }
 
 const HOME_CSS: Asset = asset!("/assets/styling/home.css");
+/// Tag chips and the tag picker, used in the capture box.
+const TAGS_CSS: Asset = asset!("/assets/styling/tags.css");
 
 #[component]
 pub fn Home() -> Element {
@@ -138,15 +104,25 @@ pub fn Home() -> Element {
         });
     }
 
-    // Fetches once on mount (the closure captures no reactive state, so
-    // `use_resource` never re-runs it on its own past that). `submit`
-    // below calls `.restart()` after a successful save so new items show
-    // up without a manual page reload. No pagination yet.
+    // Type and tag filters. Applied by the server, to the list and to
+    // search alike; changing either refetches whichever is showing.
+    let active_type = use_signal(|| TypeFilter::All);
+    let selected_tags = use_signal(Vec::<Tag>::new);
+    let current_filters = move || ItemQuery {
+        item_type: active_type().api_value().map(str::to_string),
+        tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
+    };
+
+    // Re-runs whenever the filters change (they're read below, outside the
+    // async block, which is what subscribes to them). `submit`, deletes and
+    // tag edits call `.restart()` so changes show up without a reload. No
+    // pagination yet.
     let mut saved_items = use_resource({
         let session = session.clone();
         move || {
             let session = session.clone();
-            async move { session.list_items(None, 30).await }
+            let filters = current_filters();
+            async move { session.list_items(None, 30, filters).await }
         }
     });
 
@@ -162,18 +138,20 @@ pub fn Home() -> Element {
         move || {
             let session = session.clone();
             let query = search_query().trim().to_string();
+            let filters = current_filters();
             async move {
                 if query.is_empty() {
                     return None;
                 }
                 Delay::new(SEARCH_DEBOUNCE).await;
-                let result = session.search_items(query.clone(), SEARCH_LIMIT).await;
+                let result = session
+                    .search_items(query.clone(), SEARCH_LIMIT, filters)
+                    .await;
                 Some((query, result))
             }
         }
     });
 
-    let mut active_filter = use_signal(|| ItemFilter::All);
     let mut note = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut status = use_signal(|| None::<String>);
@@ -183,6 +161,10 @@ pub fn Home() -> Element {
     // single flag) tells the container it's still being dragged over.
     let mut drag_depth = use_signal(|| 0i32);
     let mut pending_files = use_signal(Vec::<PendingFile>::new);
+    // Tag names to put on whatever is sent next (the note, or every staged
+    // file), and whether the tag picker is open.
+    let mut pending_tags = use_signal(Vec::<String>::new);
+    let mut picking_tag = use_signal(|| false);
 
     // Deletes from a card's menu, then refetches whichever view is showing
     // (list and search), so the card disappears from both.
@@ -202,6 +184,13 @@ pub fn Home() -> Element {
         }
     });
 
+    // A card's tags changed: refetch, so tag filters stay accurate (an item
+    // that lost a filtered-by tag drops out).
+    let refresh_items = use_callback(move |()| {
+        saved_items.restart();
+        search_results.restart();
+    });
+
     let mut submit = {
         let session = session.clone();
         move || {
@@ -216,6 +205,7 @@ pub fn Home() -> Element {
             if !files.is_empty() {
                 let session = session.clone();
                 let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
+                let tags = pending_tags();
                 spawn(async move {
                     is_submitting.set(true);
                     status.set(None);
@@ -231,6 +221,7 @@ pub fn Home() -> Element {
                                     file.content_type,
                                     file.data,
                                     caption.clone(),
+                                    tags.clone(),
                                 )
                                 .await
                         } else {
@@ -240,6 +231,7 @@ pub fn Home() -> Element {
                                     file.content_type,
                                     file.data,
                                     caption.clone(),
+                                    tags.clone(),
                                 )
                                 .await
                         };
@@ -247,9 +239,11 @@ pub fn Home() -> Element {
                             last_error = Some(err.to_string());
                         }
                     }
-                    // Keep the text if anything failed, so it isn't lost.
+                    // Keep the text and tags if anything failed, so they
+                    // aren't lost.
                     if last_error.is_none() {
                         note.set(String::new());
+                        pending_tags.set(Vec::new());
                     }
                     status.set(last_error);
                     saved_items.restart();
@@ -269,9 +263,13 @@ pub fn Home() -> Element {
                 is_submitting.set(true);
                 status.set(None);
 
-                match session.create_text_item(note().trim()).await {
+                match session
+                    .create_text_item(note().trim(), pending_tags())
+                    .await
+                {
                     Ok(_) => {
                         note.set(String::new());
+                        pending_tags.set(Vec::new());
                         saved_items.restart();
                         search_results.restart();
                     }
@@ -326,6 +324,7 @@ pub fn Home() -> Element {
 
     rsx! {
         document::Link { rel: "stylesheet", href: HOME_CSS }
+        document::Link { rel: "stylesheet", href: TAGS_CSS }
 
         div {
             class: if drag_depth() > 0 { "home home-dragging" } else { "home" },
@@ -399,6 +398,44 @@ pub fn Home() -> Element {
                                 }
                             }
                         }
+                        // Tags for what's sent next: chips (× removes)
+                        // and, while picking, the tag picker.
+                        if !pending_tags().is_empty() || picking_tag() {
+                            div { class: "home-tags-row",
+                                for (index , name) in pending_tags().into_iter().enumerate() {
+                                    span { class: "tag-chip", key: "{name}", title: "{name}",
+                                        span { class: "tag-chip-name", "{name}" }
+                                        button {
+                                            class: "tag-chip-remove",
+                                            r#type: "button",
+                                            title: "Remove tag",
+                                            aria_label: "Remove tag {name}",
+                                            disabled: is_submitting(),
+                                            onclick: move |_| {
+                                                pending_tags.write().remove(index);
+                                            },
+                                            IconClose {}
+                                        }
+                                    }
+                                }
+                                if picking_tag() {
+                                    TagPicker {
+                                        exclude: pending_tags(),
+                                        busy: is_submitting(),
+                                        on_pick: move |name: String| {
+                                            let duplicate = pending_tags()
+                                                .iter()
+                                                .any(|tag| tag.to_lowercase() == name.to_lowercase());
+                                            if !duplicate {
+                                                pending_tags.write().push(name);
+                                            }
+                                            picking_tag.set(false);
+                                        },
+                                        on_close: move |_| picking_tag.set(false),
+                                    }
+                                }
+                            }
+                        }
                         div { class: "home-input-row",
                             input {
                                 class: "home-input",
@@ -416,6 +453,14 @@ pub fn Home() -> Element {
                                 multiple: true,
                                 disabled: is_submitting(),
                                 onchange: stage_picked_files,
+                            }
+                            button {
+                                class: "home-input-attach",
+                                r#type: "button",
+                                title: "Add tags",
+                                disabled: is_submitting(),
+                                onclick: move |_| picking_tag.set(true),
+                                IconTag {}
                             }
                             label {
                                 class: "home-input-attach",
@@ -451,34 +496,22 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // Typing here swaps the list below for full-text search
-                    // results; the filter chips apply to either.
-                    div { class: "stash-search-wrap",
-                        IconSearch {}
-                        input {
-                            class: "stash-search-input",
-                            r#type: "search",
-                            placeholder: "Search your stash...",
-                            value: "{search_query}",
-                            oninput: move |evt| search_query.set(evt.value()),
-                        }
-                    }
-
-                    div { class: "stash-filters",
-                        for filter in [
-                            ItemFilter::All,
-                            ItemFilter::Links,
-                            ItemFilter::Images,
-                            ItemFilter::Files,
-                            ItemFilter::Notes,
-                        ] {
-                            button {
-                                class: if active_filter() == filter { "filter-chip filter-chip-active" } else { "filter-chip" },
-                                r#type: "button",
-                                onclick: move |_| active_filter.set(filter),
-                                "{filter.label()}"
+                    // [ Type ▾ ]  [ Search... ]  [ Tags ▾ ] — typing in the
+                    // search swaps the list below for semantic search
+                    // results; the type and tag filters apply to either.
+                    div { class: "stash-controls",
+                        TypeDropdown { value: active_type }
+                        div { class: "stash-search-wrap",
+                            IconSearch {}
+                            input {
+                                class: "stash-search-input",
+                                r#type: "search",
+                                placeholder: "Search your stash...",
+                                value: "{search_query}",
+                                oninput: move |evt| search_query.set(evt.value()),
                             }
                         }
+                        TagFilter { selected: selected_tags }
                     }
 
                     if search_query().trim().is_empty() {
@@ -493,29 +526,26 @@ pub fn Home() -> Element {
                                     p { "Could not load your stash: {err}" }
                                 }
                             },
-                            Some(Ok(response)) if response.items.is_empty() => rsx! {
+                            Some(Ok(response)) if response.items.is_empty() && current_filters() == ItemQuery::default() => rsx! {
                                 div { class: "stash-empty",
                                     IconStash {}
                                     p { "Nothing saved yet — items you capture will show up here." }
                                 }
                             },
-                            Some(Ok(response)) => {
-                                let filter = active_filter();
-                                filtered_items(
-                                    &response.items,
-                                    filter,
-                                    format!("No {} yet.", filter.label().to_lowercase()),
-                                    delete_item,
-                                )
-                            }
+                            Some(Ok(response)) => item_results(
+                                &response.items,
+                                "Nothing matches these filters.".to_string(),
+                                delete_item,
+                                refresh_items,
+                            ),
                         }}
                     } else {
                         {match &*search_results.read() {
-                            Some(Some((query, Ok(response)))) => filtered_items(
+                            Some(Some((query, Ok(response)))) => item_results(
                                 &response.items,
-                                active_filter(),
                                 format!("Nothing matches “{query}”."),
                                 delete_item,
+                                refresh_items,
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
@@ -536,21 +566,15 @@ pub fn Home() -> Element {
     }
 }
 
-/// Applies the active filter chip to `items` (a list page or search
-/// results) and renders them, or `empty_message` if nothing is left.
-fn filtered_items(
+/// Renders a list page or search results (already filtered by the
+/// server), or `empty_message` if there are none.
+fn item_results(
     items: &[ListedItem],
-    filter: ItemFilter,
     empty_message: String,
     on_delete: Callback<String>,
+    on_tags_changed: Callback<()>,
 ) -> Element {
-    let filtered: Vec<ListedItem> = items
-        .iter()
-        .filter(|item| filter.matches(&item.r#type))
-        .cloned()
-        .collect();
-
-    if filtered.is_empty() {
+    if items.is_empty() {
         rsx! {
             div { class: "stash-empty",
                 p { "{empty_message}" }
@@ -558,7 +582,7 @@ fn filtered_items(
         }
     } else {
         rsx! {
-            ItemGrid { items: filtered, on_delete }
+            ItemGrid { items: items.to_vec(), on_delete, on_tags_changed }
         }
     }
 }

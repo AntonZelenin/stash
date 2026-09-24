@@ -185,12 +185,34 @@
 /* One card behind the gradient border: image previews (if any) stacked
    above the text/attach/send row, so staging images grows this same input
    taller instead of opening a separate block beside it. */
+/* No overflow clipping: the tag picker's dropdown extends below the box. */
 .home-input-inner {
     display: flex;
     flex-direction: column;
     background: #fff;
     border-radius: 14px;
-    overflow: hidden;
+}
+
+/* Tags for what's sent next, between the staged files and the text row. */
+.home-tags-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 14px 0 24px;
+}
+
+/* A button styled like the attach label next to it. */
+button.home-input-attach {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+}
+
+button.home-input-attach:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .home-input-row {
@@ -295,10 +317,30 @@
 
 /* ---- search ---- */
 
-.stash-search-wrap {
+/* [ Type ▾ ]  [ Search... ]  [ Tags ▾ ]: one row, the search box the
+   wide central control and the two filters in the space either side. */
+.stash-controls {
     display: flex;
     align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+}
+
+/* Narrow screens: stack them, each full width, rather than squeeze. */
+@media (max-width: 700px) {
+    .stash-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+
+.stash-search-wrap {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
     gap: 10px;
+    min-width: 0;
     width: 100%;
     max-width: 620px;
     height: 48px;
@@ -329,45 +371,6 @@
 
 .stash-search-input::placeholder {
     color: var(--placeholder);
-}
-
-/* ---- filters ---- */
-
-.stash-filters {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-    width: 100%;
-    max-width: 620px;
-    margin: 12px 0 0;
-}
-
-.filter-chip {
-    padding: 8px 16px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: #fff;
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-.filter-chip:hover {
-    border-color: #d8dbe2;
-    color: var(--text-primary);
-}
-
-.filter-chip-active {
-    background: var(--gradient);
-    border-color: transparent;
-    color: #fff;
-}
-
-.filter-chip-active:hover {
-    color: #fff;
 }
 
 /* ---- saved items: the page's workspace/library area ---- */

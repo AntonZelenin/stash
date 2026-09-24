@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Float, String, and_, bindparam, cast, delete, func, or_, select, text, update
+from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -15,9 +15,39 @@ from app.items.models import (
     Item,
     ItemStatus,
     ItemType,
+    Tag,
     TextContent,
     Vector,
+    item_tags,
 )
+
+
+# Everything a listed item's response needs, loaded up front (async
+# sessions can't lazy-load).
+_LISTED_ITEM_LOADS = (
+    selectinload(Item.text_content),
+    selectinload(Item.image),
+    selectinload(Item.file),
+    selectinload(Item.tags),
+)
+
+
+@dataclass(frozen=True)
+class ItemFilters:
+    """Narrows listing and search. `tag_ids`: the item must carry *all* of
+    them (each selected tag narrows the results further)."""
+
+    item_type: ItemType | None = None
+    tag_ids: tuple[uuid.UUID, ...] = ()
+
+    def apply(self, stmt):
+        if self.item_type is not None:
+            stmt = stmt.where(Item.type == self.item_type)
+        for tag_id in self.tag_ids:
+            stmt = stmt.where(
+                exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
+            )
+        return stmt
 
 
 @dataclass(frozen=True)
@@ -31,7 +61,9 @@ class ItemRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def create_text_item(self, *, user_id: uuid.UUID, text: str, item_type: ItemType) -> Item:
+    async def create_text_item(
+        self, *, user_id: uuid.UUID, text: str, item_type: ItemType, tags: list[Tag] = ()
+    ) -> Item:
         # Nothing to analyze asynchronously for text/links, so they're
         # finished the moment they're stored. The text itself doubles as the
         # item's description: `item_descriptions` is the single place search
@@ -43,6 +75,7 @@ class ItemRepository:
             status=ItemStatus.completed,
             text_content=TextContent(text=text),
             description=Description(text=text),
+            tags=list(tags),
         )
         self._session.add(item)
         await self._session.flush()
@@ -71,12 +104,14 @@ class ItemRepository:
         content_type: str,
         size_bytes: int,
         text: str | None = None,
+        tags: list[Tag] = (),
     ) -> Item:
         item = Item(
             id=item_id,
             user_id=user_id,
             type=ItemType.image,
             image=ImageMetadata(storage_key=storage_key, content_type=content_type, size_bytes=size_bytes),
+            tags=list(tags),
         )
         if text is not None:
             # The user's caption. Also seeded as the description so the
@@ -99,6 +134,7 @@ class ItemRepository:
         size_bytes: int,
         text: str | None = None,
         status: ItemStatus = ItemStatus.completed,
+        tags: list[Tag] = (),
     ) -> Item:
         # `pending` if it will be analyzed, otherwise finished as soon as
         # it's stored, like text items.
@@ -110,6 +146,7 @@ class ItemRepository:
             file=FileMetadata(
                 storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
             ),
+            tags=list(tags),
         )
         if text is not None:
             # Optional caption, same as for images (and searchable the same
@@ -151,6 +188,7 @@ class ItemRepository:
         query_embedding: list[float],
         limit: int,
         max_distance: float | None = None,
+        filters: ItemFilters = ItemFilters(),
     ) -> list[Item]:
         """The user's items nearest to `query_embedding` by cosine distance,
         nearest first (ties by id, for a stable order). Items without an
@@ -172,13 +210,14 @@ class ItemRepository:
         stmt = (
             select(Item)
             .join(Embedding, Embedding.item_id == Item.id)
-            .options(selectinload(Item.text_content), selectinload(Item.image), selectinload(Item.file))
+            .options(*_LISTED_ITEM_LOADS)
             .where(Item.user_id == user_id)
             .order_by(distance, Item.id)
             .limit(limit)
         )
         if max_distance is not None:
             stmt = stmt.where(distance <= max_distance)
+        stmt = filters.apply(stmt)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
@@ -189,6 +228,7 @@ class ItemRepository:
         limit: int,
         cursor_created_at: datetime | None,
         cursor_id: uuid.UUID | None,
+        filters: ItemFilters = ItemFilters(),
     ) -> list[Item]:
         """Keyset pagination, newest first: `(cursor_created_at, cursor_id)`
         identifies the last item of the previous page, and this returns the
@@ -198,7 +238,7 @@ class ItemRepository:
         timestamp collisions."""
         stmt = (
             select(Item)
-            .options(selectinload(Item.text_content), selectinload(Item.image), selectinload(Item.file))
+            .options(*_LISTED_ITEM_LOADS)
             .where(Item.user_id == user_id)
         )
         if cursor_created_at is not None and cursor_id is not None:
@@ -208,6 +248,7 @@ class ItemRepository:
                     and_(Item.created_at == cursor_created_at, Item.id < cursor_id),
                 )
             )
+        stmt = filters.apply(stmt)
         stmt = stmt.order_by(Item.created_at.desc(), Item.id.desc()).limit(limit)
 
         result = await self._session.execute(stmt)

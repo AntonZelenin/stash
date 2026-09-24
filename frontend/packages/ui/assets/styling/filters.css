@@ -1,0 +1,219 @@
+/* ---- Type and Tags filter dropdowns (next to the search box) ---- */
+
+.filter-control {
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* The closed control: same height and look as the search box, so the row
+   reads as one set of controls. */
+.filter-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 48px;
+    padding: 0 14px 0 16px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.filter-button:hover {
+    border-color: #d8dbe2;
+}
+
+.filter-button-active {
+    border-color: #c7cdfb;
+    color: var(--text-primary);
+}
+
+.filter-button-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.filter-chevron {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Invisible full-screen layer under an open dropdown: clicks outside it
+   land here and close it. */
+.filter-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+}
+
+.filter-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    z-index: 31;
+    padding: 6px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(20, 22, 27, 0.16);
+}
+
+/* ---- Type ---- */
+
+.type-filter {
+    width: 140px;
+}
+
+.type-filter-panel {
+    left: 0;
+    min-width: 100%;
+}
+
+.type-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.type-option:hover {
+    background: #f5f6f8;
+}
+
+.type-option-selected {
+    font-weight: 600;
+}
+
+.type-option-check {
+    width: 14px;
+    color: #5b6bf0;
+}
+
+/* ---- Tags ---- */
+
+/* Grows with its chips up to a cap, instead of pushing the search aside;
+   past MAX_VISIBLE_TAG_CHIPS the rest show as "+N". */
+.tag-filter {
+    min-width: 140px;
+    max-width: 300px;
+}
+
+.tag-filter .filter-button {
+    padding-left: 10px;
+}
+
+.tag-filter-chips {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.tag-filter-chips .tag-chip {
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.tag-filter-more {
+    flex-shrink: 0;
+    padding: 0 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.tag-filter-panel {
+    right: 0;
+    width: 260px;
+}
+
+.tag-filter-search {
+    width: 100%;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    outline: none;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.tag-filter-search:focus {
+    border-color: #c7cdfb;
+}
+
+.tag-filter-options {
+    max-height: 260px;
+    margin-top: 6px;
+    overflow-y: auto;
+}
+
+.tag-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 8px;
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.tag-filter-option:hover {
+    background: #f5f6f8;
+}
+
+.tag-filter-option input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #5b6bf0;
+    cursor: pointer;
+}
+
+.tag-filter-option span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tag-filter-empty {
+    margin: 0;
+    padding: 10px 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* Narrow screens: the controls stack, each full width (see
+   `.stash-controls` in home.css). */
+@media (max-width: 700px) {
+    .type-filter,
+    .tag-filter {
+        width: 100%;
+        max-width: none;
+    }
+
+    .tag-filter-panel {
+        left: 0;
+        width: auto;
+    }
+}

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlsplit
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.embeddings import Embedder
@@ -12,8 +13,10 @@ from stash_shared.queue.base import FileRef, ImageRef, JobQueue, ProcessingJob
 
 from app.config import get_settings
 from app.items import files
-from app.items.models import Item, ItemStatus, ItemType
-from app.items.repos import ItemRepository
+from app.items.models import Item, ItemStatus, ItemType, Tag
+from app.items.repos import ItemFilters, ItemRepository
+from app.tags.names import normalize_tag_names
+from app.tags.repos import TagRepository
 from app.storage.base import ObjectStorage
 
 logger = logging.getLogger(__name__)
@@ -141,7 +144,7 @@ class ItemService:
         self._embedding_queue = embedding_queue
 
     async def list_items(
-        self, *, user_id: uuid.UUID, limit: int, cursor: str | None
+        self, *, user_id: uuid.UUID, limit: int, cursor: str | None, filters: ItemFilters = ItemFilters()
     ) -> tuple[list[ListedItem], str | None]:
         cursor_created_at: datetime | None = None
         cursor_id: uuid.UUID | None = None
@@ -151,7 +154,11 @@ class ItemService:
         # Fetch one extra row, purely to tell whether another page exists —
         # it's dropped below and never appears in `items`.
         rows = await self._repo.list_items(
-            user_id=user_id, limit=limit + 1, cursor_created_at=cursor_created_at, cursor_id=cursor_id
+            user_id=user_id,
+            limit=limit + 1,
+            cursor_created_at=cursor_created_at,
+            cursor_id=cursor_id,
+            filters=filters,
         )
         has_more = len(rows) > limit
         rows = rows[:limit]
@@ -160,7 +167,13 @@ class ItemService:
         return await self._with_download_urls(rows), next_cursor
 
     async def search_items(
-        self, *, user_id: uuid.UUID, query: str, limit: int, embedder: Embedder
+        self,
+        *,
+        user_id: uuid.UUID,
+        query: str,
+        limit: int,
+        embedder: Embedder,
+        filters: ItemFilters = ItemFilters(),
     ) -> list[ListedItem]:
         """Semantic search: the user's items whose description embedding is
         closest in meaning to `query`, most similar first."""
@@ -174,6 +187,7 @@ class ItemService:
             query_embedding=query_embedding,
             limit=limit,
             max_distance=get_settings().search_max_cosine_distance,
+            filters=filters,
         )
         return await self._with_download_urls(rows)
 
@@ -227,18 +241,24 @@ class ItemService:
             key=key, expires_in=get_settings().image_download_url_ttl_seconds, filename=filename, inline=inline
         )
 
-    async def create_text_item(self, *, user_id: uuid.UUID, text: str) -> Item:
+    async def create_text_item(self, *, user_id: uuid.UUID, text: str, tags: list[str] = ()) -> Item:
+        """`tags` are tag names to put on the new item (see `_resolve_tags`)."""
+        resolved_tags = await self._resolve_tags(user_id, tags)
         item_type = _classify_text_item_type(text)
-        item = await self._repo.create_text_item(user_id=user_id, text=text, item_type=item_type)
+        item = await self._repo.create_text_item(
+            user_id=user_id, text=text, item_type=item_type, tags=resolved_tags
+        )
         # No analysis for text/links (stored already `completed`); their
         # text is their description, so it goes straight to embedding.
         await self._session.commit()
         await self._publish_embedding_job(item)
         return item
 
-    async def create_image_item(self, *, user_id: uuid.UUID, data: bytes, text: str | None = None) -> Item:
+    async def create_image_item(
+        self, *, user_id: uuid.UUID, data: bytes, text: str | None = None, tags: list[str] = ()
+    ) -> Item:
         """`text` is an optional caption stored on the same item; blank is
-        treated as none."""
+        treated as none. `tags` are tag names to put on it."""
         text = text.strip() if text is not None else None
         text = text or None
 
@@ -250,6 +270,7 @@ class ItemService:
         content_type = _detect_image_content_type(data)
         if content_type is None:
             raise UnsupportedImageTypeError()
+        resolved_tags = await self._resolve_tags(user_id, tags)
 
         item_id = uuid.uuid4()
         storage_key = f"images/{item_id}{_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type]}"
@@ -263,6 +284,7 @@ class ItemService:
             content_type=content_type,
             size_bytes=len(data),
             text=text,
+            tags=resolved_tags,
         )
         job = ProcessingJob(
             item_id=item.id,
@@ -277,7 +299,13 @@ class ItemService:
         return item
 
     async def create_file_item(
-        self, *, user_id: uuid.UUID, filename: str | None, data: bytes, text: str | None = None
+        self,
+        *,
+        user_id: uuid.UUID,
+        filename: str | None,
+        data: bytes,
+        text: str | None = None,
+        tags: list[str] = (),
     ) -> Item:
         """Stores an uploaded file as-is. Any file type is accepted: a
         recognized format keeps its real content type, anything else is
@@ -292,6 +320,7 @@ class ItemService:
             raise EmptyFileError()
         if len(data) > _MAX_FILE_SIZE_BYTES:
             raise FileTooLargeError()
+        resolved_tags = await self._resolve_tags(user_id, tags)
 
         filename = files.clean_filename(filename)
         classified = files.classify(filename, data)
@@ -309,6 +338,7 @@ class ItemService:
             size_bytes=len(data),
             text=text,
             status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
+            tags=resolved_tags,
         )
         if not classified.analyzable:
             await self._session.commit()
@@ -327,6 +357,38 @@ class ItemService:
         if text is not None:
             await self._publish_embedding_job(item)
         return item
+
+    async def _resolve_tags(self, user_id: uuid.UUID, raw_names: list[str]) -> list[Tag]:
+        """The user's tags with these names — existing ones reused
+        (case-insensitively), missing ones created — for linking to a new
+        item as it's saved, so it's never stored half-tagged.
+
+        Runs first, and commits the tags on their own: the item's own
+        commit then links them atomically with the item, and a failure
+        after this point leaves at most an unused tag behind. If a
+        concurrent request creates one of the same tags first, the unique
+        index rejects the duplicate and this retries once, now finding it.
+
+        Raises `InvalidTagNameError` for a bad name, before anything is
+        stored.
+        """
+        names = normalize_tag_names(list(raw_names))
+        if not names:
+            return []
+        tag_repo = TagRepository(self._session)
+        for attempt in range(2):
+            try:
+                tags = []
+                for name in names:
+                    tag = await tag_repo.find_by_name(user_id=user_id, name=name)
+                    tags.append(tag or await tag_repo.create(user_id=user_id, name=name))
+                await self._session.commit()
+                return tags
+            except IntegrityError:
+                await self._session.rollback()
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
 
     async def _publish_embedding_job(self, item: Item) -> None:
         """Asks the embedding worker to (re)embed the item's description,
