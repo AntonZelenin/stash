@@ -18,14 +18,31 @@ const TAGS_CSS: Asset = asset!("/assets/styling/tags.css");
 /// column. Measured against the grid's own width, not the viewport, so the
 /// grid adapts to wherever it's placed.
 const MIN_COLUMN_WIDTH_PX: f64 = 240.0;
-const MAX_COLUMNS: usize = 3;
+/// The usual desktop layout: as many columns as fit, up to this many.
+const PREFERRED_MAX_COLUMNS: usize = 3;
+/// Widest a column may get at `PREFERRED_MAX_COLUMNS` before the grid adds
+/// one more column rather than stretching the cards further.
+const MAX_COLUMN_WIDTH_PX: f64 = 440.0;
+/// Hard cap. Together with `.stash-section`'s max-width, this keeps cards
+/// from growing past MAX_COLUMN_WIDTH_PX on even the widest screens.
+const MAX_COLUMNS: usize = 4;
 /// Must match `.item-grid`'s `gap` in items.css.
 const COLUMN_GAP_PX: f64 = 20.0;
 
 fn column_count(grid_width: f64) -> usize {
+    let column_width = |n: usize| (grid_width - (n - 1) as f64 * COLUMN_GAP_PX) / n as f64;
     // n columns fit when n * min + (n - 1) * gap <= width.
     let fitting = ((grid_width + COLUMN_GAP_PX) / (MIN_COLUMN_WIDTH_PX + COLUMN_GAP_PX)).floor();
-    (fitting as usize).clamp(1, MAX_COLUMNS)
+    let mut count = (fitting as usize).clamp(1, PREFERRED_MAX_COLUMNS);
+    // Fewer columns than preferred means they're already narrow; only a
+    // full row of preferred columns can get too wide.
+    while count >= PREFERRED_MAX_COLUMNS
+        && count < MAX_COLUMNS
+        && column_width(count) > MAX_COLUMN_WIDTH_PX
+    {
+        count += 1;
+    }
+    count
 }
 
 /// Masonry layout: equal-width columns, each an independent vertical stack,
@@ -54,7 +71,7 @@ pub fn ItemGrid(
     on_favorite_changed: EventHandler<()>,
     on_edited: EventHandler<()>,
 ) -> Element {
-    let mut columns = use_signal(|| MAX_COLUMNS);
+    let mut columns = use_signal(|| PREFERRED_MAX_COLUMNS);
 
     let current_columns = columns();
     let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
@@ -1033,7 +1050,11 @@ mod tests {
         assert_eq!(column_count(500.0), 2);
         assert_eq!(column_count(759.0), 2);
         assert_eq!(column_count(760.0), 3);
-        assert_eq!(column_count(5000.0), 3);
+        // 3 columns until they'd be wider than MAX_COLUMN_WIDTH_PX...
+        assert_eq!(column_count(1360.0), 3);
+        // ...then a 4th rather than stretching the cards.
+        assert_eq!(column_count(1361.0), 4);
+        assert_eq!(column_count(5000.0), 4);
     }
 
     #[test]

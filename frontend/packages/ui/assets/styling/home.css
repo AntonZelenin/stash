@@ -11,6 +11,15 @@
         #6675f5 75%,
         #1bd4b3 100%
     );
+    /* Header, capture box and filter bar (the redesigned top of the page). */
+    --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    --violet: #7c3aed;
+    --violet-strong: #9333ea;
+    --line: #eaecef;
+    --prism: linear-gradient(135deg, #f43f5e 0%, #ec4899 20%, #8b5cf6 45%, #06b6d4 75%, #10b981 100%);
+    --shadow-tactile: 0 2px 0 rgba(0, 0, 0, 0.03), 0 8px 24px -4px rgba(15, 23, 42, 0.06);
+    --shadow-tactile-hover: 0 4px 0 rgba(0, 0, 0, 0.02), 0 20px 32px -6px rgba(15, 23, 42, 0.12);
 
     position: relative;
     min-height: 100vh;
@@ -33,8 +42,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 7.5px 24px;
-    border-bottom: 1px solid rgba(20, 22, 27, 0.06);
+    gap: 16px;
+    padding: 12px 32px;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--font-display);
 }
 
 /* The frosted background lives on a pseudo-element: a backdrop-filter on
@@ -45,7 +56,7 @@
     position: absolute;
     inset: 0;
     z-index: -1;
-    background: rgba(255, 255, 255, 0.72);
+    background: rgba(255, 255, 255, 0.8);
     -webkit-backdrop-filter: blur(12px);
     backdrop-filter: blur(12px);
 }
@@ -53,49 +64,119 @@
 .top-bar-brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
 }
 
-.top-bar-brand .icon-stash {
-    width: 22px;
-    height: 22px;
+/* The logo's inside is transparent; the white fill keeps it crisp over the
+   frosted bar. */
+.top-bar-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    transition: transform 0.2s ease;
+}
+
+.top-bar-brand:hover .top-bar-logo {
+    transform: scale(1.05) rotate(2deg);
 }
 
 .top-bar-name {
-    font-size: 16px;
+    font-size: 20px;
     font-weight: 800;
-    letter-spacing: -0.01em;
-    color: var(--text-primary);
+    letter-spacing: -0.025em;
+    background: linear-gradient(90deg, #111827 0%, #1f2937 50%, #581c87 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.top-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.top-bar-surprise {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: none;
+    color: #475569;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.top-bar-surprise:hover {
+    border-color: #e9d5ff;
+    background: #faf5ff;
+    color: var(--violet);
+}
+
+.top-bar-surprise-star {
+    color: #f59e0b;
+}
+
+@media (max-width: 767px) {
+    .top-bar {
+        padding: 12px 16px;
+    }
+
+    .top-bar-surprise {
+        display: none;
+    }
 }
 
 .top-bar-menu {
     position: relative;
 }
 
-.menu-button {
-    width: 32px;
-    height: 32px;
+/* Gradient initials in a soft ring, with an "online" dot. */
+.avatar-button {
+    position: relative;
+    display: block;
     padding: 2px;
     border: none;
     border-radius: 50%;
-    background: var(--gradient);
+    background: none;
+    box-shadow: 0 0 0 2px #f3e8ff;
     cursor: pointer;
+    transition: box-shadow 0.15s;
 }
 
-.menu-button-inner {
+.avatar-button:hover {
+    box-shadow: 0 0 0 2px #c084fc;
+}
+
+.avatar-initials {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
-    background: #fff;
-    color: var(--text-primary);
+    background: linear-gradient(45deg, #7c3aed 0%, #ec4899 50%, #fbbf24 100%);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
 }
 
-.menu-button-inner .icon {
-    width: 15px;
-    height: 15px;
+.avatar-status {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 10px;
+    height: 10px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #10b981;
 }
 
 /* Catches clicks outside the open menu (see TopBar). Below the dropdown
@@ -165,42 +246,52 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* Fixed, not flex-centered: a min-height + justify-content:center here
-       stacked its own slack on top of the divider's margin below, so the
-       gap kept overshooting. Plain padding is deterministic — 40px above
-       the logo, 80px from the input down to the divider (via the
-       divider's own margin-top) — a 1:2 split, not dead center. */
-    padding: 40px 20px 0;
+    padding: 40px 16px 40px;
     text-align: center;
-}
-
-.home-hero .icon-stash {
-    width: 36px;
-    height: 36px;
-    margin-bottom: 8px;
+    font-family: var(--font-display);
 }
 
 .home-title {
-    font-size: 26px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    color: var(--text-primary);
-    margin: 0 0 4px;
-    line-height: 1;
+    margin: 0 0 6px;
+    font-size: 30px;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+    color: #0f172a;
 }
 
 .home-tagline {
+    margin: 0 0 22px;
     font-size: 14px;
-    color: var(--text-muted);
-    margin: 0 0 20px;
+    font-weight: 500;
+    color: #64748b;
 }
 
+@media (max-width: 639px) {
+    .home-title {
+        font-size: 24px;
+    }
+
+    .home-tagline {
+        font-size: 12px;
+    }
+}
+
+/* Prismatic 1.5px border: the gradient shows through the padding around
+   the white card inside. */
 .home-input-wrap {
     width: 100%;
-    max-width: 620px;
-    padding: 2px;
-    border-radius: 16px;
-    background: var(--gradient);
+    max-width: 768px;
+    padding: 1.5px;
+    border-radius: 20px;
+    background: var(--prism);
+    box-shadow: var(--shadow-tactile);
+    transition: box-shadow 0.3s;
+}
+
+.home-input-wrap:hover,
+.home-input-wrap:focus-within {
+    box-shadow: var(--shadow-tactile-hover);
 }
 
 /* One card behind the gradient border: image previews (if any) stacked
@@ -210,8 +301,10 @@
 .home-input-inner {
     display: flex;
     flex-direction: column;
+    padding: 10px;
     background: #fff;
-    border-radius: 14px;
+    border-radius: 19px;
+    text-align: left;
 }
 
 /* Tags for what's sent next, between the staged files and the text row. */
@@ -220,27 +313,15 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 12px 14px 0 24px;
+    padding: 4px 4px 4px 12px;
 }
 
-/* "+ Add tag" (styled in tags.css): the 24px pill centered on the 44px send
-   button, like the attach button. */
-.home-input-row .home-input-tag-add {
-    margin-bottom: 10px;
-}
-
-/* Buttons stay on the bottom line as the text grows. A single
-   line is 44px (the send button's height) + 8px above and below = 60px. */
+/* Buttons stay on the bottom line as the text grows. */
 .home-input-row {
     display: flex;
     align-items: flex-end;
-    gap: 12px;
-    padding: 8px 8px 8px 24px;
-}
-
-/* Keeps the 40px attach buttons centered on the 44px send button. */
-.home-input-row .home-input-attach {
-    margin-bottom: 2px;
+    gap: 8px;
+    padding-left: 12px;
 }
 
 /* The text area and its hidden mirror stacked in one grid cell: the
@@ -259,11 +340,12 @@
     min-width: 0;
     max-height: 240px;
     margin: 0;
-    padding: 11px 0;
+    padding: 8px 0;
     border: none;
     font-family: inherit;
-    font-size: 15px;
-    line-height: 22px;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 24px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
@@ -273,7 +355,7 @@
     resize: none;
     outline: none;
     background: transparent;
-    color: var(--text-primary);
+    color: #0f172a;
 }
 
 .home-input-mirror {
@@ -282,28 +364,63 @@
 }
 
 .home-input::placeholder {
-    color: var(--placeholder);
+    color: #94a3b8;
 }
 
 .home-image-input {
     display: none;
 }
 
+/* The row's controls are centered on the 40px send button via margin. */
+.home-input-tag-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    margin-bottom: 5px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 12px;
+    background: #f1f5f9;
+    color: #334155;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.home-input-tag-add:hover:not(:disabled) {
+    background: #e2e8f0;
+}
+
+.home-input-tag-add:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.home-input-tag-plus {
+    color: #94a3b8;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+}
+
 .home-input-attach {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
     flex-shrink: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
+    padding: 8px;
+    border-radius: 12px;
+    color: #64748b;
     cursor: pointer;
+    transition: color 0.15s, background 0.15s;
 }
 
 .home-input-attach:hover {
-    background: #f5f6f8;
-    color: var(--text-primary);
+    background: #f1f5f9;
+    color: #1e293b;
 }
 
 .home-input-attach .icon {
@@ -315,17 +432,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    gap: 6px;
     flex-shrink: 0;
+    height: 40px;
+    padding: 0 20px;
     border: none;
-    border-radius: 50%;
-    /* A dedicated 2-stop gradient, not the 5-stop rainbow --gradient: that
-       many hard color stops compressed onto a 44px circle read as an
-       abrupt, banded transition instead of a smooth one. */
-    background: linear-gradient(135deg, #c026e0 0%, #577efb 100%);
+    border-radius: 12px;
+    background: linear-gradient(90deg, #7c3aed 0%, #9333ea 50%, #4f46e5 100%);
+    box-shadow: 0 4px 6px -1px rgba(168, 85, 247, 0.2), 0 2px 4px -2px rgba(168, 85, 247, 0.2);
     color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
     cursor: pointer;
+    transition: transform 0.1s, filter 0.15s;
+}
+
+.home-input-submit:hover:not(:disabled) {
+    filter: brightness(0.92);
+}
+
+.home-input-submit:active:not(:disabled) {
+    transform: scale(0.95);
 }
 
 .home-input-submit:disabled {
@@ -334,8 +462,71 @@
 }
 
 .home-input-submit .icon {
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
+}
+
+@media (max-width: 639px) {
+    .home-input-inner {
+        padding: 8px;
+    }
+
+    .home-input,
+    .home-input-mirror {
+        font-size: 14px;
+    }
+
+    .home-input-submit {
+        padding: 0 16px;
+        font-size: 12px;
+    }
+}
+
+/* SUGGESTED: #tag • #tag … under a hairline; scrolls sideways rather than
+   wrapping on narrow screens. */
+.home-suggested {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 8px 8px 0;
+    overflow-x: auto;
+    border-top: 1px solid #f1f5f9;
+    color: #64748b;
+    font-size: 11px;
+    white-space: nowrap;
+    scrollbar-width: none;
+}
+
+.home-suggested::-webkit-scrollbar {
+    display: none;
+}
+
+.home-suggested-label {
+    color: #94a3b8;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.home-suggested-sep {
+    color: #cbd5e1;
+}
+
+.home-suggested-tag {
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+}
+
+.home-suggested-tag:hover:not(:disabled) {
+    color: var(--violet-strong);
+    text-decoration: underline;
 }
 
 .home-status {
@@ -344,97 +535,147 @@
     font-size: 14px;
 }
 
-/* ---- divider: separates "save new" (the hero) from "search existing"
-   (the workspace) so the two inputs don't read as interchangeable. Wider
-   than either the hero or the workspace's own content width — deliberately
-   its own visual element, not scoped to either side. */
+/* ---- filter bar: type, favorites, search, tags ---- */
 
-.home-divider {
-    width: 85%;
-    height: 0;
-    /* 80px above (to the capture input) — 40px nudged further down from
-       the previous pass — and 40px below (to search). The divider supplies
-       this spacing itself so it doesn't compound with padding on the hero
-       or workspace either side of it. */
-    margin: 80px auto 40px;
-    border: none;
-    border-top: 2px solid var(--border);
-}
-
-/* ---- search ---- */
-
-/* [ Type ▾ ]  [ Search... ]  [ Tags ▾ ]: one row, the search box the
-   wide central control and the two filters in the space either side. */
+/* One frosted panel: the type tabs and favorites on the left, search and
+   tags on the right; stacks on narrower screens. Its own layer (z-index
+   14): above the item cards, so the open Tags dropdown isn't painted under
+   them, but below the sticky top bar (15). */
 .stash-controls {
+    position: relative;
+    z-index: 14;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     gap: 12px;
     width: 100%;
+    /* + the item grid's own 12px top margin. */
+    margin-bottom: 12px;
+    padding: 8px;
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    font-family: var(--font-display);
 }
 
-/* [ Type ▾ ] [ ♡ Favorites ]: kept together, left of the search. */
+/* The frosted background lives on a pseudo-element, like the top bar's: a
+   backdrop-filter on .stash-controls itself would make it the containing
+   block for the dropdowns' fixed click-outside backdrops, shrinking them
+   to the bar. */
+.stash-controls::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: rgba(255, 255, 255, 0.8);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+/* Type tabs + favorites: one row that scrolls sideways when it doesn't fit. */
 .stash-controls-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.stash-controls-group::-webkit-scrollbar {
+    display: none;
+}
+
+.stash-controls-divider {
+    flex-shrink: 0;
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    background: #e2e8f0;
+}
+
+.stash-controls-query {
     display: flex;
     flex-shrink: 0;
     align-items: center;
     gap: 8px;
 }
 
-/* Narrow screens: stack them, each full width, rather than squeeze. */
-@media (max-width: 700px) {
+.stash-search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 256px;
+}
+
+@media (max-width: 1023px) {
     .stash-controls {
         flex-direction: column;
         align-items: stretch;
     }
 
-    .stash-controls-group > * {
+    .stash-search-wrap {
         flex: 1;
+        width: auto;
+        min-width: 0;
     }
 }
 
-.stash-search-wrap {
-    display: flex;
-    flex: 1 1 auto;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    width: 100%;
-    max-width: 620px;
-    height: 48px;
-    padding: 0 18px;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-}
-
 .stash-search-wrap .icon-search {
-    width: 18px;
-    height: 18px;
-    flex-shrink: 0;
-    color: var(--text-muted);
+    position: absolute;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    color: #94a3b8;
+    pointer-events: none;
 }
 
 .stash-search-input {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    border: none;
+    width: 100%;
+    height: 34px;
+    padding: 0 56px 0 36px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
     outline: none;
-    background: transparent;
     font-family: inherit;
-    font-size: 14px;
-    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 500;
+    color: #0f172a;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.stash-search-input:hover {
+    background: #f1f5f9;
+}
+
+.stash-search-input:focus {
+    background: #fff;
+    border-color: #c084fc;
+    box-shadow: 0 0 0 2px #f3e8ff;
 }
 
 .stash-search-input::placeholder {
-    color: var(--placeholder);
+    color: #94a3b8;
+}
+
+.stash-search-kbd {
+    position: absolute;
+    right: 10px;
+    padding: 0 4px;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    color: #94a3b8;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 16px;
+    pointer-events: none;
 }
 
 /* ---- saved items: the page's workspace/library area ---- */
 
-/* Full width, no max-width and no background/border of its own — the
-   divider above is what marks the boundary, so this section stays visually
+/* Full width, no max-width and no background/border of its own, so this section stays visually
    continuous with the page rather than becoming a separate colored panel.
    flex: 1 lets it absorb whatever vertical space is left in the viewport
    instead of shrink-wrapping to its content like a small floating card. */
@@ -445,23 +686,28 @@
     width: 100%;
 }
 
-/* The centered reading width lives on this inner container, not on
-   .stash-main itself — that's what keeps the section full-bleed while its
-   content stays aligned with the hero above it, and wider (1040px vs. the
-   hero's 620px) so it can later hold a multi-column item grid. No top
-   padding: the divider already supplies the 40px gap down to search.
-   flex: 1 + flex column + align-items: center lets narrower children
-   (search, filters) stay centered while the empty state (or, later, the
-   grid) stretches to fill the section's full height. */
+/* The browsing area: filter bar and item grid, sharing one full width with
+   the same side padding as the top bar. The max-width only kicks in on very
+   wide screens, where 4 columns (the grid's cap, see `column_count` in
+   items.rs) would otherwise stretch the cards; there it stays centered. No
+   top padding: the hero above ends with its own 40px.
+   flex: 1 + flex column lets the empty state stretch to fill the section's
+   full height. */
 .stash-section {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     width: 100%;
-    max-width: 1040px;
+    max-width: 1664px;
     margin: 0 auto;
-    padding: 0 20px 40px;
+    padding: 0 32px 48px;
+}
+
+@media (max-width: 767px) {
+    .stash-section {
+        padding: 0 16px 32px;
+    }
 }
 
 /* The item grid and cards themselves are styled in items.css. */

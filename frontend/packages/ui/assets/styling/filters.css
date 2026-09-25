@@ -1,37 +1,46 @@
-/* ---- Type and Tags filter dropdowns (next to the search box) ---- */
+/* ---- filter bar controls: type tabs, favorites, and the Tags dropdown ---- */
 
 .filter-control {
     position: relative;
     flex-shrink: 0;
 }
 
-/* The closed control: same height and look as the search box, so the row
-   reads as one set of controls. */
+/* The closed Tags control: same height and look as the search box, so the
+   right side of the bar reads as one set of controls. */
 .filter-button {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
-    height: 48px;
-    padding: 0 14px 0 16px;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    color: var(--text-muted);
+    height: 34px;
+    padding: 0 10px 0 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    color: #334155;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
     text-align: left;
     cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
 }
 
 .filter-button:hover {
-    border-color: #d8dbe2;
+    background: #f1f5f9;
 }
 
 .filter-button-active {
-    border-color: #c7cdfb;
-    color: var(--text-primary);
+    background: #fff;
+    border-color: #d8b4fe;
+    color: #0f172a;
+}
+
+.filter-button > .icon-tag {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: #64748b;
 }
 
 .filter-button-label {
@@ -42,9 +51,15 @@
 }
 
 .filter-chevron {
+    display: flex;
     flex-shrink: 0;
-    color: var(--text-muted);
-    font-size: 12px;
+    margin-left: 2px;
+    color: #94a3b8;
+}
+
+.filter-chevron .icon {
+    width: 12px;
+    height: 12px;
 }
 
 /* Invisible full-screen layer under an open dropdown: clicks outside it
@@ -60,74 +75,158 @@
     top: calc(100% + 6px);
     z-index: 31;
     padding: 6px;
-    background: #fff;
+    background: rgba(255, 255, 255, 0.97);
+    border: 1px solid rgba(226, 232, 240, 0.9);
     border-radius: 12px;
-    box-shadow: 0 12px 32px rgba(20, 22, 27, 0.16);
+    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.18), 0 8px 10px -6px rgba(15, 23, 42, 0.1);
 }
 
-/* ---- Type ---- */
+/* ---- Type tabs ---- */
 
-.type-filter {
-    width: 140px;
-}
+/* Each type has an accent (--tab-accent: its dot and hover text) and a
+   hover tint (--tab-tint). */
+.type-tab {
+    --tab-accent: #0f172a;
+    --tab-tint: #f1f5f9;
 
-.type-filter-panel {
-    left: 0;
-    min-width: 100%;
-}
-
-.type-option {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 10px;
+    gap: 8px;
+    padding: 6px 12px;
     border: none;
-    border-radius: 8px;
+    border-radius: 12px;
     background: none;
-    color: var(--text-primary);
+    color: #475569;
     font-family: inherit;
-    font-size: 14px;
-    text-align: left;
-    cursor: pointer;
-}
-
-.type-option:hover {
-    background: #f5f6f8;
-}
-
-.type-option-selected {
+    font-size: 12px;
     font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
 }
 
-.type-option-check {
-    width: 14px;
-    color: #5b6bf0;
+.type-tab:hover {
+    background: var(--tab-tint);
+    color: var(--tab-accent);
+}
+
+.type-tab-notes {
+    --tab-accent: #7c3aed;
+    --tab-tint: #f5f3ff;
+}
+
+.type-tab-images {
+    --tab-accent: #f97316;
+    --tab-tint: #fff7ed;
+}
+
+.type-tab-links {
+    --tab-accent: #0284c7;
+    --tab-tint: #f0f9ff;
+}
+
+.type-tab-files {
+    --tab-accent: #059669;
+    --tab-tint: #ecfdf5;
+}
+
+.type-tab-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--tab-accent);
+}
+
+/* Selected: filled dark pill. */
+.type-tab-selected,
+.type-tab-selected:hover {
+    background: #0f172a;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1);
+    color: #fff;
+    font-weight: 700;
+}
+
+.filter-count {
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: #f1f5f9;
+    color: #64748b;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.2;
+}
+
+.type-tab-selected .filter-count {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
 }
 
 /* ---- Favorites ---- */
 
+/* Off: plain like the type tabs, with a ruby outline heart. On: ruby-tinted
+   pill with a filled heart and a solid count badge. */
 .favorites-toggle {
+    display: flex;
     flex-shrink: 0;
-    width: auto;
-    padding: 0 16px;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: none;
+    color: #475569;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.favorites-toggle:hover {
+    background: #fff1f2;
+    color: #e11d48;
+}
+
+.favorites-toggle:active {
+    transform: scale(0.95);
 }
 
 .favorites-toggle .icon {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
+    color: #e11d48;
 }
 
-/* Clearly on: tinted, with a filled red heart. */
-.favorites-toggle-active {
-    background: #fff1f3;
-    border-color: #fda4b4;
-    color: #be123c;
+.favorites-count {
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: #64748b;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.favorites-toggle-active,
+.favorites-toggle-active:hover {
+    background: #fff1f2;
+    border-color: rgba(254, 205, 211, 0.7);
+    color: #e11d48;
+    font-weight: 700;
 }
 
 .favorites-toggle-active:hover {
-    border-color: #fb7185;
+    background: #ffe4e6;
+}
+
+.favorites-toggle-active .favorites-count {
+    background: #e11d48;
+    color: #fff;
 }
 
 /* ---- Tags ---- */
@@ -135,12 +234,7 @@
 /* Grows with its chips up to a cap, instead of pushing the search aside;
    past MAX_VISIBLE_TAG_CHIPS the rest show as "+N". */
 .tag-filter {
-    min-width: 140px;
     max-width: 300px;
-}
-
-.tag-filter .filter-button {
-    padding-left: 10px;
 }
 
 .tag-filter-chips {
@@ -183,7 +277,7 @@
 }
 
 .tag-filter-search:focus {
-    border-color: #c7cdfb;
+    border-color: #c084fc;
 }
 
 .tag-filter-options {
@@ -204,14 +298,14 @@
 }
 
 .tag-filter-option:hover {
-    background: #f5f6f8;
+    background: #faf5ff;
 }
 
 .tag-filter-option input {
     width: 16px;
     height: 16px;
     margin: 0;
-    accent-color: #5b6bf0;
+    accent-color: #7c3aed;
     cursor: pointer;
 }
 
@@ -228,17 +322,13 @@
     font-size: 13px;
 }
 
-/* Narrow screens: the controls stack, each full width (see
-   `.stash-controls` in home.css). */
-@media (max-width: 700px) {
-    .type-filter,
+/* Narrow screens: keep the Tags control and its panel within the screen. */
+@media (max-width: 639px) {
     .tag-filter {
-        width: 100%;
-        max-width: none;
+        max-width: 180px;
     }
 
     .tag-filter-panel {
-        left: 0;
-        width: auto;
+        width: min(260px, calc(100vw - 48px));
     }
 }

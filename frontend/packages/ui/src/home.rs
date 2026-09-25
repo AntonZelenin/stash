@@ -7,16 +7,19 @@ use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::filters::{FavoritesToggle, TagFilter, TypeDropdown, TypeFilter};
+use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
 use crate::icons::{
-    IconArrowUp, IconClose, IconFile, IconLogout, IconMenu, IconPaperclip, IconSearch, IconStash,
-    IconUser,
+    IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
 use crate::items::{ItemGrid, TagPicker};
+use crate::mock;
 use crate::routes::Route;
 use crate::settings::AccountSettings;
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
+/// The search box, focused by the Ctrl+F / ⌘F shortcut.
+const SEARCH_INPUT_ID: &str = "home-search-input";
+const LOGO_PNG: Asset = asset!("/assets/stash-logo.png");
 /// How long typing must pause before a search request is sent.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const SEARCH_LIMIT: u32 = 50;
@@ -358,7 +361,53 @@ pub fn Home() -> Element {
         });
     };
 
+    // Suggested tags for the capture box (mocked until the backend can
+    // suggest them), minus any already added.
+    let suggestions: Vec<String> = mock::suggested_tags()
+        .into_iter()
+        .filter(|name| {
+            !pending_tags()
+                .iter()
+                .any(|tag| tag.to_lowercase() == name.to_lowercase())
+        })
+        .collect();
+    let counts = mock::item_counts();
+
+    // Ctrl+F / ⌘F focuses the search box (see its keyboard hint). One
+    // document-level listener, registered once per page load.
+    let mut is_mac = use_signal(|| false);
+    use_effect(move || {
+        spawn(async move {
+            let script = format!(
+                r#"
+                if (!window.__stashSearchShortcut) {{
+                    window.__stashSearchShortcut = true;
+                    document.addEventListener("keydown", (e) => {{
+                        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {{
+                            const input = document.getElementById("{SEARCH_INPUT_ID}");
+                            if (input) {{
+                                e.preventDefault();
+                                input.focus();
+                                input.select();
+                            }}
+                        }}
+                    }});
+                }}
+                return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+                "#
+            );
+            if let Ok(mac) = document::eval(&script).join::<bool>().await {
+                is_mac.set(mac);
+            }
+        });
+    });
+
     rsx! {
+        document::Link { rel: "preconnect", href: "https://fonts.googleapis.com" }
+        document::Link {
+            rel: "stylesheet",
+            href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap",
+        }
         document::Link { rel: "stylesheet", href: HOME_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
 
@@ -380,9 +429,10 @@ pub fn Home() -> Element {
             TopBar {}
 
             div { class: "home-hero",
-                IconStash {}
-                h1 { class: "home-title", "stash" }
-                p { class: "home-tagline", "Save anything. Find anytime." }
+                h1 { class: "home-title", "Save anything. Find anytime." }
+                p { class: "home-tagline",
+                    "Capture notes, web clippings, audio snippets, files, or visual inspirations in one place."
+                }
 
                 if drag_depth() > 0 {
                     div { class: "home-drop-hint", "Drop files to upload" }
@@ -482,7 +532,7 @@ pub fn Home() -> Element {
                                 textarea {
                                     class: "home-input",
                                     rows: 1,
-                                    placeholder: "Paste a link, write a note, or anything...",
+                                    placeholder: "Paste a link, drag an image, or type a fleeting thought...",
                                     value: "{note}",
                                     oninput: move |evt| note.set(evt.value()),
                                     // Enter sends; Shift+Enter is a new line.
@@ -513,11 +563,13 @@ pub fn Home() -> Element {
                                 onchange: stage_picked_files,
                             }
                             button {
-                                class: "tag-add home-input-tag-add",
+                                class: "home-input-tag-add",
                                 r#type: "button",
+                                title: "Add tags",
                                 disabled: is_submitting() || picking_tag(),
                                 onclick: move |_| picking_tag.set(true),
-                                "+ Add tag"
+                                span { class: "home-input-tag-plus", "+" }
+                                "Tag"
                             }
                             label {
                                 class: "home-input-attach",
@@ -529,7 +581,30 @@ pub fn Home() -> Element {
                                 class: "home-input-submit",
                                 r#type: "submit",
                                 disabled: is_submitting(),
+                                span { "Stash" }
                                 IconArrowUp {}
+                            }
+                        }
+                        // One click adds a suggestion to the pending tags;
+                        // ones already added are left out.
+                        if !suggestions.is_empty() {
+                            div { class: "home-suggested",
+                                span { class: "home-suggested-label", "Suggested:" }
+                                for (index , name) in suggestions.into_iter().enumerate() {
+                                    if index > 0 {
+                                        span { class: "home-suggested-sep", "•" }
+                                    }
+                                    button {
+                                        class: "home-suggested-tag",
+                                        r#type: "button",
+                                        disabled: is_submitting(),
+                                        onclick: {
+                                            let name = name.clone();
+                                            move |_| pending_tags.write().push(name.clone())
+                                        },
+                                        "#{name}"
+                                    }
+                                }
                             }
                         }
                     }
@@ -540,38 +615,39 @@ pub fn Home() -> Element {
                 }
             }
 
-            // Divider marks the hand-off from "save new content" (the hero
-            // above) to "search existing content" (the workspace below) —
-            // a sibling of both, not nested in either, so its width is its
-            // own rather than inherited from the narrow hero or the wider
-            // workspace container.
-            hr { class: "home-divider" }
-
             // Full-width workspace band (a sibling of the narrow hero, not
             // nested in it) so it can span the whole page and grow to fill
             // the rest of the viewport, with only the content inside it
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // [ Type ▾ ]  [ Search... ]  [ Tags ▾ ] — typing in the
-                    // search swaps the list below for semantic search
-                    // results; the type and tag filters apply to either.
+                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Search ] [ Tags ▾ ]
+                    // — typing in the search swaps the list below for
+                    // semantic search results; the type, favorites and tag
+                    // filters apply to either.
                     div { class: "stash-controls",
                         div { class: "stash-controls-group",
-                            TypeDropdown { value: active_type }
-                            FavoritesToggle { value: favorites_only }
+                            TypeTabs { value: active_type, counts }
+                            div { class: "stash-controls-divider" }
+                            FavoritesToggle { value: favorites_only, count: counts.favorites }
                         }
-                        div { class: "stash-search-wrap",
-                            IconSearch {}
-                            input {
-                                class: "stash-search-input",
-                                r#type: "search",
-                                placeholder: "Search your stash...",
-                                value: "{search_query}",
-                                oninput: move |evt| search_query.set(evt.value()),
+                        div { class: "stash-controls-query",
+                            div { class: "stash-search-wrap",
+                                IconSearch {}
+                                input {
+                                    id: SEARCH_INPUT_ID,
+                                    class: "stash-search-input",
+                                    r#type: "search",
+                                    placeholder: "Search in all items...",
+                                    value: "{search_query}",
+                                    oninput: move |evt| search_query.set(evt.value()),
+                                }
+                                kbd { class: "stash-search-kbd",
+                                    if is_mac() { "⌘F" } else { "Ctrl F" }
+                                }
                             }
+                            TagFilter { selected: selected_tags }
                         }
-                        TagFilter { selected: selected_tags }
                     }
 
                     if search_query().trim().is_empty() {
@@ -668,17 +744,30 @@ fn TopBar() -> Element {
     rsx! {
         header { class: "top-bar",
             div { class: "top-bar-brand",
-                IconStash {}
+                img { class: "top-bar-logo", src: LOGO_PNG, alt: "" }
                 span { class: "top-bar-name", "stash" }
             }
 
-            div { class: "top-bar-menu",
+            div { class: "top-bar-actions",
+                // Not wired up yet: needs a random-item endpoint and a
+                // place to show the item.
                 button {
-                    class: "menu-button",
+                    class: "top-bar-surprise",
                     r#type: "button",
-                    onclick: move |_| menu_open.set(!menu_open()),
-                    div { class: "menu-button-inner", IconMenu {} }
+                    title: "Inspire me with a random stash item",
+                    span { class: "top-bar-surprise-star", "✦" }
+                    span { "Surprise me" }
                 }
+
+                div { class: "top-bar-menu",
+                    button {
+                        class: "avatar-button",
+                        r#type: "button",
+                        title: "Account",
+                        onclick: move |_| menu_open.set(!menu_open()),
+                        span { class: "avatar-initials", "{mock::user_initials()}" }
+                        span { class: "avatar-status" }
+                    }
 
                 if menu_open() {
                     // Invisible full-screen layer under the dropdown: a
@@ -708,6 +797,7 @@ fn TopBar() -> Element {
                             "Logout"
                         }
                     }
+                }
                 }
             }
         }

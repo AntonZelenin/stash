@@ -5,7 +5,8 @@ use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::icons::{IconClose, IconHeart, IconHeartFilled};
+use crate::icons::{IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconTag};
+use crate::mock::ItemCounts;
 
 const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -41,19 +42,32 @@ impl TypeFilter {
 
     fn label(self) -> &'static str {
         match self {
-            TypeFilter::All => "All",
+            TypeFilter::All => "All Stashes",
             TypeFilter::Notes => "Notes",
-            TypeFilter::Images => "Images",
+            TypeFilter::Images => "Images & Media",
             TypeFilter::Links => "Links",
             TypeFilter::Files => "Files",
         }
     }
 
-    /// What the closed control shows: the selected type, or "All types".
-    fn button_label(self) -> &'static str {
+    /// CSS modifier giving each type its accent color (dot, hover tint).
+    fn color_class(self) -> &'static str {
         match self {
-            TypeFilter::All => "All types",
-            other => other.label(),
+            TypeFilter::All => "type-tab-all",
+            TypeFilter::Notes => "type-tab-notes",
+            TypeFilter::Images => "type-tab-images",
+            TypeFilter::Links => "type-tab-links",
+            TypeFilter::Files => "type-tab-files",
+        }
+    }
+
+    fn count(self, counts: &ItemCounts) -> u32 {
+        match self {
+            TypeFilter::All => counts.all,
+            TypeFilter::Notes => counts.notes,
+            TypeFilter::Images => counts.images,
+            TypeFilter::Links => counts.links,
+            TypeFilter::Files => counts.files,
         }
     }
 
@@ -70,56 +84,41 @@ impl TypeFilter {
     }
 }
 
-/// `[ Images ▾ ]`: single-choice dropdown for the item type.
+/// `[ All Stashes 84 ] • Notes 28  • Images & Media 34 …`: one segment per
+/// item type, each with its count; the selected one is filled.
 #[component]
-pub fn TypeDropdown(value: Signal<TypeFilter>) -> Element {
-    let mut open = use_signal(|| false);
+pub fn TypeTabs(value: Signal<TypeFilter>, counts: ItemCounts) -> Element {
     let mut value = value;
 
     rsx! {
         document::Link { rel: "stylesheet", href: FILTERS_CSS }
 
-        div { class: "filter-control type-filter",
+        for option in TypeFilter::OPTIONS {
             button {
-                class: if value() == TypeFilter::All { "filter-button" } else { "filter-button filter-button-active" },
+                class: if value() == option { "type-tab {option.color_class()} type-tab-selected" } else { "type-tab {option.color_class()}" },
                 r#type: "button",
-                onclick: move |_| open.toggle(),
-                span { class: "filter-button-label", "{value().button_label()}" }
-                span { class: "filter-chevron", "▾" }
-            }
-            if open() {
-                // Invisible full-screen layer: a click anywhere outside the
-                // dropdown lands here and closes it.
-                div { class: "filter-backdrop", onclick: move |_| open.set(false) }
-                div { class: "filter-panel type-filter-panel",
-                    for option in TypeFilter::OPTIONS {
-                        button {
-                            class: if value() == option { "type-option type-option-selected" } else { "type-option" },
-                            r#type: "button",
-                            onclick: move |_| {
-                                value.set(option);
-                                open.set(false);
-                            },
-                            span { class: "type-option-check", if value() == option { "✓" } }
-                            "{option.label()}"
-                        }
-                    }
+                aria_pressed: if value() == option { "true" } else { "false" },
+                onclick: move |_| value.set(option),
+                if option != TypeFilter::All {
+                    span { class: "type-tab-dot" }
                 }
+                span { "{option.label()}" }
+                span { class: "filter-count", "{option.count(&counts)}" }
             }
         }
     }
 }
 
-/// `[ ♡ Favorites ]`: on/off toggle for showing only favorites.
+/// `[ ♥ Favorites 12 ]`: on/off toggle for showing only favorites.
 #[component]
-pub fn FavoritesToggle(value: Signal<bool>) -> Element {
+pub fn FavoritesToggle(value: Signal<bool>, count: u32) -> Element {
     let mut value = value;
 
     rsx! {
         document::Link { rel: "stylesheet", href: FILTERS_CSS }
 
         button {
-            class: if value() { "filter-button favorites-toggle favorites-toggle-active" } else { "filter-button favorites-toggle" },
+            class: if value() { "favorites-toggle favorites-toggle-active" } else { "favorites-toggle" },
             r#type: "button",
             aria_pressed: if value() { "true" } else { "false" },
             title: if value() { "Showing favorites only" } else { "Show favorites only" },
@@ -130,6 +129,7 @@ pub fn FavoritesToggle(value: Signal<bool>) -> Element {
                 IconHeart {}
             }
             span { "Favorites" }
+            span { class: "favorites-count", "{count}" }
         }
     }
 }
@@ -164,6 +164,7 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                         open.toggle();
                     }
                 },
+                IconTag {}
                 if chosen.is_empty() {
                     span { class: "filter-button-label", "Tags" }
                 } else {
@@ -190,7 +191,7 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                         }
                     }
                 }
-                span { class: "filter-chevron", "▾" }
+                span { class: "filter-chevron", IconChevronDown {} }
             }
             if open() {
                 div { class: "filter-backdrop", onclick: move |_| open.set(false) }

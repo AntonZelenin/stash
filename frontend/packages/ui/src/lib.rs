@@ -16,6 +16,7 @@ pub use auth_session::AuthSession;
 
 mod filters;
 mod items;
+mod mock;
 
 mod settings;
 
