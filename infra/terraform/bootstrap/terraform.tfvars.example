@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and adjust. Every value has a default,
+# so this file is optional.
+
+project    = "stash"
+aws_region = "eu-central-1"
+
+# aws_profile = "stash"
+
+# state_bucket_name = "stash-tfstate-123456789012-eu-central-1"

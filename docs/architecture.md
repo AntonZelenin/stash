@@ -683,6 +683,8 @@ stash/
     ├── infra/
     │   ├── CLAUDE.md
     │   └── terraform/
+    │       ├── bootstrap/     (remote-state S3 bucket, local state)
+    │       └── live/          (Stash infrastructure, S3 backend)
     │
     └── scripts/
 

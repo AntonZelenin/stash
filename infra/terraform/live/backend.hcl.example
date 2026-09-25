@@ -1,0 +1,11 @@
+# Copy to backend.hcl (gitignored) and fill in from the bootstrap outputs:
+#   terraform -chdir=../bootstrap output
+#
+# Use one key per environment, e.g. stash/dev/..., stash/prod/...
+
+bucket = "stash-tfstate-123456789012-eu-central-1"
+key    = "stash/prod/terraform.tfstate"
+region = "eu-central-1"
+
+# Only needed if you use a named profile rather than AWS_PROFILE:
+# profile = "stash"

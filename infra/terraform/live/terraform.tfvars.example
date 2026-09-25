@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (gitignored) and adjust. No secrets belong here.
+
+project     = "stash"
+environment = "prod"
+aws_region  = "eu-central-1"
+
+# aws_profile = "stash"
+
+# extra_tags = {
+#   Owner = "platform"
+# }
