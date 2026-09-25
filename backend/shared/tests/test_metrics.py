@@ -61,45 +61,40 @@ def test_aws_platform_publishes_to_cloudwatch(monkeypatch):
     assert isinstance(metrics._backend, metrics._CloudWatchBackend)
 
 
-def test_emf_records_carry_dimensions_and_a_service_rollup(cloudwatch, capsys):
-    metrics.count("Requests", route="/items/{item_id}", method="GET")
-    metrics.count("Requests", route="/items/{item_id}", method="GET")
-    metrics.record_duration("RequestDuration", 12.5, route="/items/{item_id}", method="GET")
-    metrics.record_duration("RequestDuration", 40.0, route="/items/{item_id}", method="GET")
+def test_emf_records_carry_one_dimension_set(cloudwatch, capsys):
+    metrics.count("JobFailures", queue="thumbnail_jobs")
+    metrics.count("JobFailures", queue="thumbnail_jobs")
+    metrics.record_duration("JobDuration", 12.5, queue="thumbnail_jobs")
+    metrics.record_duration("JobDuration", 40.0, queue="thumbnail_jobs")
 
     [record] = _emf_records(capsys)
 
     [definition] = record["_aws"]["CloudWatchMetrics"]
     assert definition["Namespace"] == "Stash"
-    assert definition["Dimensions"] == [["service", "environment", "route", "method"], ["service", "environment"]]
+    # No extra aggregated copy: every dimension set is a billed metric.
+    assert definition["Dimensions"] == [["service", "environment", "queue"]]
     assert {m["Name"]: m["Unit"] for m in definition["Metrics"]} == {
-        "Requests": "Count",
-        "RequestDuration": "Milliseconds",
+        "JobFailures": "Count",
+        "JobDuration": "Milliseconds",
     }
-    assert (record["service"], record["environment"], record["route"], record["method"]) == (
-        "api",
-        "prod",
-        "/items/{item_id}",
-        "GET",
-    )
+    assert (record["service"], record["environment"], record["queue"]) == ("api", "prod", "thumbnail_jobs")
     # Counts are summed; durations keep every value, for percentiles.
-    assert record["Requests"] == [2.0]
-    assert record["RequestDuration"] == [12.5, 40.0]
+    assert record["JobFailures"] == [2.0]
+    assert record["JobDuration"] == [12.5, 40.0]
 
 
 def test_each_dimension_set_is_its_own_record(cloudwatch, capsys):
-    metrics.count("Requests", route="/items", method="GET")
-    metrics.count("Requests", route="/search", method="POST")
+    metrics.count("ExternalCallErrors", operation="storage.upload")
+    metrics.count("ExternalCallErrors", operation="openai.embeddings")
     metrics.gauge("QueueBacklog", 3, unit=metrics.Unit.COUNT)
 
     records = _emf_records(capsys)
 
-    assert [(r.get("route"), r.get("Requests"), r.get("QueueBacklog")) for r in records] == [
-        ("/items", [1.0], None),
-        ("/search", [1.0], None),
+    assert [(r.get("operation"), r.get("ExternalCallErrors"), r.get("QueueBacklog")) for r in records] == [
+        ("storage.upload", [1.0], None),
+        ("openai.embeddings", [1.0], None),
         (None, None, [3.0]),
     ]
-    # Already just service/environment: no rollup to add.
     [backlog] = [r for r in records if "QueueBacklog" in r]
     assert backlog["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["service", "environment"]]
 
@@ -107,13 +102,13 @@ def test_each_dimension_set_is_its_own_record(cloudwatch, capsys):
 def test_many_values_are_split_across_records(cloudwatch, capsys):
     for value in range(250):
         metrics.record_duration("JobDuration", value, queue="thumbnail_jobs")
-    metrics.count("JobsCompleted", 250, queue="thumbnail_jobs")
+    metrics.count("JobFailures", 250, queue="thumbnail_jobs")
 
     records = _emf_records(capsys)
 
     assert [len(r["JobDuration"]) for r in records] == [99, 99, 52]
     assert [value for r in records for value in r["JobDuration"]] == [float(v) for v in range(250)]
-    assert sum(sum(r.get("JobsCompleted", [])) for r in records) == 250
+    assert sum(sum(r.get("JobFailures", [])) for r in records) == 250
 
 
 def test_flushing_empties_the_buffer(cloudwatch, capsys):
@@ -139,18 +134,17 @@ def test_recording_never_raises(monkeypatch):
     metrics.record_duration("RequestDuration", "not a number")
 
 
-async def test_external_call_counts_calls_errors_and_duration(recorded):
+async def test_external_call_records_errors_and_duration(recorded):
     with metrics.external_call("storage.upload"):
         pass
     with pytest.raises(TimeoutError):
         with metrics.external_call("storage.upload"):
             raise TimeoutError
 
+    # Every call has a duration (its SampleCount is the call count).
     names = [(name, dims["operation"]) for name, _unit, _value, dims in recorded.points]
     assert names == [
-        ("ExternalCalls", "storage.upload"),
         ("ExternalCallDuration", "storage.upload"),
-        ("ExternalCalls", "storage.upload"),
         ("ExternalCallErrors", "storage.upload"),
         ("ExternalCallDuration", "storage.upload"),
     ]
@@ -163,7 +157,6 @@ async def test_logged_call_is_measured(recorded):
 
     # Only `operation`: the call's log fields (ids included) never become dimensions.
     assert {name: dims for name, _unit, _value, dims in recorded.points} == {
-        "ExternalCalls": {"operation": "openai.embeddings"},
         "ExternalCallErrors": {"operation": "openai.embeddings"},
         "ExternalCallDuration": {"operation": "openai.embeddings"},
     }

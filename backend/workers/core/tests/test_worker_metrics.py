@@ -85,7 +85,7 @@ async def test_completed_job(engine, recorded):
 
     await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id))
 
-    assert recorded.counts() == {"JobDuration": 1, "JobsCompleted": 1}
+    assert recorded.counts() == {"JobDuration": 1}
     # Job metrics are per queue only: no item, user or job ids.
     for name, _value, dimensions in recorded.points:
         if name.startswith("Job"):
@@ -191,8 +191,8 @@ async def test_storage_calls_are_measured_by_operation(recorded):
     with pytest.raises(ConnectionError):
         await store.delete("thumbnails/x.webp")
 
-    assert [(name, dims) for name, _value, dims in recorded.points if name != "ExternalCallDuration"] == [
-        ("ExternalCalls", {"operation": "storage.upload"}),
-        ("ExternalCalls", {"operation": "storage.delete"}),
+    assert [(name, dims) for name, _value, dims in recorded.points] == [
+        ("ExternalCallDuration", {"operation": "storage.upload"}),
         ("ExternalCallErrors", {"operation": "storage.delete"}),
+        ("ExternalCallDuration", {"operation": "storage.delete"}),
     ]

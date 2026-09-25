@@ -21,19 +21,21 @@ as logging:
 
 Only operational metrics belong here: whether a service is healthy,
 overloaded, slow, failing or falling behind. Not business counts, and
-nothing AWS already measures on its own (Lambda/ECS CPU, memory,
-concurrency, throttles; RDS connections; SQS queue depth...).
+nothing AWS already measures on its own (API Gateway requests, errors and
+latency; Lambda invocations, errors, duration, throttles; RDS; SQS queue
+depth and deletes...).
 
-Dimensions must be low-cardinality: service, queue, route template,
-method, operation... never user/item/request/trace ids or storage keys.
-Every metric also gets `service` and `environment`, and is additionally
-published aggregated to just those two, so e.g. overall API p99 latency
-exists next to per-route latency (percentiles can't be combined after the
-fact).
+Every distinct metric name + dimension values combination is a billed
+CloudWatch metric, so dimensions must be low-cardinality: service, queue,
+operation... never user/item/request/trace ids, storage keys or routes.
+Every metric also gets `service` and `environment`; it is published with
+just the one dimension set, with no extra aggregated copies.
 
 Durations are recorded as individual values, so CloudWatch can compute
-p50/p95/p99 itself; nothing is aggregated into percentiles here. Counts are
-summed per flush (use the Sum statistic).
+p50/p95/p99 itself; nothing is aggregated into percentiles here, and the
+SampleCount statistic of a duration is the number of things timed, so no
+separate counter is needed for it. Counts are summed per flush (use the
+Sum statistic).
 
 Recording never raises: a metrics problem must not change what the
 application does.
@@ -93,10 +95,10 @@ def gauge(name: str, value: float, *, unit: Unit, **dimensions: Any) -> None:
 @contextmanager
 def external_call(operation: str) -> Iterator[None]:
     """Measures one call to an external dependency (`operation`, e.g.
-    "openai.embeddings", "storage.upload"): `ExternalCalls`,
-    `ExternalCallErrors` if the block raises, and `ExternalCallDuration`,
-    all by `operation`. `stash_shared.log.logged_call` already does this, so
-    only wrap calls that don't go through it."""
+    "openai.embeddings", "storage.upload"): `ExternalCallDuration` (its
+    SampleCount is the number of calls) and `ExternalCallErrors` if the
+    block raises, both by `operation`. `stash_shared.log.logged_call`
+    already does this, so only wrap calls that don't go through it."""
     started = time.perf_counter()
     try:
         yield
@@ -107,7 +109,6 @@ def external_call(operation: str) -> Iterator[None]:
 
 
 def _record_external_call(operation: str, started: float, *, failed: bool) -> None:
-    count("ExternalCalls", operation=operation)
     if failed:
         count("ExternalCallErrors", operation=operation)
     record_duration("ExternalCallDuration", (time.perf_counter() - started) * 1000, operation=operation)
@@ -238,15 +239,11 @@ class _CloudWatchBackend(_Backend):
                 _report_failure("Failed to publish metrics", dimensions=[name for name, _ in dimensions])
 
     def _records(self, dimensions: dict[str, str], series: dict[str, _Series]) -> Iterator[dict]:
-        base = dict(self._base_dimensions)
         batches = max((len(s.values) - 1) // _MAX_VALUES_PER_RECORD + 1 for s in series.values())
         for batch in range(batches):
             emf = self._metrics_class(namespace=self._namespace)
             for name, value in dimensions.items():
                 emf.add_dimension(name=name, value=value)
-            if len(dimensions) > len(base):
-                # The same data, also aggregated per service/environment.
-                emf.add_dimensions(**base)
             start = batch * _MAX_VALUES_PER_RECORD
             for name, data in series.items():
                 for value in data.values[start : start + _MAX_VALUES_PER_RECORD]:

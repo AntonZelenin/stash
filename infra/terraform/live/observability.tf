@@ -199,10 +199,16 @@ locals {
       metrics = [for m in ["Count", "4xx", "5xx"] : ["AWS/ApiGateway", m, "ApiId", aws_apigatewayv2_api.main.id, { label = m }]]
     },
     {
+      # Latency is what clients see; IntegrationLatency is the API function
+      # alone. Per-route latency: Logs Insights over the API's request log
+      # lines (docs/architecture.md, "Metrics").
       title = "API latency (ms)"
-      metrics = [for s in ["p50", "p95", "p99"] :
-        ["AWS/ApiGateway", "Latency", "ApiId", aws_apigatewayv2_api.main.id, { stat = s, label = s }]
-      ]
+      metrics = concat(
+        [for s in ["p50", "p95", "p99"] :
+          ["AWS/ApiGateway", "Latency", "ApiId", aws_apigatewayv2_api.main.id, { stat = s, label = s }]
+        ],
+        [["AWS/ApiGateway", "IntegrationLatency", "ApiId", aws_apigatewayv2_api.main.id, { stat = "p95", label = "integration p95" }]],
+      )
     },
     {
       title   = "Lambda errors"

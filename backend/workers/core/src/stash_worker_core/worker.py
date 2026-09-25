@@ -92,9 +92,11 @@ class Worker:
     are marked as errors with their exception.
 
     Metrics (`stash_shared.metrics`, by `queue`), for every stage alike:
-    `JobDuration` of every handler run; `JobsCompleted`; `JobFailures` (a
-    handler run that raised) and of those `JobRetries` (sent back to the
-    queue); `JobsDeadLettered` (any reason, malformed payloads included).
+    `JobDuration` of every handler run (its SampleCount is the number of
+    runs); `JobFailures` (a handler run that raised) and of those
+    `JobRetries` (sent back to the queue); `JobsDeadLettered` (any reason,
+    malformed payloads included). Completed jobs aren't counted: on SQS
+    they're the queue's own `NumberOfMessagesDeleted`.
     While running, it also samples its queue's `QueueBacklog` and
     `QueueOldestMessageAge` (`JobQueue.stats`). Like tracing, metrics
     never change processing.
@@ -316,7 +318,6 @@ class Worker:
 
         self._record_attempt(started)
         await self._queue.ack(delivery)
-        metrics.count("JobsCompleted", queue=self._queue_label)
         _set_outcome("completed")
         logger.info("Job completed", duration_ms=_elapsed_ms(started))
 

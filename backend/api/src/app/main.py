@@ -7,7 +7,6 @@ from app.api.routers import auth, items, search, tags, users
 from app.config import get_settings
 from app.db import engine
 from app.request_logging import RequestLoggingMiddleware
-from app.request_metrics import RequestMetricsMiddleware
 
 configure_logging(
     service=get_settings().service_name,
@@ -48,9 +47,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Added after CORS so requests it answers itself (preflights) are counted
-# too.
-app.add_middleware(RequestMetricsMiddleware)
 # Added last so it's outermost: requests CORS answers itself (preflights)
 # are logged too.
 app.add_middleware(RequestLoggingMiddleware)
