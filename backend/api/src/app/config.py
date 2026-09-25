@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # it replaces `openai_api_key`.
     openai_api_key_secret_arn: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    # Search queries are first rewritten into English with this model (see
+    # `app.query_normalization`); a small, fast one is enough. It must
+    # accept `reasoning.effort = "minimal"` (the GPT-5 family does). If the
+    # call fails or takes longer than the timeout, the original query is
+    # searched instead.
+    search_query_normalization_model: str = "gpt-5-nano"
+    search_query_normalization_timeout_seconds: float = 5.0
     # Results further than this cosine distance from the query (0 = same
     # direction, 1 = unrelated, 2 = opposite) are left out, so a search
     # doesn't return the whole library ranked; None returns everything.

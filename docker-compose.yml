@@ -101,6 +101,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       SEARCH_MAX_COSINE_DISTANCE: ${SEARCH_MAX_COSINE_DISTANCE:-0.8}
+      # Rewrites search queries into English before they're embedded.
+      SEARCH_QUERY_NORMALIZATION_MODEL: ${SEARCH_QUERY_NORMALIZATION_MODEL:-gpt-5-nano}
     ports:
       - "${API_PORT:-8000}:8000"
     healthcheck:

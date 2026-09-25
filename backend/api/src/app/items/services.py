@@ -26,6 +26,7 @@ from app.config import get_settings
 from app.items import files
 from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
 from app.items.repos import ItemFilters, ItemRepository
+from app.query_normalization import QueryNormalizer
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
 from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
@@ -241,6 +242,20 @@ def _log_created(item: Item, **fields) -> None:
     logger.info("Item created", item_id=item.id, item_type=item.type, item_status=item.status, **fields)
 
 
+async def _normalized_query(query: str, normalizer: QueryNormalizer) -> str:
+    """`query` rewritten for embedding, or `query` itself if that fails:
+    a worse match for a non-English query beats no search at all."""
+    try:
+        return await normalizer.normalize(query)
+    except Exception as exc:
+        logger.warning(
+            "Search query normalization failed; searching with the original query",
+            query_chars=len(query),
+            error_type=type(exc).__name__,
+        )
+        return query
+
+
 class ItemService:
     def __init__(self, session: AsyncSession, storage: ObjectStorage, outbox: OutboxPublisher | None = None):
         """`outbox` publishes the jobs this service's writes trigger; needed
@@ -294,13 +309,18 @@ class ItemService:
         query: str,
         limit: int,
         embedder: Embedder,
+        normalizer: QueryNormalizer,
         filters: ItemFilters = ItemFilters(),
     ) -> list[ListedItem]:
         """Semantic search: the user's items whose description embedding is
-        closest in meaning to `query`, most similar first."""
+        closest in meaning to `query`, most similar first. The query is
+        first rewritten into English (see `app.query_normalization`), since
+        searchable text is mostly English; if that fails, the original
+        query is searched."""
         started = time.perf_counter()
+        search_text = await _normalized_query(query, normalizer)
         try:
-            query_embedding = await embedder.embed(query)
+            query_embedding = await embedder.embed(search_text)
         except Exception as exc:
             logger.exception("Failed to embed search query; search unavailable", query_chars=len(query))
             raise SearchUnavailableError() from exc
@@ -315,6 +335,7 @@ class ItemService:
         logger.info(
             "Search completed",
             query_chars=len(query),
+            query_rewritten=search_text != query,
             result_count=len(rows),
             limit=limit,
             item_type=filters.item_type,

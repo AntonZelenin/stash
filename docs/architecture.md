@@ -648,7 +648,7 @@ Client → API (finalize) → PostgreSQL
 
 ### Search
 
-Client → API → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search → Results
+Client → API → OpenAI Responses (query → English) → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search → Results
 
 What's embedded is each item's `item_descriptions` text — the single
 searchable text per item (a note's/link's text, a caption, a generated
@@ -671,6 +671,20 @@ same transaction as the description they're for. An embedding job
 dead-lettered after its retries (e.g. an OpenAI outage longer than them)
 leaves the item without an up-to-date embedding until the job is replayed
 from the dead-letter queue or the text changes again.
+
+Before a query is embedded, the API has a small, fast model
+(`SEARCH_QUERY_NORMALIZATION_MODEL`, default `gpt-5-nano`, minimal
+reasoning) rewrite it into concise English with the same meaning
+(`app.query_normalization`): searchable text is mostly English, since the
+generated descriptions are, and a Ukrainian query otherwise lands further
+from it than the same query in English. English queries are kept as they
+are. Only the rewrite is embedded; nothing else about the search changes.
+The rewrite is best-effort: if the call fails, times out
+(`SEARCH_QUERY_NORMALIZATION_TIMEOUT_SECONDS`, default 5, no retries) or
+returns something unusable (empty, or far longer than the query), the
+original query is embedded instead and the search still succeeds. Neither
+the query nor its rewrite is logged, only lengths and whether it was
+rewritten.
 
 `POST /search` embeds the query with the same model and returns the user's
 items by cosine distance (`<=>`), nearest first, via an HNSW index

@@ -32,6 +32,7 @@ from app.items.models import (
 from app.main import app
 from app.embeddings import get_embedder
 from app.outbox import outbox_events
+from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.queue import get_queue_resolver
 from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
 from app.storage.minio import get_object_storage
@@ -244,6 +245,30 @@ def embedder() -> FakeEmbedder:
     app.dependency_overrides.pop(get_embedder, None)
 
 
+class FakeQueryNormalizer(QueryNormalizer):
+    """Stands in for the LLM that rewrites queries into English: returns
+    `rewrites[query]`, or the query unchanged. `fail` simulates an outage."""
+
+    def __init__(self):
+        self.rewrites: dict[str, str] = {}
+        self.queries: list[str] = []
+        self.fail = False
+
+    async def normalize(self, query: str) -> str:
+        self.queries.append(query)
+        if self.fail:
+            raise ConnectionError("openai is unreachable")
+        return self.rewrites.get(query, query)
+
+
+@pytest.fixture
+def query_normalizer() -> FakeQueryNormalizer:
+    fake = FakeQueryNormalizer()
+    app.dependency_overrides[get_query_normalizer] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_query_normalizer, None)
+
+
 @pytest.fixture
 async def client(
     session: AsyncSession,
@@ -252,6 +277,7 @@ async def client(
     document_queue: FakeJobQueue,
     embedding_queue: FakeJobQueue,
     embedder: FakeEmbedder,
+    query_normalizer: FakeQueryNormalizer,
 ) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

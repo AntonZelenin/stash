@@ -8,6 +8,7 @@ from app.db import DbSession
 from app.dependencies import get_current_user
 from app.embeddings import get_embedder
 from app.items.services import ItemService, SearchUnavailableError
+from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -31,6 +32,7 @@ async def search_items(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     embedder: Embedder = Depends(get_embedder),
+    normalizer: QueryNormalizer = Depends(get_query_normalizer),
 ) -> SearchResponse:
     try:
         results = await ItemService(session, storage).search_items(
@@ -38,6 +40,7 @@ async def search_items(
             query=payload.query,
             limit=payload.limit,
             embedder=embedder,
+            normalizer=normalizer,
             filters=item_filters(payload.type, payload.tag_ids, payload.favorite),
         )
     except SearchUnavailableError:
