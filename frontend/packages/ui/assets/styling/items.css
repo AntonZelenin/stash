@@ -332,6 +332,17 @@
     scrollbar-width: thin;
 }
 
+/* URLs inside a note's or link's text (see `LinkedText`). */
+.text-link {
+    color: #2563eb;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.text-link:hover {
+    color: #1d4ed8;
+}
+
 /* ---- image: natural aspect ratio, extremes cropped ---- */
 
 /* Clicking the image or caption opens the full-size viewer. */

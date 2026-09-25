@@ -9,7 +9,7 @@ use crate::icons::{
     IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
     IconTrash,
 };
-use crate::text_kind::{TextKind, first_url, text_kind};
+use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -248,7 +248,7 @@ fn ItemCard(
         (_, _, Some(text)) => (
             "item-card-note",
             rsx! {
-                p { class: "item-card-note-text", "{text}" }
+                p { class: "item-card-note-text", LinkedText { text: text.clone() } }
             },
         ),
         // e.g. an image whose download URL couldn't be produced.
@@ -381,7 +381,7 @@ fn ItemDetails(item: ListedItem) -> Element {
             }
         },
         (_, _, _, Some(text)) => rsx! {
-            p { class: "lightbox-text", "{text}" }
+            p { class: "lightbox-text", LinkedText { text } }
         },
         _ => rsx! {},
     }
@@ -1207,7 +1207,32 @@ fn LinkBody(text: String) -> Element {
             }
         }
         if let Some(note) = note {
-            p { class: "item-card-link-note", "{note}" }
+            p { class: "item-card-link-note", LinkedText { text: note } }
+        }
+    }
+}
+
+/// `text` with every URL in it a clickable link that opens in a new tab
+/// (the system browser on desktop), like the link card itself.
+#[component]
+fn LinkedText(text: String) -> Element {
+    rsx! {
+        for segment in link_segments(&text) {
+            match segment {
+                Segment::Text(plain) => rsx! { "{plain}" },
+                Segment::Url(url) => rsx! {
+                    a {
+                        class: "text-link",
+                        href: "{url}",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        // Only the link: not whatever the text sits in (e.g.
+                        // a caption that opens the image viewer).
+                        onclick: move |evt| evt.stop_propagation(),
+                        "{url}"
+                    }
+                },
+            }
         }
     }
 }
