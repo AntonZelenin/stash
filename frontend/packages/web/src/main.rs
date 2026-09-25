@@ -27,6 +27,7 @@ fn App() -> Element {
     });
 
     rsx! {
+        document::Title { "Stash" }
         document::Link { rel: "icon", href: FAVICON }
         document::Link { rel: "stylesheet", href: MAIN_CSS }
 
