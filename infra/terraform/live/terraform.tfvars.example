@@ -17,3 +17,10 @@ aws_region  = "eu-central-1"
 
 # Origins of the web frontend, without a trailing slash.
 # s3_cors_allowed_origins = ["https://stash.example.com", "http://localhost:8080"]
+
+# Per-queue worker (future Lambda) timeouts; visibility = timeout x multiplier.
+# worker_timeout_seconds = {
+#   document_analysis_jobs = 300
+# }
+# sqs_visibility_timeout_multiplier = 3
+# max_delivery_attempts             = 5 # keep equal to MAX_DELIVERY_ATTEMPTS

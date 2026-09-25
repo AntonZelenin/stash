@@ -82,3 +82,28 @@ output "objects_bucket_arn" {
   description = "Application object bucket ARN."
   value       = aws_s3_bucket.objects.arn
 }
+
+output "sqs_queues" {
+  description = "Per application queue name: main queue and DLQ URL/ARN, worker and timeouts."
+  value = {
+    for name, q in local.queues : name => {
+      worker                     = q.worker
+      url                        = aws_sqs_queue.main[name].url
+      arn                        = aws_sqs_queue.main[name].arn
+      dlq_url                    = aws_sqs_queue.dlq[name].url
+      dlq_arn                    = aws_sqs_queue.dlq[name].arn
+      worker_timeout_seconds     = local.queue_timeouts[name].worker_timeout_seconds
+      visibility_timeout_seconds = local.queue_timeouts[name].visibility_timeout_seconds
+    }
+  }
+}
+
+output "sqs_queue_urls_json" {
+  description = "Value for the application's SQS_QUEUE_URLS setting."
+  value       = jsonencode(local.sqs_queue_urls)
+}
+
+output "max_delivery_attempts" {
+  description = "Value for the workers' MAX_DELIVERY_ATTEMPTS setting (equals the redrive maxReceiveCount)."
+  value       = var.max_delivery_attempts
+}

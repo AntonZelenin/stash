@@ -1,8 +1,8 @@
 # Live: Stash infrastructure
 
 Root configuration for Stash on AWS: provider, backend, naming, tags and
-the network (`network.tf`), the database (`database.tf`) and object storage
-(`storage.tf`).
+the network (`network.tf`), the database (`database.tf`), object storage
+(`storage.tf`) and queues (`messaging.tf`).
 
 - `local.name_prefix`: `{project}-{environment}`, e.g. `stash-prod`; prefix
   every resource name with it.
@@ -87,3 +87,27 @@ encrypted, and non-TLS requests are denied. Browsers only get presigned URLs.
 CORS is applied only when `s3_cors_allowed_origins` is set (GET, HEAD, PUT).
 The only lifecycle rule aborts incomplete multipart uploads after 7 days;
 user objects are never expired.
+
+## Messaging
+
+One SQS standard queue per processing stage, keyed by the application's
+queue name (`stash_shared.queue.base`), each with its own DLQ:
+
+| Queue name               | SQS queue / DLQ                              | Worker            | Worker timeout | Visibility |
+|--------------------------|----------------------------------------------|-------------------|----------------|------------|
+| `thumbnail_jobs`         | `stash-{env}-thumbnail[-dlq]`                | thumbnailer       | 60 s           | 180 s      |
+| `content_analysis_jobs`  | `stash-{env}-content-analysis[-dlq]`         | image_analyzer    | 120 s          | 360 s      |
+| `document_analysis_jobs` | `stash-{env}-document-analysis[-dlq]`        | document_analyzer | 180 s          | 540 s      |
+| `embedding_jobs`         | `stash-{env}-embedding[-dlq]`                | embedding_worker  | 120 s          | 360 s      |
+
+- Retries and dead-lettering are SQS's own: a failed or abandoned message
+  stays unacked, reappears after the visibility timeout, and moves to the
+  DLQ after `max_delivery_attempts` (5) receives. Keep it equal to the
+  workers' `MAX_DELIVERY_ATTEMPTS` (output `max_delivery_attempts`).
+- The worker timeout is the future Lambda timeout (batch size 1); the
+  visibility timeout is 3x that (`sqs_visibility_timeout_multiplier`), which
+  is also the delay before a retry.
+- Main queues keep messages 4 days, DLQs 14 (a moved message keeps its
+  original enqueue time). Long polling is 20 s. Encryption is SSE-SQS.
+- `SQS_QUEUE_URLS` for the API and workers: `jsonencode(local.sqs_queue_urls)`
+  inside this configuration, or the `sqs_queue_urls_json` output.

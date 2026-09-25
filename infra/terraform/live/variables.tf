@@ -90,6 +90,44 @@ variable "db_name" {
   default     = "stash"
 }
 
+variable "worker_timeout_seconds" {
+  description = "Expected upper bound on one worker invocation per queue, i.e. the future Lambda timeout (batch size 1). Each analyzer makes one OpenAI call with a 90 s client timeout."
+  type = object({
+    thumbnail_jobs         = optional(number, 60)
+    content_analysis_jobs  = optional(number, 120)
+    document_analysis_jobs = optional(number, 180)
+    embedding_jobs         = optional(number, 120)
+  })
+  default = {}
+
+  validation {
+    condition     = alltrue([for t in values(var.worker_timeout_seconds) : t >= 1 && t <= 900])
+    error_message = "Worker timeouts must be between 1 and 900 seconds (the Lambda maximum)."
+  }
+}
+
+variable "sqs_visibility_timeout_multiplier" {
+  description = "Queue visibility timeout as a multiple of the worker timeout. It is also the delay before SQS redelivers a failed message."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.sqs_visibility_timeout_multiplier >= 2 && floor(var.sqs_visibility_timeout_multiplier) == var.sqs_visibility_timeout_multiplier
+    error_message = "sqs_visibility_timeout_multiplier must be a whole number of at least 2."
+  }
+}
+
+variable "max_delivery_attempts" {
+  description = "SQS maxReceiveCount before a message moves to its DLQ. Must equal the workers' MAX_DELIVERY_ATTEMPTS."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.max_delivery_attempts >= 1 && var.max_delivery_attempts <= 1000
+    error_message = "max_delivery_attempts must be between 1 and 1000 (the SQS limits)."
+  }
+}
+
 variable "s3_cors_allowed_origins" {
   description = "Browser origins allowed to use presigned object URLs from script, e.g. [\"https://stash.example.com\"]. Empty disables CORS."
   type        = list(string)
