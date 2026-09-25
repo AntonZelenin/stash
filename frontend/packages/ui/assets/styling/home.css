@@ -138,7 +138,7 @@
     position: relative;
 }
 
-/* Gradient initials in a soft ring, with an "online" dot. */
+/* Gradient initials (from the account email) in a soft ring. */
 .avatar-button {
     position: relative;
     display: block;
@@ -166,17 +166,6 @@
     color: #fff;
     font-size: 10px;
     font-weight: 700;
-}
-
-.avatar-status {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    width: 8px;
-    height: 8px;
-    border: 1.5px solid #fff;
-    border-radius: 50%;
-    background: #10b981;
 }
 
 /* Catches clicks outside the open menu (see TopBar). Below the dropdown

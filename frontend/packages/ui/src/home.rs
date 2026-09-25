@@ -12,7 +12,6 @@ use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
 use crate::items::{ItemGrid, TagPicker, TextTypeSelect, suggested_tags};
-use crate::mock;
 use crate::routes::Route;
 use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
@@ -679,7 +678,7 @@ pub fn Home() -> Element {
                                     id: SEARCH_INPUT_ID,
                                     class: "stash-search-input",
                                     r#type: "search",
-                                    placeholder: "Search in all items...",
+                                    placeholder: "Search naturally...",
                                     value: "{search_query}",
                                     oninput: move |evt| search_query.set(evt.value()),
                                 }
@@ -778,6 +777,19 @@ fn TopBar() -> Element {
     let session = use_context::<AuthSession>();
     let mut menu_open = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
+    // The avatar's letters; blank until the account has loaded (or if it
+    // couldn't be).
+    let current_user = use_resource({
+        let session = session.clone();
+        move || {
+            let session = session.clone();
+            async move { session.current_user().await }
+        }
+    });
+    let initials = match &*current_user.read() {
+        Some(Ok(user)) => email_initials(&user.email),
+        _ => String::new(),
+    };
 
     rsx! {
         header { class: "top-bar",
@@ -803,8 +815,7 @@ fn TopBar() -> Element {
                         r#type: "button",
                         title: "Account",
                         onclick: move |_| menu_open.set(!menu_open()),
-                        span { class: "avatar-initials", "{mock::user_initials()}" }
-                        span { class: "avatar-status" }
+                        span { class: "avatar-initials", "{initials}" }
                     }
 
                 if menu_open() {
@@ -845,5 +856,29 @@ fn TopBar() -> Element {
         if settings_open() {
             AccountSettings { on_close: move |_| settings_open.set(false) }
         }
+    }
+}
+
+/// The avatar's letters: the first two letters or digits of the email,
+/// capitalized (`"ntnzelenin@gmail.com"` → `"NT"`).
+fn email_initials(email: &str) -> String {
+    email
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initials_are_the_emails_first_two_letters() {
+        assert_eq!(email_initials("ntnzelenin@gmail.com"), "NT");
+        assert_eq!(email_initials("a.b@example.com"), "AB");
+        assert_eq!(email_initials("x@example.com"), "XE");
+        assert_eq!(email_initials(""), "");
     }
 }

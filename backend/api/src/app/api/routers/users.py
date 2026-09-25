@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.auth import TokenPairResponse
-from app.api.schemas.users import ChangePasswordRequest, UserCreateRequest, UserCreateResponse
+from app.api.schemas.users import (
+    ChangePasswordRequest,
+    CurrentUserResponse,
+    UserCreateRequest,
+    UserCreateResponse,
+)
 from app.auth.services import AuthService, IncorrectPasswordError
 from app.db import DbSession
 from app.dependencies import get_current_user
@@ -31,6 +36,15 @@ async def create_user(
         raise HTTPException(status.HTTP_409_CONFLICT, "User already exists") from None
 
     return UserCreateResponse(id=user.id)
+
+
+@router.get(
+    "/users/me",
+    response_model=CurrentUserResponse,
+    responses={401: {"description": "Unauthorized"}},
+)
+async def get_me(current_user: User = Depends(get_current_user)) -> CurrentUserResponse:
+    return CurrentUserResponse(id=current_user.id, email=current_user.email)
 
 
 @router.post(

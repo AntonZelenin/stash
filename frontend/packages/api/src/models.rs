@@ -125,6 +125,13 @@ pub struct ItemCreated {
     pub status: String,
 }
 
+/// The signed-in user's account (`GET /users/me`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CurrentUser {
+    pub id: String,
+    pub email: String,
+}
+
 /// How many items the user has: of each type (every type present), and
 /// favorites. Not narrowed by any filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

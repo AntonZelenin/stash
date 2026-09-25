@@ -12,6 +12,11 @@ class UserCreateResponse(BaseModel):
     id: UUID
 
 
+class CurrentUserResponse(BaseModel):
+    id: UUID
+    email: str
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(min_length=8, max_length=72)

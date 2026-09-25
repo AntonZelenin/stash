@@ -754,6 +754,12 @@ stored type and never infer it from the content again
 When the searchable text changes, the item goes through `embedding_jobs`
 again, as on creation.
 
+### Current user
+
+`GET /users/me` returns the signed-in user's `id` and `email`. Tokens are
+opaque, so this is how clients learn who is signed in (the app uses the
+email for the avatar's initials).
+
 ### Changing the password
 
 `POST /users/me/password` takes the current password and a new one. It
