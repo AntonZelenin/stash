@@ -143,6 +143,30 @@
     padding: 0 10px;
 }
 
+/* Clicking a chip filters by its tag. */
+.tag-chip-link {
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.tag-chip-link:hover {
+    filter: brightness(0.95);
+}
+
+/* The name clips its overflow (for the ellipsis) and the chip's
+   line-height is 1, so its box ends right at the text and an underline
+   would be clipped. A taller line gives the underline room, keeping the
+   text centred. */
+.tag-chip-link .tag-chip-name {
+    line-height: 1.5;
+}
+
+.tag-chip-link:hover .tag-chip-name {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
 /* The "+ Add tag" pill itself is in tags.css. */
 
 /* Hidden until the card is hovered (always visible on touch screens and

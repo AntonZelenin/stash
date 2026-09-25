@@ -132,7 +132,7 @@ pub fn Home() -> Element {
     // Type and tag filters. Applied by the server, to the list and to
     // search alike; changing either refetches whichever is showing.
     let active_type = use_signal(|| TypeFilter::All);
-    let selected_tags = use_signal(Vec::<Tag>::new);
+    let mut selected_tags = use_signal(Vec::<Tag>::new);
     let favorites_only = use_signal(|| false);
     let current_filters = move || ItemQuery {
         item_type: active_type().api_value().map(str::to_string),
@@ -257,6 +257,14 @@ pub fn Home() -> Element {
         if favorites_only() {
             saved_items.restart();
             search_results.restart();
+        }
+    });
+
+    // A tag clicked on a card: add it to the tag filter, which refetches
+    // whichever view is showing (list or search).
+    let filter_by_tag = use_callback(move |tag: Tag| {
+        if !selected_tags.read().iter().any(|t| t.id == tag.id) {
+            selected_tags.write().push(tag);
         }
     });
 
@@ -712,6 +720,7 @@ pub fn Home() -> Element {
                                 refresh_items,
                                 favorite_changed,
                                 refresh_items,
+                                filter_by_tag,
                             ),
                         }}
                     } else {
@@ -723,6 +732,7 @@ pub fn Home() -> Element {
                                 refresh_items,
                                 favorite_changed,
                                 refresh_items,
+                                filter_by_tag,
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
@@ -752,6 +762,7 @@ fn item_results(
     on_tags_changed: Callback<()>,
     on_favorite_changed: Callback<()>,
     on_edited: Callback<()>,
+    on_tag_click: Callback<Tag>,
 ) -> Element {
     if items.is_empty() {
         rsx! {
@@ -767,6 +778,7 @@ fn item_results(
                 on_tags_changed,
                 on_favorite_changed,
                 on_edited,
+                on_tag_click,
             }
         }
     }

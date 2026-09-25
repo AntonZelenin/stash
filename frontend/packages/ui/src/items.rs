@@ -63,7 +63,8 @@ fn column_count(grid_width: f64) -> usize {
 /// its card menu, `on_tags_changed` fires after a tag was added to or
 /// removed from a card, `on_favorite_changed` after a card's favorite
 /// state was saved, and `on_edited` after an item's content was edited; the
-/// caller acts on them and refreshes `items` as needed.
+/// caller acts on them and refreshes `items` as needed. `on_tag_click`
+/// receives a tag the user clicked on a card, to filter by it.
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
@@ -71,6 +72,7 @@ pub fn ItemGrid(
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
     on_edited: EventHandler<()>,
+    on_tag_click: EventHandler<Tag>,
 ) -> Element {
     let mut columns = use_signal(|| PREFERRED_MAX_COLUMNS);
 
@@ -104,6 +106,7 @@ pub fn ItemGrid(
                             on_tags_changed,
                             on_favorite_changed,
                             on_edited,
+                            on_tag_click,
                         }
                     }
                 }
@@ -177,7 +180,8 @@ enum ViewMode {
 ///
 /// `on_tags_changed` fires after a tag was added to or removed from it,
 /// `on_favorite_changed` after its favorite state was saved, and
-/// `on_edited` after an edit was saved.
+/// `on_edited` after an edit was saved, and `on_tag_click` with a tag
+/// clicked on the card or in its view (which then closes).
 #[component]
 fn ItemCard(
     item: ListedItem,
@@ -185,6 +189,7 @@ fn ItemCard(
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
     on_edited: EventHandler<()>,
+    on_tag_click: EventHandler<Tag>,
 ) -> Element {
     let session = use_context::<AuthSession>();
     // A saved edit's result, paired with the item it replaced: shown while
@@ -303,6 +308,7 @@ fn ItemCard(
                         item_id: item.id.clone(),
                         tags: item.tags.clone(),
                         on_changed: on_tags_changed,
+                        on_tag_click,
                     }
                     // Bottom-right: ♡ then the upload date.
                     div { class: "item-card-meta",
@@ -351,6 +357,12 @@ fn ItemCard(
                                 item_id: item.id.clone(),
                                 tags: item.tags.clone(),
                                 on_changed: on_tags_changed,
+                                // Close the view, so the filtered results
+                                // behind it show.
+                                on_tag_click: move |tag| {
+                                    view.set(None);
+                                    on_tag_click.call(tag);
+                                },
                             }
                         },
                         ViewMode::Editing => rsx! {
@@ -784,8 +796,14 @@ fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<(
 /// The item's tags as chips, plus an "Add tag" control. Tags are removed in
 /// the `ItemEditor`. An added tag goes straight to the server; `on_changed`
 /// then lets the page refetch, which also keeps tag filters honest.
+/// Clicking a chip calls `on_tag_click` with its tag.
 #[component]
-fn ItemTags(item_id: String, tags: Vec<Tag>, on_changed: EventHandler<()>) -> Element {
+fn ItemTags(
+    item_id: String,
+    tags: Vec<Tag>,
+    on_changed: EventHandler<()>,
+    on_tag_click: EventHandler<Tag>,
+) -> Element {
     let session = use_context::<AuthSession>();
     let mut adding = use_signal(|| false);
     let mut busy = use_signal(|| false);
@@ -820,7 +838,12 @@ fn ItemTags(item_id: String, tags: Vec<Tag>, on_changed: EventHandler<()>) -> El
     rsx! {
         div { class: "item-tags",
             for tag in tags {
-                span { class: "tag-chip", key: "{tag.id}", title: "{tag.name}",
+                button {
+                    class: "tag-chip tag-chip-link",
+                    key: "{tag.id}",
+                    r#type: "button",
+                    title: "Show items tagged {tag.name}",
+                    onclick: move |_| on_tag_click.call(tag.clone()),
                     span { class: "tag-chip-name", "{tag.name}" }
                 }
             }
