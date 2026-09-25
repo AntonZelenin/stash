@@ -48,3 +48,55 @@ variable "enable_dns_hostnames" {
   type        = bool
   default     = false
 }
+
+variable "db_engine_version" {
+  description = "RDS PostgreSQL major version; pgvector is available on every supported one. Matches local development by default."
+  type        = string
+  default     = "16"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "Initial RDS storage in GiB (gp3 minimum is 20)."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.db_allocated_storage >= 20
+    error_message = "db_allocated_storage must be at least 20 GiB for gp3."
+  }
+}
+
+variable "db_max_allocated_storage" {
+  description = "Upper limit for RDS storage autoscaling in GiB; 0 disables it. Extra storage is billed only once used."
+  type        = number
+  default     = 50
+}
+
+variable "db_backup_retention_days" {
+  description = "Days of automated RDS backups to keep."
+  type        = number
+  default     = 7
+}
+
+variable "db_name" {
+  description = "Name of the application database."
+  type        = string
+  default     = "stash"
+}
+
+variable "s3_cors_allowed_origins" {
+  description = "Browser origins allowed to use presigned object URLs from script, e.g. [\"https://stash.example.com\"]. Empty disables CORS."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for o in var.s3_cors_allowed_origins : can(regex("^https?://[^/]+$", o))])
+    error_message = "Each origin must be scheme://host[:port], without a path or trailing slash."
+  }
+}

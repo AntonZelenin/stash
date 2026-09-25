@@ -1,7 +1,8 @@
 # Live: Stash infrastructure
 
 Root configuration for Stash on AWS: provider, backend, naming, tags and
-the network (`network.tf`).
+the network (`network.tf`), the database (`database.tf`) and object storage
+(`storage.tf`).
 
 - `local.name_prefix`: `{project}-{environment}`, e.g. `stash-prod`; prefix
   every resource name with it.
@@ -57,3 +58,32 @@ subnets, no load balancers, no VPC endpoints.
 - The RDS instance is Single-AZ in the primary AZ, next to the app subnet.
   The secondary DB subnet exists only because a DB subnet group must cover
   two AZs; nothing runs in it.
+
+## Database
+
+Single-AZ RDS PostgreSQL 16 (`db.t4g.micro`, 20 GiB gp3, encrypted, 7 days of
+automated backups) in the primary DB subnet, reachable only from the app
+security group. Deletion protection is on and a final snapshot is taken on
+destroy.
+
+Credentials live in the Secrets Manager secret `stash-{env}/rds/master`
+(output `db_secret_arn`) as JSON with `engine`, `host`, `port`, `dbname`,
+`username` and `password`, enough to build
+`postgresql+asyncpg://{username}:{password}@{host}:{port}/{dbname}`. The
+password is alphanumeric, so it needs no URL escaping. It is also in the
+Terraform state, which is why the state bucket must stay private.
+
+The `vector` extension is not created here: the Alembic migration
+`b7e2f4a9c613_semantic_search_embeddings` runs
+`CREATE EXTENSION IF NOT EXISTS vector`, which the master user may do on RDS.
+
+## Object storage
+
+Private bucket `stash-{env}-objects-{account_id}` (output
+`objects_bucket_name`) for keys like `users/{user_id}/files/{item_id}.{ext}`.
+All public access is blocked, ACLs are disabled, objects are SSE-S3
+encrypted, and non-TLS requests are denied. Browsers only get presigned URLs.
+
+CORS is applied only when `s3_cors_allowed_origins` is set (GET, HEAD, PUT).
+The only lifecycle rule aborts incomplete multipart uploads after 7 days;
+user objects are never expired.

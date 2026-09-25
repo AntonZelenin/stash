@@ -52,3 +52,33 @@ output "db_security_group_id" {
   description = "Security group for the RDS instance."
   value       = aws_security_group.db.id
 }
+
+output "db_address" {
+  description = "RDS hostname."
+  value       = aws_db_instance.main.address
+}
+
+output "db_port" {
+  description = "RDS port."
+  value       = aws_db_instance.main.port
+}
+
+output "db_name" {
+  description = "Application database name."
+  value       = aws_db_instance.main.db_name
+}
+
+output "db_secret_arn" {
+  description = "Secrets Manager secret with the DB connection details and password (JSON: engine, host, port, dbname, username, password)."
+  value       = aws_secretsmanager_secret.db.arn
+}
+
+output "objects_bucket_name" {
+  description = "Application object bucket."
+  value       = aws_s3_bucket.objects.bucket
+}
+
+output "objects_bucket_arn" {
+  description = "Application object bucket ARN."
+  value       = aws_s3_bucket.objects.arn
+}

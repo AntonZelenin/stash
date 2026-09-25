@@ -11,3 +11,9 @@ aws_region  = "eu-central-1"
 # }
 
 # vpc_cidr = "10.0.0.0/16"
+
+# db_instance_class    = "db.t4g.micro"
+# db_allocated_storage = 20
+
+# Origins of the web frontend, without a trailing slash.
+# s3_cors_allowed_origins = ["https://stash.example.com", "http://localhost:8080"]
