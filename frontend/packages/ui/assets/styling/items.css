@@ -315,7 +315,18 @@
     color: #dc2626;
 }
 
-/* ---- note: height follows the text, up to a limit ---- */
+/* ---- note: a preview, height follows the text up to a limit ---- */
+
+/* Clicking it opens the whole note in the viewer (see `ItemView`). */
+.item-card-note-main {
+    border-radius: 13px 13px 0 0;
+    cursor: pointer;
+    outline: none;
+}
+
+.item-card-note-main:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--card-separator);
+}
 
 .item-card-note-text {
     margin: 0;
@@ -325,11 +336,14 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    /* Past 12 lines (1.5em each) the card stops growing and the rest
-       scrolls, so one long note can't dominate a column. */
-    max-height: 18em;
-    overflow-y: auto;
-    scrollbar-width: thin;
+    /* Past 12 lines the card stops growing and the text ends in an
+       ellipsis, so one long note can't dominate a column; the reader shows
+       the rest. No scrolling inside the card. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 12;
+    line-clamp: 12;
+    overflow: hidden;
 }
 
 /* URLs inside a note's or link's text (see `LinkedText`). */
@@ -691,6 +705,34 @@
     line-height: 1.55;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+}
+
+/* A note being read: a wider panel, larger text, and no height limit, so
+   a long note makes the backdrop scroll instead of the text scrolling
+   inside the panel. margin: auto centers the panel while it fits and
+   starts it at the top once it doesn't (align-items: center would push its
+   top out of reach). */
+.lightbox-reading .lightbox-content {
+    width: 720px;
+    max-height: none;
+    margin: auto;
+}
+
+.lightbox-reading .lightbox-panel {
+    gap: 18px;
+    max-height: none;
+    padding: 16px 28px 24px;
+}
+
+/* Stays in the corner while a long note scrolls. */
+.lightbox-reading .lightbox-close {
+    position: fixed;
+}
+
+.lightbox-reading .lightbox-text {
+    overflow: visible;
+    font-size: 17px;
+    line-height: 1.7;
 }
 
 /* A link's or file's own block, as on its card, minus the card's

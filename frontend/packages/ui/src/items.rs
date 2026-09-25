@@ -170,7 +170,8 @@ enum ViewMode {
 /// short cards.
 ///
 /// Clicking an image opens it in an `ItemView` with the same controls as
-/// the card; "Edit" in the menu opens any item there, in edit mode. The
+/// the card, as does clicking a note's (clamped) preview, to read the whole
+/// text; "Edit" in the menu opens any item there, in edit mode. The
 /// card owns the view, so both show one favorite state and share the same
 /// handlers.
 ///
@@ -245,10 +246,23 @@ fn ItemCard(
             ),
             _ => return rsx! {},
         },
+        // A preview: clicking it opens the whole note in its `ItemView`.
         (_, _, Some(text)) => (
             "item-card-note",
             rsx! {
-                p { class: "item-card-note-text", LinkedText { text: text.clone() } }
+                div {
+                    class: "item-card-note-main",
+                    role: "button",
+                    tabindex: "0",
+                    onclick: move |_| view.set(Some(ViewMode::Viewing)),
+                    onkeydown: move |evt| {
+                        if evt.key() == Key::Enter || evt.key() == Key::Character(" ".into()) {
+                            evt.prevent_default();
+                            view.set(Some(ViewMode::Viewing));
+                        }
+                    },
+                    p { class: "item-card-note-text", LinkedText { text: text.clone() } }
+                }
             },
         ),
         // e.g. an image whose download URL couldn't be produced.
@@ -279,6 +293,7 @@ fn ItemCard(
     };
 
     let item_id = item.id.clone();
+    let is_note = kind == "item-card-note";
     rsx! {
         div { class: "item-card-shell",
             div { class: "item-card {kind}",
@@ -311,6 +326,7 @@ fn ItemCard(
                 ItemView {
                     image_url: full_size_url,
                     editing: mode == ViewMode::Editing,
+                    reading: is_note && mode == ViewMode::Viewing,
                     on_close: move |_| view.set(None),
                     on_cancel_edit: move |_| view.set(Some(ViewMode::Viewing)),
                     // The card's controls again, above the content.
@@ -1021,10 +1037,15 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
 /// While `editing`, Escape calls `on_cancel_edit` instead (like the form's
 /// Cancel button), and backdrop clicks are ignored so a stray click doesn't
 /// throw the changes away.
+///
+/// `reading` (a note being read) widens the panel for its text and lets it
+/// grow to the text's full length: the backdrop then scrolls, rather than
+/// the text inside the panel.
 #[component]
 fn ItemView(
     image_url: Option<String>,
     editing: bool,
+    #[props(default)] reading: bool,
     on_close: EventHandler<()>,
     on_cancel_edit: EventHandler<()>,
     children: Element,
@@ -1046,7 +1067,7 @@ fn ItemView(
 
     rsx! {
         div {
-            class: "lightbox",
+            class: if reading { "lightbox lightbox-reading" } else { "lightbox" },
             role: "dialog",
             aria_modal: "true",
             aria_label: if has_image { "Image viewer" } else { "Item" },
