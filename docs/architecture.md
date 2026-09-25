@@ -259,8 +259,8 @@ object delete fails is an object orphaned with no row pointing at it.
 
 Locally the same flow runs against MinIO: upload URLs are signed for
 `S3_PUBLIC_ENDPOINT_URL` (reachable from the browser), and MinIO allows
-cross-origin requests by default. On AWS the bucket's CORS rule
-(`s3_cors_allowed_origins`) must list the web app's origin for PUT.
+cross-origin requests by default. On AWS the bucket's CORS rule allows
+the CloudFront frontend's origin, plus any `s3_cors_allowed_origins`.
 
 ### Queue
 
@@ -585,6 +585,10 @@ Infrastructure (Terraform, `infra/terraform/live/`):
 - RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
 - SQS queues with DLQs
+- The web frontend: a private S3 bucket served only through CloudFront
+  (Origin Access Control, `*.cloudfront.net`, SPA fallback to
+  `index.html`); its origin is always in the API's and the object bucket's
+  CORS origins
 
 The Lambdas run the same code as the local services, packaged as one zip
 per function (`scripts/build_lambda_packages.py`), with environment-specific

@@ -127,7 +127,7 @@ output "lambda_functions" {
 }
 
 output "api_url" {
-  description = "Public API base URL (API Gateway default endpoint, no trailing slash); the frontend's API URL."
+  description = "Public API base URL (API Gateway default endpoint, no trailing slash); pass it to the frontend build as STASH_API_BASE_URL."
   value       = aws_apigatewayv2_api.main.api_endpoint
 }
 
@@ -156,4 +156,24 @@ output "alarm_topic_arn" {
 output "dashboard_url" {
   description = "CloudWatch dashboard."
   value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.main.dashboard_name}"
+}
+
+output "frontend_bucket_name" {
+  description = "Bucket to upload the web frontend build (dx's public/ directory) to."
+  value       = aws_s3_bucket.frontend.bucket
+}
+
+output "frontend_distribution_id" {
+  description = "CloudFront distribution serving the frontend (for invalidations)."
+  value       = aws_cloudfront_distribution.frontend.id
+}
+
+output "frontend_domain_name" {
+  description = "CloudFront domain name of the frontend (*.cloudfront.net)."
+  value       = aws_cloudfront_distribution.frontend.domain_name
+}
+
+output "frontend_url" {
+  description = "Public frontend URL; also its browser origin, allowed by the API's and the object bucket's CORS."
+  value       = local.frontend_origin
 }

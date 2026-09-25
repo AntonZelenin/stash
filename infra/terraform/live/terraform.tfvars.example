@@ -15,8 +15,9 @@ aws_region  = "eu-central-1"
 # db_instance_class    = "db.t4g.micro"
 # db_allocated_storage = 20
 
-# Origins of the web frontend, without a trailing slash.
-# s3_cors_allowed_origins = ["https://stash.example.com", "http://localhost:8080"]
+# Extra web frontend origins (e.g. a local dx serve against this API), without
+# a trailing slash. The CloudFront frontend is always allowed.
+# s3_cors_allowed_origins = ["http://localhost:8080"]
 
 # Per-queue worker settings. Lambda timeout = worker_timeout_seconds (one
 # message) x worker_batch_size; visibility = Lambda timeout x multiplier.
@@ -38,7 +39,7 @@ aws_region  = "eu-central-1"
 #   api         = { memory_size = 1024, reserved_concurrency = 20 }
 #   thumbnailer = { reserved_concurrency = -1 } # unreserved
 # }
-# api_cors_allowed_origins = ["https://stash.example.com"]
+# api_cors_allowed_origins = ["http://localhost:8080"] # extra; CloudFront is always allowed
 
 # Observability. Alarms notify the alarm_topic_arn SNS topic; confirm the
 # email subscription from the message AWS sends.

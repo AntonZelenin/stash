@@ -85,15 +85,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
 # CORS for browser requests against presigned URLs: GET/HEAD for downloads
 # fetched from script, PUT for direct uploads. The presigned signature still
 # authorizes every request; CORS only lets the browser read the response.
+# The CloudFront frontend (frontend.tf) is always allowed.
 resource "aws_s3_bucket_cors_configuration" "objects" {
-  count  = length(var.s3_cors_allowed_origins) > 0 ? 1 : 0
   bucket = aws_s3_bucket.objects.id
 
   cors_rule {
-    allowed_origins = var.s3_cors_allowed_origins
+    allowed_origins = distinct(concat([local.frontend_origin], var.s3_cors_allowed_origins))
     allowed_methods = ["GET", "HEAD", "PUT"]
     allowed_headers = ["*"]
     expose_headers  = ["ETag", "Content-Type", "Content-Length", "Content-Disposition"]
     max_age_seconds = 3600
   }
+}
+
+# It used to exist only when s3_cors_allowed_origins was set.
+moved {
+  from = aws_s3_bucket_cors_configuration.objects[0]
+  to   = aws_s3_bucket_cors_configuration.objects
 }

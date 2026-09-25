@@ -3,8 +3,9 @@
 Root configuration for Stash on AWS: provider, backend, naming, tags and
 the network (`network.tf`), the database (`database.tf`), object storage
 (`storage.tf`), queues and their Lambda triggers (`messaging.tf`), the
-Lambdas (`lambda.tf`, `iam.tf`, `secrets.tf`) and the public HTTP API
-(`api_gateway.tf`), plus alarms and a dashboard (`observability.tf`).
+Lambdas (`lambda.tf`, `iam.tf`, `secrets.tf`), the public HTTP API
+(`api_gateway.tf`) and the web frontend's hosting (`frontend.tf`), plus
+alarms and a dashboard (`observability.tf`).
 
 - `local.name_prefix`: `{project}-{environment}`, e.g. `stash-prod`; prefix
   every resource name with it.
@@ -86,7 +87,8 @@ Private bucket `stash-{env}-objects-{account_id}` (output
 All public access is blocked, ACLs are disabled, objects are SSE-S3
 encrypted, and non-TLS requests are denied. Browsers only get presigned URLs.
 
-CORS is applied only when `s3_cors_allowed_origins` is set (GET, HEAD, PUT).
+CORS (GET, HEAD, PUT) allows the CloudFront frontend's origin plus any
+`s3_cors_allowed_origins`.
 The only lifecycle rule aborts incomplete multipart uploads after 7 days;
 user objects are never expired.
 
@@ -172,14 +174,61 @@ the root, so paths reach FastAPI unchanged. The public base URL is the
 `api_url` output (`https://{id}.execute-api.{region}.amazonaws.com`); no
 custom domain yet.
 
-- CORS is FastAPI's (`CORSMiddleware`, `CORS_ALLOWED_ORIGINS` from
-  `api_cors_allowed_origins`), not API Gateway's, which would answer
-  preflights itself and override the application. With the default empty
-  list, browsers on other origins are refused.
+- CORS is FastAPI's (`CORSMiddleware`, `CORS_ALLOWED_ORIGINS`), not API
+  Gateway's, which would answer preflights itself and override the
+  application. It allows the CloudFront frontend's origin (`frontend_url`)
+  plus any `api_cors_allowed_origins` (e.g. `http://localhost:8080` to run
+  `dx serve` against this API); browsers on other origins are refused.
 - API Gateway gives up after 30 s, so the API function's timeout is
   capped at 30.
 - Only API Gateway may invoke the function (`aws_lambda_permission`,
   scoped to this API).
+
+## Frontend
+
+The Dioxus web build is served from a private bucket
+`stash-{env}-frontend-{account_id}` (output `frontend_bucket_name`; public
+access blocked, SSE-S3, TLS only) through a CloudFront distribution
+(`frontend_distribution_id`) at `https://{id}.cloudfront.net` (output
+`frontend_url`); no custom domain, WAF or edge functions. PriceClass_100.
+
+- Only the distribution can read the bucket: Origin Access Control signs
+  its requests, and the bucket policy allows only `s3:GetObject` to
+  `cloudfront.amazonaws.com`, for this distribution's ARN. It can't list
+  the bucket. There is no S3 website endpoint.
+- Viewers are redirected to HTTPS.
+- Caching: `/assets/*` (every file dx emits except `index.html`, all with a
+  content hash in the name) uses the managed `CachingOptimized` policy
+  (honours the object's `Cache-Control`, compressed with gzip/brotli).
+  Everything else, i.e. `index.html`, uses `CachingDisabled`, so a new
+  deployment shows up without an invalidation.
+- SPA routing: without `s3:ListBucket`, S3 answers a missing key with 403
+  (not 404), so the distribution answers both 403 and 404 with
+  `/index.html` and status 200 (not cached), and `/login`, `/items/...`
+  work on reload. This is distribution-wide: a missing `/assets/` file gets
+  `index.html` as well. A broken OAC or bucket policy still shows an error,
+  since `/index.html` can't be fetched either.
+- Security headers: the managed `SecurityHeadersPolicy` (HSTS, `nosniff`,
+  ...).
+
+Terraform doesn't build or upload the site. A deployment:
+
+    cd frontend/packages/web
+    rm -rf ../../target/dx/web/release/web/public
+    STASH_API_BASE_URL="$(terraform -chdir=../../../infra/terraform/live output -raw api_url)" \
+      dx build --platform web --release
+    cd ../../target/dx/web/release/web/public
+    BUCKET="$(terraform -chdir=<live> output -raw frontend_bucket_name)"
+    # hashed assets first, so the new index.html never points at missing files
+    aws s3 sync assets "s3://$BUCKET/assets" \
+      --cache-control "public, max-age=31536000, immutable"
+    aws s3 cp index.html "s3://$BUCKET/index.html" --cache-control "no-cache"
+
+Old hashed assets can stay (or be pruned later). No invalidation is needed;
+only for non-hashed files outside `/assets/` would one be
+(`aws cloudfront create-invalidation --distribution-id ... --paths '/*'`).
+Objects must carry correct `Content-Type`s (the AWS CLI guesses them from
+the extension, `.wasm` → `application/wasm`), since `nosniff` is on.
 
 ## Observability
 

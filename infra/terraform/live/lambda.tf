@@ -99,7 +99,8 @@ locals {
       l.openai ? { OPENAI_API_KEY_SECRET_ARN = aws_secretsmanager_secret.openai_api_key.arn } : {},
       name == "api" ? {
         S3_PUBLIC_ENDPOINT_URL = ""
-        CORS_ALLOWED_ORIGINS   = jsonencode(var.api_cors_allowed_origins)
+        # The CloudFront frontend (frontend.tf) plus any extra origins.
+        CORS_ALLOWED_ORIGINS = jsonencode(distinct(concat([local.frontend_origin], var.api_cors_allowed_origins)))
       } : {},
       l.queue == null ? {} : {
         MAX_DELIVERY_ATTEMPTS            = tostring(var.max_delivery_attempts)

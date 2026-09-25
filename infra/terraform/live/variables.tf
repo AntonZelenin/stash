@@ -166,7 +166,7 @@ variable "max_delivery_attempts" {
 }
 
 variable "s3_cors_allowed_origins" {
-  description = "Browser origins allowed to use presigned object URLs from script, e.g. [\"https://stash.example.com\"]. Empty disables CORS."
+  description = "Extra browser origins allowed to use presigned object URLs from script, e.g. [\"http://localhost:8080\"]. The CloudFront frontend is always allowed."
   type        = list(string)
   default     = []
 
@@ -284,7 +284,7 @@ variable "alarm_thresholds" {
 }
 
 variable "api_cors_allowed_origins" {
-  description = "Browser origins allowed to call the API (CORS_ALLOWED_ORIGINS; enforced by FastAPI, not API Gateway), e.g. [\"https://stash.example.com\"]."
+  description = "Extra browser origins allowed to call the API (CORS_ALLOWED_ORIGINS; enforced by FastAPI, not API Gateway), e.g. [\"http://localhost:8080\"]. The CloudFront frontend is always allowed."
   type        = list(string)
   default     = []
 }
