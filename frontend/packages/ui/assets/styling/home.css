@@ -674,6 +674,45 @@
     color: #94a3b8;
 }
 
+/* We draw our own clear button (.stash-search-clear), so hide the
+   browser's built-in one for type="search". */
+.stash-search-input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+/* Leave room for the clear button so text doesn't run under it. */
+.stash-search-wrap:has(.stash-search-clear) .stash-search-input {
+    padding-right: 32px;
+}
+
+.stash-search-clear {
+    position: absolute;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.stash-search-clear:hover {
+    background: #e2e8f0;
+    color: #475569;
+}
+
+.stash-search-clear svg {
+    width: 14px;
+    height: 14px;
+}
+
 
 /* ---- saved items: the page's workspace/library area ---- */
 

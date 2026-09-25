@@ -728,6 +728,22 @@ pub fn Home() -> Element {
                                     value: "{search_query}",
                                     oninput: move |evt| search_query.set(evt.value()),
                                 }
+                                if !search_query().is_empty() {
+                                    button {
+                                        class: "stash-search-clear",
+                                        r#type: "button",
+                                        title: t!("search-clear"),
+                                        aria_label: t!("search-clear"),
+                                        onclick: move |_| {
+                                            search_query.set(String::new());
+                                            // Keep the cursor in the box so the user can type a new query.
+                                            document::eval(&format!(
+                                                r#"document.getElementById("{SEARCH_INPUT_ID}")?.focus();"#
+                                            ));
+                                        },
+                                        IconClose {}
+                                    }
+                                }
                             }
                             TagFilter { selected: selected_tags }
                         }

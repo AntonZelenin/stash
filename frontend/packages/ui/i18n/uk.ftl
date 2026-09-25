@@ -88,6 +88,7 @@ nav-favorites-only-off = Показати лише обране
 ## Search
 
 search-placeholder = Знайдіть за описом...
+search-clear = Очистити пошук
 search-searching = Пошук...
 search-failed = Помилка пошуку: { $error }
 search-no-results = Нічого не знайдено за запитом «{ $query }».

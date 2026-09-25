@@ -89,6 +89,7 @@ nav-favorites-only-off = Show favorites only
 ## Search
 
 search-placeholder = Search naturally...
+search-clear = Clear search
 search-searching = Searching...
 search-failed = Search failed: { $error }
 search-no-results = Nothing matches “{ $query }”.
