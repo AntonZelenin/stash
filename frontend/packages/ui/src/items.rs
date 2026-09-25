@@ -191,7 +191,6 @@ fn ItemCard(
     on_edited: EventHandler<()>,
     on_tag_click: EventHandler<Tag>,
 ) -> Element {
-    let session = use_context::<AuthSession>();
     // A saved edit's result, paired with the item it replaced: shown while
     // `item` is still that one, i.e. until the refetch `on_edited` asks for
     // arrives, so the old content doesn't flash back in the meantime.
@@ -201,22 +200,15 @@ fn ItemCard(
         Some((before, after)) if before == props_item => after,
         _ => props_item.clone(),
     };
-    // The user's latest choice, shown immediately (optimistically) while it
-    // saves; None until they toggle, i.e. show the server's value.
-    let mut favorite_override = use_signal(|| None::<bool>);
-    let mut favorite_saving = use_signal(|| false);
-    let is_favorite = favorite_override().unwrap_or(item.is_favorite);
+    let (is_favorite, toggle_favorite) =
+        use_favorite(item.id.clone(), item.is_favorite, on_favorite_changed);
     // Whether the item is open in its `ItemView`, and how.
     let mut view = use_signal(|| None::<ViewMode>);
 
     // Grid cards show the small thumbnail; the full original is only the
     // fallback while the thumbnail is still being generated. Viewing an
-    // image opens the original.
+    // image opens the original (see `OpenedItem`).
     let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
-    let full_size_url = match item.r#type.as_str() {
-        "image" => item.download_url.clone().or(item.thumbnail_url.clone()),
-        _ => None,
-    };
     let date = UploadDate::from_api(&item.created_at);
     let (kind, body) = match (item.r#type.as_str(), image_url, &item.text) {
         ("image", Some(url), caption) => (
@@ -274,31 +266,7 @@ fn ItemCard(
         _ => return rsx! {},
     };
 
-    let toggle_favorite = {
-        let item_id = item.id.clone();
-        move |_: ()| {
-            if favorite_saving() {
-                return;
-            }
-            let session = session.clone();
-            let item_id = item_id.clone();
-            let previous = is_favorite;
-            let wanted = !previous;
-            favorite_override.set(Some(wanted));
-            spawn(async move {
-                favorite_saving.set(true);
-                match session.set_favorite(item_id, wanted).await {
-                    Ok(()) => on_favorite_changed.call(()),
-                    // Didn't stick: show the real state again.
-                    Err(_) => favorite_override.set(Some(previous)),
-                }
-                favorite_saving.set(false);
-            });
-        }
-    };
-
     let item_id = item.id.clone();
-    let is_note = kind == "item-card-note";
     rsx! {
         div { class: "item-card-shell",
             div { class: "item-card {kind}",
@@ -312,8 +280,8 @@ fn ItemCard(
                     }
                     // Bottom-right: ♡ then the upload date.
                     div { class: "item-card-meta",
-                        FavoriteButton { is_favorite, on_toggle: toggle_favorite.clone() }
-                        CardDate { date: date.clone() }
+                        FavoriteButton { is_favorite, on_toggle: toggle_favorite }
+                        CardDate { date }
                     }
                 }
             }
@@ -329,58 +297,199 @@ fn ItemCard(
                 }
             }
             if let Some(mode) = view() {
-                ItemView {
-                    image_url: full_size_url,
-                    editing: mode == ViewMode::Editing,
-                    reading: is_note && mode == ViewMode::Viewing,
-                    on_close: move |_| view.set(None),
-                    on_cancel_edit: move |_| view.set(Some(ViewMode::Viewing)),
-                    // The card's controls again, above the content.
-                    div { class: "lightbox-panel-header",
-                        CardDate { date }
-                        div { class: "lightbox-actions",
-                            FavoriteButton { is_favorite, on_toggle: toggle_favorite }
-                            ItemMenu {
-                                can_edit: mode == ViewMode::Viewing,
-                                on_edit: move |_| view.set(Some(ViewMode::Editing)),
-                                on_delete: move |_| {
-                                    view.set(None);
-                                    on_delete.call(item_id.clone());
-                                },
-                            }
-                        }
-                    }
-                    match mode {
-                        ViewMode::Viewing => rsx! {
-                            ItemDetails { item: item.clone() }
-                            ItemTags {
-                                item_id: item.id.clone(),
-                                tags: item.tags.clone(),
-                                on_changed: on_tags_changed,
-                                // Close the view, so the filtered results
-                                // behind it show.
-                                on_tag_click: move |tag| {
-                                    view.set(None);
-                                    on_tag_click.call(tag);
-                                },
-                            }
-                        },
-                        ViewMode::Editing => rsx! {
-                            ItemEditor {
-                                item: item.clone(),
-                                on_tags_changed,
-                                on_cancel: move |_| view.set(Some(ViewMode::Viewing)),
-                                on_saved: move |updated: Option<ListedItem>| {
-                                    if let Some(updated) = updated {
-                                        edited.set(Some((props_item.clone(), updated)));
-                                        on_edited.call(());
-                                    }
-                                    view.set(Some(ViewMode::Viewing));
-                                },
-                            }
+                OpenedItem {
+                    item: item.clone(),
+                    mode,
+                    is_favorite,
+                    on_toggle_favorite: toggle_favorite,
+                    on_mode: move |mode| view.set(mode),
+                    on_delete: move |_| on_delete.call(item_id.clone()),
+                    on_tags_changed,
+                    on_tag_click,
+                    on_saved: move |updated: ListedItem| {
+                        edited.set(Some((props_item.clone(), updated)));
+                        on_edited.call(());
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// An item opened on its own, outside the grid ("Surprise me"), in view
+/// mode: the same view and controls as opening its card. It keeps itself
+/// up to date: after an edit or a tag change it shows the item as saved.
+///
+/// `on_close` fires when it's closed (including by deleting the item or
+/// clicking a tag); `on_delete` receives the item's id to delete,
+/// `on_changed` fires after any change to the item was saved (so the page
+/// can refetch), and `on_tag_click` receives a clicked tag.
+#[component]
+pub fn ItemViewer(
+    item: ListedItem,
+    on_close: EventHandler<()>,
+    on_delete: EventHandler<String>,
+    on_changed: EventHandler<()>,
+    on_tag_click: EventHandler<Tag>,
+) -> Element {
+    let session = use_context::<AuthSession>();
+    let mut mode = use_signal(|| ViewMode::Viewing);
+    // The item as last saved here; the prop until something changes.
+    let mut current = use_signal(|| item.clone());
+    let item = current();
+    let (is_favorite, toggle_favorite) =
+        use_favorite(item.id.clone(), item.is_favorite, on_changed);
+
+    // A tag was added or removed: fetch the item again for its tags.
+    let tags_changed = {
+        let item_id = item.id.clone();
+        move |_: ()| {
+            let session = session.clone();
+            let item_id = item_id.clone();
+            spawn(async move {
+                if let Ok(Some(updated)) = session.get_item(item_id).await {
+                    current.set(updated);
+                }
+            });
+            on_changed.call(());
+        }
+    };
+
+    rsx! {
+        OpenedItem {
+            item: item.clone(),
+            mode: mode(),
+            is_favorite,
+            on_toggle_favorite: toggle_favorite,
+            on_mode: move |next: Option<ViewMode>| match next {
+                Some(next) => mode.set(next),
+                None => on_close.call(()),
+            },
+            on_delete: {
+                let item_id = item.id.clone();
+                move |_| on_delete.call(item_id.clone())
+            },
+            on_tags_changed: tags_changed,
+            on_tag_click,
+            on_saved: move |updated: ListedItem| {
+                current.set(updated);
+                on_changed.call(());
+            },
+        }
+    }
+}
+
+/// The item's favorite state for its controls, and a toggle that saves it.
+/// The user's latest choice is shown immediately (optimistically) while it
+/// saves, and reverted if saving fails; `on_changed` fires once it's saved.
+fn use_favorite(
+    item_id: String,
+    saved: bool,
+    on_changed: EventHandler<()>,
+) -> (bool, Callback<()>) {
+    let session = use_context::<AuthSession>();
+    // None until the user toggles, i.e. show the server's value.
+    let mut favorite_override = use_signal(|| None::<bool>);
+    let mut favorite_saving = use_signal(|| false);
+    let is_favorite = favorite_override().unwrap_or(saved);
+
+    let toggle = use_callback(move |()| {
+        if favorite_saving() {
+            return;
+        }
+        let session = session.clone();
+        let item_id = item_id.clone();
+        let previous = is_favorite;
+        let wanted = !previous;
+        favorite_override.set(Some(wanted));
+        spawn(async move {
+            favorite_saving.set(true);
+            match session.set_favorite(item_id, wanted).await {
+                Ok(()) => on_changed.call(()),
+                // Didn't stick: show the real state again.
+                Err(_) => favorite_override.set(Some(previous)),
+            }
+            favorite_saving.set(false);
+        });
+    });
+    (is_favorite, toggle)
+}
+
+/// An item open in its `ItemView`, in `mode`: its date, favorite button
+/// and menu above its full content and tags (viewing), or its edit form
+/// (editing).
+///
+/// `on_mode` asks to switch mode, or to close (None). `on_delete` asks to
+/// delete the item (the view closes first), `on_saved` receives the item
+/// as saved by an edit, and `on_tag_click` a clicked tag (the view closes
+/// first, so the filtered results behind it show).
+#[component]
+fn OpenedItem(
+    item: ListedItem,
+    mode: ViewMode,
+    is_favorite: bool,
+    on_toggle_favorite: EventHandler<()>,
+    on_mode: EventHandler<Option<ViewMode>>,
+    on_delete: EventHandler<()>,
+    on_tags_changed: EventHandler<()>,
+    on_tag_click: EventHandler<Tag>,
+    on_saved: EventHandler<ListedItem>,
+) -> Element {
+    // The view shows the full original image, not the thumbnail.
+    let full_size_url = match item.r#type.as_str() {
+        "image" => item.download_url.clone().or(item.thumbnail_url.clone()),
+        _ => None,
+    };
+    let is_note = !matches!(item.r#type.as_str(), "image" | "link" | "file");
+
+    rsx! {
+        ItemView {
+            image_url: full_size_url,
+            editing: mode == ViewMode::Editing,
+            reading: is_note && mode == ViewMode::Viewing,
+            on_close: move |_| on_mode.call(None),
+            on_cancel_edit: move |_| on_mode.call(Some(ViewMode::Viewing)),
+            // The card's controls again, above the content.
+            div { class: "lightbox-panel-header",
+                CardDate { date: UploadDate::from_api(&item.created_at) }
+                div { class: "lightbox-actions",
+                    FavoriteButton { is_favorite, on_toggle: on_toggle_favorite }
+                    ItemMenu {
+                        can_edit: mode == ViewMode::Viewing,
+                        on_edit: move |_| on_mode.call(Some(ViewMode::Editing)),
+                        on_delete: move |_| {
+                            on_mode.call(None);
+                            on_delete.call(());
                         },
                     }
                 }
+            }
+            match mode {
+                ViewMode::Viewing => rsx! {
+                    ItemDetails { item: item.clone() }
+                    ItemTags {
+                        item_id: item.id.clone(),
+                        tags: item.tags.clone(),
+                        on_changed: on_tags_changed,
+                        on_tag_click: move |tag| {
+                            on_mode.call(None);
+                            on_tag_click.call(tag);
+                        },
+                    }
+                },
+                ViewMode::Editing => rsx! {
+                    ItemEditor {
+                        item: item.clone(),
+                        on_tags_changed,
+                        on_cancel: move |_| on_mode.call(Some(ViewMode::Viewing)),
+                        on_saved: move |updated: Option<ListedItem>| {
+                            if let Some(updated) = updated {
+                                on_saved.call(updated);
+                            }
+                            on_mode.call(Some(ViewMode::Viewing));
+                        },
+                    }
+                },
             }
         }
     }

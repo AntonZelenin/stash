@@ -632,7 +632,66 @@ paths:
         "422":
           description: No ids, more than 100, or an invalid one
 
+  /items/random:
+    get:
+      summary: Get a random item
+      description: >-
+        One of the current user's items, picked at random (for "Surprise
+        me"). Consecutive calls may return the same item.
+      operationId: getRandomItem
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      responses:
+        "200":
+          description: A random item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListedItem"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: The user has no items
+
   /items/{item_id}:
+    get:
+      summary: Get an item
+      operationId: getItem
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "200":
+          description: The item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListedItem"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+        "422":
+          description: Invalid item id
+
     delete:
       summary: Delete an item
       description: >-

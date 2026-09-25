@@ -324,6 +324,22 @@ class ItemService:
         )
         return await self._with_download_urls(rows)
 
+    async def get_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> ListedItem:
+        row = await self._repo.get(item_id=item_id, user_id=user_id)
+        if row is None:
+            raise ItemNotFoundError()
+        [listed] = await self._with_download_urls([row])
+        return listed
+
+    async def random_item(self, *, user_id: uuid.UUID) -> ListedItem:
+        """Any one of the user's items, for "Surprise me". Raises
+        `ItemNotFoundError` if they have none."""
+        row = await self._repo.get_random(user_id=user_id)
+        if row is None:
+            raise ItemNotFoundError()
+        [listed] = await self._with_download_urls([row])
+        return listed
+
     async def set_favorite(self, *, user_id: uuid.UUID, item_id: uuid.UUID, is_favorite: bool) -> None:
         """Idempotent: marking a favorite as favorite again is a no-op."""
         if not await self._repo.set_favorite(item_id=item_id, user_id=user_id, is_favorite=is_favorite):

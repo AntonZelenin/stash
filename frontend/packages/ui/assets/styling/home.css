@@ -114,7 +114,12 @@
     transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
 
-.top-bar-surprise:hover {
+.top-bar-surprise:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.top-bar-surprise:hover:not(:disabled) {
     border-color: #e9d5ff;
     background: #faf5ff;
     color: var(--violet);

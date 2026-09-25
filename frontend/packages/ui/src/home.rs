@@ -11,7 +11,7 @@ use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
-use crate::items::{ItemGrid, TagPicker, TextTypeSelect, suggested_tags};
+use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_tags};
 use crate::routes::Route;
 use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
@@ -268,6 +268,23 @@ pub fn Home() -> Element {
         }
     });
 
+    // "Surprise me": one of the user's items, picked at random by the
+    // server and open in its own view until closed.
+    let mut surprise = use_signal(|| None::<ListedItem>);
+    let surprise_me = use_callback({
+        let session = session.clone();
+        move |()| {
+            let session = session.clone();
+            spawn(async move {
+                match session.random_item().await {
+                    Ok(Some(item)) => surprise.set(Some(item)),
+                    Ok(None) => status.set(Some("Nothing saved yet to surprise you with.".into())),
+                    Err(err) => status.set(Some(format!("Could not pick a random item: {err}"))),
+                }
+            });
+        }
+    });
+
     // A `Callback` (Copy) so both the form's submit and the text area's
     // Enter key can call it.
     let submit = {
@@ -463,7 +480,22 @@ pub fn Home() -> Element {
             ondragover: move |evt| evt.prevent_default(),
             ondrop: handle_drop,
 
-            TopBar {}
+            TopBar {
+                // Unknown until the counts load: enabled meanwhile.
+                can_surprise: counts.is_none_or(|counts| counts.types.total() > 0),
+                on_surprise: surprise_me,
+            }
+
+            if let Some(item) = surprise() {
+                ItemViewer {
+                    key: "{item.id}",
+                    item,
+                    on_close: move |_| surprise.set(None),
+                    on_delete: delete_item,
+                    on_changed: refresh_items,
+                    on_tag_click: filter_by_tag,
+                }
+            }
 
             div { class: "home-hero",
                 h1 { class: "home-title", "Save anything. Find anytime." }
@@ -784,8 +816,10 @@ fn item_results(
     }
 }
 
+/// The page's header. "Surprise me" calls `on_surprise`, and is disabled
+/// unless `can_surprise` (the user has items).
 #[component]
-fn TopBar() -> Element {
+fn TopBar(can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
     let session = use_context::<AuthSession>();
     let mut menu_open = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
@@ -811,12 +845,12 @@ fn TopBar() -> Element {
             }
 
             div { class: "top-bar-actions",
-                // Not wired up yet: needs a random-item endpoint and a
-                // place to show the item.
                 button {
                     class: "top-bar-surprise",
                     r#type: "button",
-                    title: "Inspire me with a random stash item",
+                    disabled: !can_surprise,
+                    title: if can_surprise { "Inspire me with a random stash item" } else { "Save something first" },
+                    onclick: move |_| on_surprise.call(()),
                     span { class: "top-bar-surprise-star", "✦" }
                     span { "Surprise me" }
                 }

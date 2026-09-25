@@ -286,6 +286,15 @@ class ItemRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_random(self, *, user_id: uuid.UUID) -> Item | None:
+        """One of the user's items, picked at random, loaded for a response;
+        None if they have none. Sorts all of the user's items, which is
+        fine at a personal stash's size."""
+        result = await self._session.execute(
+            select(Item).options(*_LISTED_ITEM_LOADS).where(Item.user_id == user_id).order_by(func.random()).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def count_by_type(self, *, user_id: uuid.UUID) -> tuple[dict[ItemType, int], int]:
         """How many items the user has of each type (types with none are
         left out), and how many are favorites."""

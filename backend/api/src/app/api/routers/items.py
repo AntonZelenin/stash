@@ -195,6 +195,44 @@ async def count_items(
     )
 
 
+# Before `/items/{item_id}`, which would otherwise match "random".
+@router.get(
+    "/items/random",
+    status_code=status.HTTP_200_OK,
+    response_model=ListedItem,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "The user has no items"}},
+)
+async def random_item(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> ListedItem:
+    try:
+        listed = await ItemService(session, storage).random_item(user_id=current_user.id)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No items yet") from None
+    return to_listed_item(listed)
+
+
+@router.get(
+    "/items/{item_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ListedItem,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
+)
+async def get_item(
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> ListedItem:
+    try:
+        listed = await ItemService(session, storage).get_item(user_id=current_user.id, item_id=item_id)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    return to_listed_item(listed)
+
+
 @router.get(
     "/items",
     status_code=status.HTTP_200_OK,

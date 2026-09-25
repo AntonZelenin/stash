@@ -308,6 +308,25 @@ impl AuthSession {
         .await
     }
 
+    pub async fn get_item(&self, item_id: String) -> Result<Option<ListedItem>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            async move { client.get_item(&access_token, &item_id).await }
+        })
+        .await
+    }
+
+    pub async fn random_item(&self) -> Result<Option<ListedItem>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            async move { client.random_item(&access_token).await }
+        })
+        .await
+    }
+
     pub async fn set_favorite(&self, item_id: String, favorite: bool) -> Result<(), ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
