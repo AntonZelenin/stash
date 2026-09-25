@@ -24,3 +24,30 @@ You can start your web app with the following command:
 ```bash
 dx serve
 ```
+
+## Configuration
+
+Settings are read from the environment at **build time** and compiled into
+the WASM binary (a browser app has no runtime environment). All of them are
+in [`src/config.rs`](src/config.rs):
+
+| Variable             | Debug builds (`dx serve`)          | Release builds (`dx build --release`) |
+|----------------------|------------------------------------|---------------------------------------|
+| `STASH_API_BASE_URL` | optional, default `http://localhost:8000` | **required**; the build fails without it |
+
+The value is the backend API's base URL: `http://` or `https://`, no
+trailing slash (e.g. Terraform's `api_url` output). Invalid values fail the
+build too. Changing it triggers a rebuild.
+
+### Production build
+
+From `frontend/packages/web`:
+
+```bash
+STASH_API_BASE_URL="$(terraform -chdir=../../../infra/terraform/live output -raw api_url)" \
+  dx build --platform web --release
+```
+
+The static site is `frontend/target/dx/web/release/web/public/`. dx doesn't
+clear that directory between builds, so remove it first when its contents
+are deployed as a whole.

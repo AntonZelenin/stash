@@ -4,15 +4,14 @@ use api::ApiClient;
 use dioxus::prelude::*;
 use ui::{AuthSession, Route};
 
+mod config;
+use config::API_BASE_URL;
+
 mod token_store;
 use token_store::LocalStorageTokenStore;
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
-
-/// The backend API's base URL. Assumes the local dev/docker-compose setup
-/// (`docker-compose.yml`'s `API_PORT`, default 8000).
-const API_BASE_URL: &str = "http://localhost:8000";
 
 fn main() {
     dioxus::launch(App);

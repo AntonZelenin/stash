@@ -704,6 +704,9 @@ Component-specific `CLAUDE.md` files may be added inside individual directories.
 
 - Built with Rust and Dioxus.
 - MVP targets web only.
-- Communicates with the backend through the API.
+- Communicates with the backend through the API. The web app is a static
+  client-side WASM build; the API base URL is compiled in from
+  `STASH_API_BASE_URL` (required for release builds; `dx serve` defaults to
+  `http://localhost:8000`), see `frontend/packages/web/README.md`.
 - Keep the architecture compatible with future Dioxus desktop/mobile clients where reasonable.
 - Keep business logic on the backend.
