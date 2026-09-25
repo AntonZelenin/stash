@@ -223,37 +223,62 @@
     padding: 12px 14px 0 24px;
 }
 
-/* A button styled like the attach label next to it. */
-button.home-input-attach {
-    padding: 0;
-    border: none;
-    background: none;
-    font: inherit;
+/* "+ Add tag" (styled in tags.css): the 24px pill centered on the 44px send
+   button, like the attach button. */
+.home-input-row .home-input-tag-add {
+    margin-bottom: 10px;
 }
 
-button.home-input-attach:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
+/* Buttons stay on the bottom line as the text grows. A single
+   line is 44px (the send button's height) + 8px above and below = 60px. */
 .home-input-row {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 12px;
-    height: 60px;
-    padding: 0 8px 0 24px;
+    padding: 8px 8px 8px 24px;
+}
+
+/* Keeps the 40px attach buttons centered on the 44px send button. */
+.home-input-row .home-input-attach {
+    margin-bottom: 2px;
+}
+
+/* The text area and its hidden mirror stacked in one grid cell: the
+   mirror's wrapped text sets the cell's height and the text area stretches
+   to fill it. */
+.home-input-grow {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+}
+
+.home-input,
+.home-input-mirror {
+    grid-area: 1 / 1;
+    box-sizing: border-box;
+    min-width: 0;
+    max-height: 240px;
+    margin: 0;
+    padding: 11px 0;
+    border: none;
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 22px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .home-input {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    border: none;
+    overflow-y: auto;
+    resize: none;
     outline: none;
     background: transparent;
-    font-family: inherit;
-    font-size: 15px;
     color: var(--text-primary);
+}
+
+.home-input-mirror {
+    overflow: hidden;
+    visibility: hidden;
 }
 
 .home-input::placeholder {

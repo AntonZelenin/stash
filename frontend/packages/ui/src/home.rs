@@ -10,7 +10,7 @@ use crate::AuthSession;
 use crate::filters::{FavoritesToggle, TagFilter, TypeDropdown, TypeFilter};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconMenu, IconPaperclip, IconSearch, IconStash,
-    IconTag, IconUser,
+    IconUser,
 };
 use crate::items::{ItemGrid, TagPicker};
 use crate::routes::Route;
@@ -225,9 +225,11 @@ pub fn Home() -> Element {
         }
     });
 
-    let mut submit = {
+    // A `Callback` (Copy) so both the form's submit and the text area's
+    // Enter key can call it.
+    let submit = {
         let session = session.clone();
-        move || {
+        use_callback(move |()| {
             if is_submitting() {
                 return;
             }
@@ -312,7 +314,7 @@ pub fn Home() -> Element {
 
                 is_submitting.set(false);
             });
-        }
+        })
     };
 
     let stage_picked_files = move |evt: FormEvent| async move {
@@ -390,7 +392,7 @@ pub fn Home() -> Element {
                     class: "home-input-wrap",
                     onsubmit: move |evt| {
                         evt.prevent_default();
-                        submit();
+                        submit.call(());
                     },
                     div { class: "home-input-inner",
                         // Staged images render inside the same card as the
@@ -471,11 +473,33 @@ pub fn Home() -> Element {
                             }
                         }
                         div { class: "home-input-row",
-                            input {
-                                class: "home-input",
-                                placeholder: "Paste a link, write a note, or anything...",
-                                value: "{note}",
-                                oninput: move |evt| note.set(evt.value()),
+                            // Grows with its text up to a max height, then
+                            // scrolls: a hidden mirror holds the same text,
+                            // and the grid cell both share takes the
+                            // mirror's wrapped height (a textarea can't
+                            // size itself to its content in every browser).
+                            div { class: "home-input-grow",
+                                textarea {
+                                    class: "home-input",
+                                    rows: 1,
+                                    placeholder: "Paste a link, write a note, or anything...",
+                                    value: "{note}",
+                                    oninput: move |evt| note.set(evt.value()),
+                                    // Enter sends; Shift+Enter is a new line.
+                                    // Not while an IME is composing, where
+                                    // Enter confirms the composition.
+                                    onkeydown: move |evt| {
+                                        if evt.key() == Key::Enter && !evt.modifiers().shift()
+                                            && !evt.is_composing()
+                                        {
+                                            evt.prevent_default();
+                                            submit.call(());
+                                        }
+                                    },
+                                }
+                                // Trailing space: a final newline would
+                                // otherwise add no height.
+                                div { class: "home-input-mirror", aria_hidden: "true", "{note} " }
                             }
                             input {
                                 r#type: "file",
@@ -489,12 +513,11 @@ pub fn Home() -> Element {
                                 onchange: stage_picked_files,
                             }
                             button {
-                                class: "home-input-attach",
+                                class: "tag-add home-input-tag-add",
                                 r#type: "button",
-                                title: "Add tags",
-                                disabled: is_submitting(),
+                                disabled: is_submitting() || picking_tag(),
                                 onclick: move |_| picking_tag.set(true),
-                                IconTag {}
+                                "+ Add tag"
                             }
                             label {
                                 class: "home-input-attach",

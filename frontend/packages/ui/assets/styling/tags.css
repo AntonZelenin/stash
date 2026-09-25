@@ -53,6 +53,34 @@
     height: 12px;
 }
 
+/* ---- "+ Add tag" pill: opens the tag picker, on cards and in the
+   capture box ---- */
+
+.tag-add {
+    flex-shrink: 0;
+    height: 24px;
+    padding: 0 10px;
+    border: 1px dashed #d4d8e0;
+    border-radius: 999px;
+    background: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.tag-add:hover:not(:disabled) {
+    border-color: #a9b1f5;
+    color: #3f4bd1;
+}
+
+.tag-add:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 /* ---- tag picker ("Add tag" on cards and in the capture box) ---- */
 
 .tag-picker {

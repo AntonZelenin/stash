@@ -63,23 +63,7 @@
     min-width: 0;
 }
 
-.tag-add {
-    height: 24px;
-    padding: 0 10px;
-    border: 1px dashed #d4d8e0;
-    border-radius: 999px;
-    background: none;
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-}
-
-.tag-add:hover {
-    border-color: #a9b1f5;
-    color: #3f4bd1;
-}
+/* The "+ Add tag" pill itself is in tags.css. */
 
 /* Hidden until the card is hovered (always visible on touch screens and
    when focused), so cards without tags stay uncluttered. */
@@ -264,13 +248,12 @@
     font-size: 14px;
     line-height: 1.5;
     overflow-wrap: anywhere;
-    /* Past this many lines the card stops growing and truncates, so one
-       long note can't dominate a column. */
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 12;
-    line-clamp: 12;
-    overflow: hidden;
+    white-space: pre-wrap;
+    /* Past 12 lines (1.5em each) the card stops growing and the rest
+       scrolls, so one long note can't dominate a column. */
+    max-height: 18em;
+    overflow-y: auto;
+    scrollbar-width: thin;
 }
 
 /* ---- image: natural aspect ratio, extremes cropped ---- */
@@ -313,11 +296,11 @@
     font-size: 14px;
     line-height: 1.5;
     overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 6;
-    line-clamp: 6;
-    overflow: hidden;
+    white-space: pre-wrap;
+    /* 6 lines, then scrolls. */
+    max-height: 9em;
+    overflow-y: auto;
+    scrollbar-width: thin;
 }
 
 /* ---- link: compact, one row ---- */
@@ -389,16 +372,17 @@
 }
 
 .item-card-file-caption {
-    display: -webkit-box;
+    display: block;
     margin-top: 10px;
     color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
     overflow-wrap: anywhere;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 6;
-    line-clamp: 6;
-    overflow: hidden;
+    white-space: pre-wrap;
+    /* 6 lines, then scrolls. */
+    max-height: 9em;
+    overflow-y: auto;
+    scrollbar-width: thin;
 }
 
 /* The clickable part (the footer isn't). */
