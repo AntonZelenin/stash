@@ -1,0 +1,29 @@
+[project]
+name = "stash-thumbnailer"
+version = "0.1.0"
+description = "Stash thumbnailer worker (THUMBNAIL_JOBS)"
+requires-python = ">=3.14"
+# Needs `stash-shared` (../../shared) and `stash-worker-core` (../core)
+# installed alongside, by path (no index/workspace); see the Dockerfile.
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "pillow>=11.0",
+]
+
+[project.optional-dependencies]
+# Includes what `stash_worker_core.testing` (the shared fakes) needs.
+test = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "aiosqlite>=0.20",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/thumbnailer"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

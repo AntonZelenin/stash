@@ -1,6 +1,6 @@
 # Shared
 
-Code shared between `api` and `content_analyzer`.
+Code shared between `api` and the workers (`workers/`).
 
 Currently holds `stash_shared.queue`: the `JobQueue` (at-least-once:
 receive / ack / retry_later) and `DeadLetterQueue` interfaces and the
@@ -54,7 +54,7 @@ in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before
   installing the service itself.
 - In Docker: each service's Dockerfile `COPY`s `shared/` and `pip install`s
-  it as a separate step (see `api/Dockerfile`, `content_analyzer/Dockerfile`).
+  it as a separate step (see `api/Dockerfile`, `workers/*/Dockerfile`).
 
 Keep this package free of framework-specific code (no FastAPI, no ORM
 models; SQLAlchemy Core/plain SQL is fine) so both services can depend on

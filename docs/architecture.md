@@ -33,7 +33,24 @@ Responsible for:
 
 ### Processing Worker
 
-Processes saved content asynchronously. Lives in `backend/content_analyzer/`.
+Processes saved content asynchronously. Lives in `backend/workers/`.
+
+Package layout: each worker is its own package, with its own
+`pyproject.toml`, dependencies, settings, Dockerfile and tests:
+`thumbnailer`, `image_analyzer`, `document_analyzer`, `embedding_worker`
+(each in `backend/workers/<worker>/`, named like its compose service). What
+they all build on (the `Worker`, the status/completion SQL, S3 store,
+OpenAI client setup, settings base, both runtimes, test fakes) is a library
+package, `stash-worker-core` (`backend/workers/core/`, import
+`stash_worker_core`). Workers depend on the core and `stash-shared`, never
+on each other: an SQL statement or helper only one worker needs lives in
+that worker. Each image contains only its worker, the core and
+`stash-shared`, so a change to one worker rebuilds and redeploys only that
+worker; a change to the core or `stash-shared` rebuilds them all. Workers
+still interact at runtime through queue payloads (`ProcessingJob`) and the
+database schema, so a change there must stay compatible with both producer
+and consumer. The core is kept separate from `stash-shared` because the API
+depends on `stash-shared` and has no use for worker code.
 
 Responsibilities:
 - Generate image descriptions.
@@ -43,7 +60,8 @@ Responsibilities:
 
 Current implementation (MVP): only images are processed (text/link items are
 stored already `completed`). Images go through a two-stage pipeline, each
-stage a separate worker service built from this same package:
+stage a separate worker with its own package (see
+"Package layout" above):
 
 1. Thumbnail worker (`thumbnailer` service, consumes `thumbnail_jobs`):
    downloads the original, makes a WebP thumbnail with Pillow (max 1024px
@@ -52,7 +70,7 @@ stage a separate worker service built from this same package:
    `item_images.thumbnail_key` (only if the item is still that user's),
    and only then publishes to `content_analysis_jobs`, pointing that job at
    the thumbnail. Undecodable uploads fail here.
-2. Content-analyzer worker (`content_analyzer` service, consumes
+2. Image-analyzer worker (`image_analyzer` service, consumes
    `content_analysis_jobs`): sends the thumbnail — not the original — to the
    OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), stores
    the text in `item_descriptions` and completes the item. Tag and embedding
@@ -68,11 +86,11 @@ causes duplicate or incorrect state. Each delivery is processed by
 
 - Locally: Valkey → `Worker.run_forever` (a long-running consumer loop) →
   `process_message`.
-- AWS Lambda: SQS → event source mapping → a handler in
-  `content_analyzer.aws_lambda` (one per queue worker) → `process_message`
-  for each record of the batch, in order. See "Lambda runtime" under Queue.
+- AWS Lambda: SQS → event source mapping → the stage's
+  `<worker>.aws_lambda.handler` → `process_message` for each
+  record of the batch, in order. See "Lambda runtime" under Queue.
 
-Each stage's worker is built once, in `content_analyzer.stages`, for both.
+Each stage's worker is built once, in its `stage.build_worker`, for both.
 
 Failure handling:
 - Each attempt is one queue delivery; nothing is retried in-process, and
@@ -224,7 +242,7 @@ redeliveries of jobs whose item has already failed:
   once past `MAX_DELIVERY_ATTEMPTS`) until SQS moves it.
 
 Lambda runtime (SQS only). Each queue worker has a Lambda handler,
-`content_analyzer.aws_lambda.{thumbnail,content_analysis,document_analysis,embedding}_handler`,
+`{thumbnailer,image_analyzer,document_analyzer,embedding_worker}.aws_lambda.handler`,
 for a function whose SQS event source mapping has `ReportBatchItemFailures`
 on. The handler runs the same worker as locally, settling deliveries on a
 `stash_shared.queue.sqs_lambda.LambdaSqsQueue` instead of the queue itself,
@@ -273,7 +291,7 @@ nothing prunes them yet).
 Queues (on Valkey: stream key `stash:<name>`, one consumer group each, dead
 letters in `stash:<name>:dead-letter`):
 - `thumbnail_jobs`: API → thumbnail worker.
-- `content_analysis_jobs`: thumbnail worker → content-analyzer worker.
+- `content_analysis_jobs`: thumbnail worker → image-analyzer worker.
 - `document_analysis_jobs`: API → document-analyzer worker.
 - `embedding_jobs`: API, content analyzer, document analyzer → embedding
   worker.
@@ -338,7 +356,7 @@ Distributed tracing uses OpenTelemetry, set up by `stash_shared.tracing`.
 Each process calls `configure_tracing(service=..., environment=...,
 enabled=TRACING_ENABLED, otlp_endpoint=TRACING_OTLP_ENDPOINT)` once, next
 to `configure_logging` (the API in `app.main`, the workers via
-`content_analyzer.runtime.configure_observability`). Spans are exported
+`stash_worker_core.runtime.configure_observability`). Spans are exported
 over OTLP/HTTP to whatever collector `TRACING_OTLP_ENDPOINT` names —
 Jaeger locally. With tracing off nothing is set up and every span is a
 no-op, so application code never checks whether it's enabled. A service's
@@ -367,7 +385,7 @@ one trace:
       └ publish thumbnail_jobs
           └ process thumbnail_jobs (thumbnailer)
               └ publish content_analysis_jobs
-                  └ process content_analysis_jobs (content_analyzer)
+                  └ process content_analysis_jobs (image_analyzer)
                       └ publish embedding_jobs
                           └ process embedding_jobs (embedding_worker)
 
@@ -474,7 +492,7 @@ The complete application runs locally using Docker Compose.
 
 Expected services:
 - API
-- Workers (thumbnailer, content analyzer)
+- Workers (thumbnailer, image analyzer, document analyzer, embedding worker)
 - PostgreSQL
 - MinIO
 - Queue
@@ -514,7 +532,7 @@ Client → API → Object Storage (`users/{user_id}/files/{item_id}[.{ext}]`)
 Only `analyzable` formats are enqueued (item created `pending`); anything
 else is created `completed` with no processing. The document analyzer
 (`document_analyzer` service) extracts the file's plain text with a
-per-format parser (`content_analyzer.documents.parsers`), caps what it sends
+per-format parser (`document_analyzer.parsers`), caps what it sends
 to OpenAI at `DOCUMENT_ANALYSIS_MAX_CHARS` characters — longer documents are
 represented by their beginning plus evenly spaced samples — and stores a
 short description of what the document is and is about (not a summary) in
@@ -651,10 +669,13 @@ stash/
     │   │   ├── Dockerfile
     │   │   └── src/
     │   │
-    │   ├── content_analyzer/
+    │   ├── workers/
     │   │   ├── CLAUDE.md
-    │   │   ├── Dockerfile
-    │   │   └── src/
+    │   │   ├── core/              (stash-worker-core, the shared library)
+    │   │   ├── thumbnailer/       ─┐
+    │   │   ├── image_analyzer/     │ one package per worker:
+    │   │   ├── document_analyzer/  │ pyproject.toml, Dockerfile,
+    │   │   └── embedding_worker/  ─┘ src/, tests/
     │   │
     │   └── shared/
     │       └── src/

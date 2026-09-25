@@ -120,13 +120,12 @@ services:
         condition: service_completed_successfully
 
   # First image-processing stage: makes thumbnails and hands images on to
-  # content_analyzer. Same image/package as content_analyzer (they share the
-  # worker, storage and DB code), different entrypoint, scaled separately.
+  # image_analyzer. Its own package and image (backend/workers/thumbnailer),
+  # built on the shared worker core, scaled separately.
   thumbnailer:
     build:
       context: ./backend
-      dockerfile: content_analyzer/Dockerfile
-    command: ["python", "-m", "content_analyzer.thumbnail_main"]
+      dockerfile: workers/thumbnailer/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
@@ -153,13 +152,11 @@ services:
         condition: service_completed_successfully
 
   # Describes analyzable uploaded files (documents, books, text) via OpenAI.
-  # Same image/package as content_analyzer, different entrypoint, like the
-  # thumbnailer.
+  # Its own package and image, built on the shared worker core.
   document_analyzer:
     build:
       context: ./backend
-      dockerfile: content_analyzer/Dockerfile
-    command: ["python", "-m", "content_analyzer.document_main"]
+      dockerfile: workers/document_analyzer/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
@@ -189,12 +186,11 @@ services:
         condition: service_completed_successfully
 
   # Turns items' searchable text into embeddings for semantic search.
-  # Same image/package as content_analyzer, different entrypoint.
+  # Its own package and image, built on the shared worker core.
   embedding_worker:
     build:
       context: ./backend
-      dockerfile: content_analyzer/Dockerfile
-    command: ["python", "-m", "content_analyzer.embedding_main"]
+      dockerfile: workers/embedding_worker/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
@@ -216,10 +212,11 @@ services:
       jaeger:
         condition: service_started
 
-  content_analyzer:
+  # Last image-processing stage: describes thumbnails via OpenAI.
+  image_analyzer:
     build:
       context: ./backend
-      dockerfile: content_analyzer/Dockerfile
+      dockerfile: workers/image_analyzer/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}

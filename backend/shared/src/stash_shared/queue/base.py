@@ -8,7 +8,7 @@ from uuid import UUID
 
 # The image-processing pipeline's queues, in order:
 #   API -> THUMBNAIL_JOBS -> thumbnail worker
-#       -> CONTENT_ANALYSIS_JOBS -> content-analyzer worker
+#       -> CONTENT_ANALYSIS_JOBS -> image-analyzer worker
 # Both carry a `ProcessingJob`; its `image` points at whatever that stage
 # should read (the original upload, then the thumbnail).
 THUMBNAIL_JOBS = "thumbnail_jobs"
@@ -62,7 +62,7 @@ class FileRef:
 @dataclass(frozen=True)
 class ProcessingJob:
     """A unit of work published after an item is persisted, telling the
-    content-analyzer worker what to process.
+    processing workers what to process.
 
     Carries only enough to look the item up (plus, for images and files,
     where to fetch the bytes from). The worker treats Postgres, not this
@@ -129,7 +129,7 @@ class RetryMode(str, Enum):
 
 class JobQueue(ABC):
     """At-least-once queue of item-processing jobs between the API
-    (producer) and the content-analyzer worker (consumer). Callers depend
+    (producer) and the processing workers (consumers). Callers depend
     only on this interface so the concrete backend (currently Valkey
     Streams) can be replaced — e.g. with SQS — without touching them.
 

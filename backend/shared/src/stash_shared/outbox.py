@@ -13,7 +13,7 @@ published once its queue accepted it.
 Delivery is at-least-once, never exactly-once: if the process dies between
 a successful publish and marking the event published, the next flush
 publishes it again. Every consumer is idempotent for that reason (see
-`content_analyzer.worker.Worker`).
+`stash_worker_core.worker.Worker`).
 
 Nothing here knows which queue backend is in use: events name a queue
 (`stash_shared.queue.base`) and carry the backend-neutral job encoding
