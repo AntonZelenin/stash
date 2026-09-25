@@ -38,6 +38,8 @@ async def test_create_text_item_classifies_bare_url_as_link(client: AsyncClient,
         "just a note",
         "check this out: https://example.com",
         "https://example.com is a great site",
+        "https://example.com https://example.org",
+        "(see https://example.com).",
         "ftp://example.com",
         "javascript:alert(1)",
         "example.com",
@@ -54,6 +56,52 @@ async def test_create_text_item_classifies_everything_else_as_text(
     assert response.status_code == 202
     item = await session.get(Item, UUID(response.json()["id"]))
     assert item.type == ItemType.text
+
+
+@pytest.mark.parametrize("chosen", ["text", "link"])
+async def test_create_text_item_with_mixed_text_gets_the_chosen_type(
+    client: AsyncClient, session: AsyncSession, chosen: str
+):
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/text",
+        json={"text": "read later: https://example.com", "type": chosen},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    item = await session.get(Item, UUID(response.json()["id"]))
+    assert item.type == ItemType(chosen)
+
+
+@pytest.mark.parametrize(
+    ("text", "chosen", "expected"),
+    [("https://example.com", "text", ItemType.link), ("a note", "link", ItemType.text)],
+)
+async def test_create_text_item_ignores_the_chosen_type_when_the_text_decides(
+    client: AsyncClient, session: AsyncSession, text: str, chosen: str, expected: ItemType
+):
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/text", json={"text": text, "type": chosen}, headers={"Authorization": f"Bearer {token}"}
+    )
+
+    item = await session.get(Item, UUID(response.json()["id"]))
+    assert item.type == expected
+
+
+async def test_create_text_item_rejects_other_types(client: AsyncClient):
+    _, token = await register_and_login(client)
+
+    response = await client.post(
+        "/items/text",
+        json={"text": "x https://example.com", "type": "image"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
 
 
 async def test_create_text_item_link_type_is_returned_by_list_items(client: AsyncClient):

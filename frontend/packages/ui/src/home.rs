@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use api::{ItemCounts, ItemQuery, ListedItem, Tag};
+use api::{ItemCounts, ItemQuery, ListedItem, Tag, TextItemType};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
@@ -11,10 +11,11 @@ use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
-use crate::items::{ItemGrid, TagPicker, suggested_tags};
+use crate::items::{ItemGrid, TagPicker, TextTypeSelect, suggested_tags};
 use crate::mock;
 use crate::routes::Route;
 use crate::settings::AccountSettings;
+use crate::text_kind::{TextKind, text_kind};
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// The search box, focused by the Ctrl+F / ⌘F shortcut.
@@ -191,6 +192,10 @@ pub fn Home() -> Element {
     });
 
     let mut note = use_signal(String::new);
+    // The type chosen for a note mixing text and URLs (see `text_kind`);
+    // a bare URL is always a link and text without URLs always a note, so
+    // the choice is only offered, and sent, for mixed text.
+    let mut note_type = use_signal(|| TextItemType::Text);
     let mut is_submitting = use_signal(|| false);
     let mut status = use_signal(|| None::<String>);
     // Counts nested dragenter/dragleave pairs rather than a bool: the
@@ -331,12 +336,15 @@ pub fn Home() -> Element {
                 is_submitting.set(true);
                 status.set(None);
 
+                let text = note().trim().to_string();
+                let chosen_type = (text_kind(&text) == TextKind::Mixed).then_some(note_type());
                 match session
-                    .create_text_item(note().trim(), pending_tags())
+                    .create_text_item(&text, pending_tags(), chosen_type)
                     .await
                 {
                     Ok(_) => {
                         note.set(String::new());
+                        note_type.set(TextItemType::Text);
                         pending_tags.set(Vec::new());
                         saved_items.restart();
                         search_results.restart();
@@ -453,7 +461,7 @@ pub fn Home() -> Element {
             div { class: "home-hero",
                 h1 { class: "home-title", "Save anything. Find anytime." }
                 p { class: "home-tagline",
-                    "Capture notes, web clippings, audio snippets, files, or visual inspirations in one place."
+                    "Save notes, links, images, videos, audio, and files — all in one place."
                 }
 
                 if drag_depth() > 0 {
@@ -583,6 +591,16 @@ pub fn Home() -> Element {
                                 multiple: true,
                                 disabled: is_submitting(),
                                 onchange: stage_picked_files,
+                            }
+                            // With files staged the text is their caption,
+                            // which has no type.
+                            if pending_files().is_empty() && text_kind(&note()) == TextKind::Mixed {
+                                TextTypeSelect {
+                                    class: "home-input-type",
+                                    value: note_type(),
+                                    disabled: is_submitting(),
+                                    on_change: move |value| note_type.set(value),
+                                }
                             }
                             button {
                                 class: "home-input-tag-add",

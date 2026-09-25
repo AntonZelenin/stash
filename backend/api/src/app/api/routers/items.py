@@ -19,6 +19,7 @@ from app.api.schemas.items import (
     ListItemsResponse,
     PresignedUpload,
     StartUploadRequest,
+    TextItemType,
     UpdateItemRequest,
     UploadStarted,
 )
@@ -71,7 +72,7 @@ async def create_text_item(
 ) -> ItemCreated:
     try:
         item = await ItemService(session, storage, outbox).create_text_item(
-            user_id=current_user.id, text=payload.text, tags=payload.tags
+            user_id=current_user.id, text=payload.text, tags=payload.tags, item_type=_domain_text_type(payload.type)
         )
     except InvalidTagNameError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
@@ -172,6 +173,10 @@ def _invalid_upload(exc: Exception) -> HTTPException:
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
 
 
+def _domain_text_type(item_type: TextItemType | None) -> DomainItemType | None:
+    return None if item_type is None else DomainItemType(item_type.value)
+
+
 @router.get(
     "/items/counts",
     status_code=status.HTTP_200_OK,
@@ -238,7 +243,7 @@ async def update_item(
         listed = await ItemService(session, storage, outbox).update_item(
             user_id=current_user.id,
             item_id=item_id,
-            edit=ItemEdit(text=payload.text, filename=payload.filename),
+            edit=ItemEdit(text=payload.text, filename=payload.filename, item_type=_domain_text_type(payload.type)),
         )
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None

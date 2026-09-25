@@ -1,4 +1,4 @@
-use api::{ItemUpdate, ListedItem, Tag};
+use api::{ItemUpdate, ListedItem, Tag, TextItemType};
 use chrono::{DateTime, Local, TimeZone};
 use dioxus::prelude::*;
 use futures_timer::Delay;
@@ -9,6 +9,7 @@ use crate::icons::{
     IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
     IconTrash,
 };
+use crate::text_kind::{TextKind, first_url, text_kind};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -222,10 +223,10 @@ fn ItemCard(
                 }
             },
         ),
-        ("link", _, Some(url)) => (
+        ("link", _, Some(text)) => (
             "item-card-link",
             rsx! {
-                LinkBody { url: url.clone() }
+                LinkBody { text: text.clone() }
             },
         ),
         // Before the catch-all below: a file with a caption has `text`
@@ -369,8 +370,8 @@ fn ItemDetails(item: ListedItem) -> Element {
         &item.download_url,
         item.text,
     ) {
-        ("link", _, _, Some(url)) => rsx! {
-            LinkBody { url }
+        ("link", _, _, Some(text)) => rsx! {
+            LinkBody { text }
         },
         ("file", Some(file), Some(url), caption) => rsx! {
             FileBody {
@@ -389,9 +390,11 @@ fn ItemDetails(item: ListedItem) -> Element {
 
 /// Form for the item's editable content, in its `ItemView`: a note's or
 /// link's whole text, an image's caption, or a file's name and caption.
-/// A caption can be added, changed or cleared. The server decides again
-/// whether edited text is a note or a link. The text or caption field has
-/// focus when the form opens.
+/// A caption can be added, changed or cleared. A note's/link's type follows
+/// from its edited text (a bare URL is a link, text without URLs a note);
+/// for text mixing both, a Text/Link choice is shown, starting at the
+/// item's current type. The text or caption field has focus when the form
+/// opens.
 ///
 /// Only changed fields are sent. `on_saved` gets the updated item, or None
 /// if nothing had changed; `on_cancel` drops the changes.
@@ -406,6 +409,8 @@ fn ItemEditor(
     let original_filename = item.file.as_ref().map(|file| file.filename.clone());
     let mut text = use_signal(|| original_text.clone());
     let mut filename = use_signal(|| original_filename.clone().unwrap_or_default());
+    let original_type = TextItemType::from_api(&item.r#type);
+    let mut chosen_type = use_signal(|| original_type.unwrap_or(TextItemType::Text));
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
@@ -413,6 +418,7 @@ fn ItemEditor(
     let edits_text = matches!(kind, "text" | "link");
     let edits_filename = kind == "file";
     let edits_caption = matches!(kind, "image" | "file");
+    let chooses_type = edits_text && text_kind(&text()) == TextKind::Mixed;
 
     let update = ItemUpdate {
         text: (edits_text || edits_caption)
@@ -421,6 +427,10 @@ fn ItemEditor(
         filename: edits_filename
             .then(|| filename().trim().to_string())
             .filter(|name| Some(name) != original_filename.as_ref()),
+        // Unsent, the server keeps the current type for mixed text.
+        item_type: chooses_type
+            .then_some(chosen_type())
+            .filter(|chosen| Some(*chosen) != original_type),
     };
     let invalid = (edits_text && text().trim().is_empty())
         || (edits_filename && filename().trim().is_empty());
@@ -506,6 +516,17 @@ fn ItemEditor(
                             let _ = evt.set_focus(true).await;
                         },
                         onkeydown: save_on_shortcut,
+                    }
+                }
+            }
+            if chooses_type {
+                label { class: "item-editor-field",
+                    span { class: "item-editor-label", "Type" }
+                    TextTypeSelect {
+                        class: "item-editor-input",
+                        value: chosen_type(),
+                        disabled: saving(),
+                        on_change: move |value| chosen_type.set(value),
                     }
                 }
             }
@@ -1032,11 +1053,41 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// A saved link. The API only stores the URL itself (no page title or
+/// Text/Link choice for a note mixing text and URLs; `class` styles the
+/// `select` for where it's shown.
+#[component]
+pub(crate) fn TextTypeSelect(
+    class: &'static str,
+    value: TextItemType,
+    disabled: bool,
+    on_change: EventHandler<TextItemType>,
+) -> Element {
+    rsx! {
+        select {
+            class,
+            title: "Save as",
+            aria_label: "Save as",
+            disabled,
+            value: value.as_api(),
+            onchange: move |evt| {
+                if let Some(chosen) = TextItemType::from_api(&evt.value()) {
+                    on_change.call(chosen);
+                }
+            },
+            option { value: "text", selected: value == TextItemType::Text, "Text" }
+            option { value: "link", selected: value == TextItemType::Link, "Link" }
+        }
+    }
+}
+
+/// A saved link: its (first) URL, and the whole text below it when there's
+/// more than the URL. The API only stores the text (no page title or
 /// preview image yet), so the domain stands in as the title and the rest of
 /// the URL as the subtitle.
 #[component]
-fn LinkBody(url: String) -> Element {
+fn LinkBody(text: String) -> Element {
+    let url = first_url(&text).unwrap_or(text.trim()).to_string();
+    let note = (text.trim() != url).then(|| text.clone());
     let (domain, rest) = split_url(&url);
 
     rsx! {
@@ -1054,6 +1105,9 @@ fn LinkBody(url: String) -> Element {
                     }
                 }
             }
+        }
+        if let Some(note) = note {
+            p { class: "item-card-link-note", "{note}" }
         }
     }
 }

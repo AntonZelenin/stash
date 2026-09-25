@@ -41,6 +41,37 @@ pub(crate) struct CreateTextItemRequest {
     pub text: String,
     /// Tag names for the new item (existing tags reused, missing created).
     pub tags: Vec<String>,
+    /// See `TextItemType`; unset for the server's default (`text`).
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<TextItemType>,
+}
+
+/// The type chosen for a note/link whose text mixes text and URLs. The
+/// server ignores it for anything else: a bare URL is always a link, text
+/// without URLs always a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextItemType {
+    Text,
+    Link,
+}
+
+impl TextItemType {
+    /// From an item's API `type`; None for images and files.
+    pub fn from_api(item_type: &str) -> Option<Self> {
+        match item_type {
+            "text" => Some(Self::Text),
+            "link" => Some(Self::Link),
+            _ => None,
+        }
+    }
+
+    pub fn as_api(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Link => "link",
+        }
+    }
 }
 
 /// What an upload becomes.
@@ -183,13 +214,17 @@ pub struct ListedItem {
 /// fields are left as they are.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ItemUpdate {
-    /// A note's or link's whole text (its type is detected again by the
+    /// A note's or link's whole text (its type is resolved again by the
     /// server), or an image's or file's caption, where empty removes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Files only: the name it's shown and downloaded under.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// Notes and links only: see `TextItemType`. Unset keeps the current
+    /// type for text mixing text and URLs.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<TextItemType>,
 }
 
 #[derive(Debug, Clone, Serialize)]

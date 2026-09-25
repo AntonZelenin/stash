@@ -11,6 +11,6 @@ pub use error::{ApiError, FieldError};
 pub use models::{
     ItemCounts, ItemCreated, ItemQuery, ItemTypeCounts, ItemUpdate, ListItemsResponse,
     ListTagsResponse, ListedFile, ListedItem, NewUpload, PresignedUpload, RegisterResponse,
-    SearchResponse, Tag, TokenPair, UploadStarted, UploadType,
+    SearchResponse, Tag, TextItemType, TokenPair, UploadStarted, UploadType,
 };
 pub use token_store::TokenStore;

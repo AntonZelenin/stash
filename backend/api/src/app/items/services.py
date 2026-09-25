@@ -2,6 +2,7 @@ import base64
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
@@ -46,21 +47,51 @@ _MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 _LINK_SCHEMES = {"http", "https"}
 
 
-def _classify_text_item_type(text: str) -> ItemType:
-    """A "link" is text that is *entirely* a URL — not a note that merely
-    contains one. Rejecting whitespace is what enforces that: a real
-    single-token URL never contains a literal space, so "https://x.com
-    check this out" (or a URL with trailing punctuation typed as a
-    sentence) falls back to a plain note instead of being misread as a
-    link."""
-    if any(char.isspace() for char in text):
-        return ItemType.text
+# Punctuation around a URL in prose ("(see https://x.com).") that isn't
+# part of it.
+_URL_OPENERS = "([<{\"'"
+_URL_CLOSERS = ")]>}\"'.,;:!?"
 
-    parsed = urlsplit(text)
-    if parsed.scheme in _LINK_SCHEMES and parsed.netloc:
-        return ItemType.link
 
-    return ItemType.text
+def _is_url(token: str) -> bool:
+    parsed = urlsplit(token)
+    return parsed.scheme.lower() in _LINK_SCHEMES and bool(parsed.netloc)
+
+
+class TextContentKind(str, Enum):
+    """What a note's/link's text is made of, which decides its type (see
+    `resolve_text_item_type`). Clients detect it the same way, to know when
+    to offer the choice."""
+
+    url_only = "url_only"
+    no_url = "no_url"
+    mixed = "mixed"
+
+
+def text_content_kind(text: str) -> TextContentKind:
+    """`url_only`: the whole text is one http(s) URL. `no_url`: no
+    whitespace-separated word is one (ignoring punctuation around it).
+    `mixed`: anything else — text with URLs, or several URLs."""
+    words = text.split()
+    if len(words) == 1 and _is_url(words[0]):
+        return TextContentKind.url_only
+    if any(_is_url(word.lstrip(_URL_OPENERS).rstrip(_URL_CLOSERS)) for word in words):
+        return TextContentKind.mixed
+    return TextContentKind.no_url
+
+
+def resolve_text_item_type(text: str, *, requested: ItemType | None, default: ItemType) -> ItemType:
+    """The type to store for a note/link with this text: `link` when it's
+    only a URL, `text` when it has none, whatever was `requested` for
+    mixed content (text with URLs), or `default` if nothing was. A request
+    for unambiguous content is ignored."""
+    match text_content_kind(text):
+        case TextContentKind.url_only:
+            return ItemType.link
+        case TextContentKind.no_url:
+            return ItemType.text
+        case TextContentKind.mixed:
+            return requested or default
 
 
 class EmptyImageError(Exception):
@@ -127,10 +158,13 @@ class ItemEdit:
 
     `text`: a note's or link's whole text, or an image's or file's caption
     (blank removes the caption). `filename`: a file's displayed (and
-    downloaded-as) name; files only."""
+    downloaded-as) name; files only. `item_type`: `text` or `link`, notes
+    and links only; used when the resulting text mixes text and URLs,
+    otherwise the text decides (see `resolve_text_item_type`)."""
 
     text: str | None = None
     filename: str | None = None
+    item_type: ItemType | None = None
 
 
 @dataclass(frozen=True)
@@ -301,8 +335,10 @@ class ItemService:
         """Applies `edit` to the item in place — same id, whatever changes —
         and returns it as updated.
 
-        A note's/link's new text is classified again exactly as on creation,
-        so it can turn from a note into a link or back. When the searchable
+        A note's/link's type is resolved again from its resulting text,
+        exactly as on creation (`resolve_text_item_type`), so it can turn
+        from a note into a link or back; with mixed text and no type given,
+        it keeps its current one. When the searchable
         text changes, it's sent for embedding again. Only the displayed
         filename is ever changed for a file: its object in storage (and
         storage key) stays as uploaded.
@@ -316,12 +352,20 @@ class ItemService:
         if edit.filename is not None:
             self._rename_file(item, edit.filename)
 
+        is_note_or_link = item.type in (ItemType.text, ItemType.link)
+        if edit.item_type is not None and not is_note_or_link:
+            raise InvalidItemEditError("Only notes and links have a selectable type")
+
         needs_embedding = False
         if edit.text is not None:
-            if item.type in (ItemType.text, ItemType.link):
+            if is_note_or_link:
                 needs_embedding = self._edit_text(item, edit.text)
             else:
                 needs_embedding = await self._edit_caption(item, edit.text)
+        if is_note_or_link and (edit.text is not None or edit.item_type is not None):
+            item.type = resolve_text_item_type(
+                item.text_content.text if item.text_content else "", requested=edit.item_type, default=item.type
+            )
 
         if needs_embedding:
             await self._add_embedding_job(item)
@@ -369,7 +413,6 @@ class ItemService:
             item.description = Description(text=text)
         else:
             item.description.text = text
-        item.type = _classify_text_item_type(text)
         return True
 
     async def _edit_caption(self, item: Item, raw_caption: str) -> bool:
@@ -507,10 +550,15 @@ class ItemService:
         )
 
     @_tracer.start_as_current_span("items.create_text")
-    async def create_text_item(self, *, user_id: uuid.UUID, text: str, tags: list[str] = ()) -> Item:
-        """`tags` are tag names to put on the new item (see `_link_tags`)."""
+    async def create_text_item(
+        self, *, user_id: uuid.UUID, text: str, tags: list[str] = (), item_type: ItemType | None = None
+    ) -> Item:
+        """`tags` are tag names to put on the new item (see `_link_tags`).
+        `item_type` (`text` or `link`) is used only if the text mixes text
+        and URLs, defaulting to `text`; otherwise the text decides (see
+        `resolve_text_item_type`)."""
         resolved_tags = await self._link_tags(user_id, normalize_tag_names(list(tags)))
-        item_type = _classify_text_item_type(text)
+        item_type = resolve_text_item_type(text, requested=item_type, default=ItemType.text)
         item = await self._repo.create_text_item(
             user_id=user_id, text=text, item_type=item_type, tags=resolved_tags
         )

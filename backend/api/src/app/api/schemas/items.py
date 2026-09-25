@@ -14,6 +14,14 @@ class ItemType(str, Enum):
     file = "file"
 
 
+class TextItemType(str, Enum):
+    """The types a note/link can be given when its text mixes text and
+    URLs."""
+
+    text = "text"
+    link = "link"
+
+
 class ItemStatus(str, Enum):
     pending = "pending"
     processing = "processing"
@@ -39,6 +47,9 @@ class CreateTextItemRequest(BaseModel):
     # Tag names to put on the new item (existing tags reused, missing ones
     # created).
     tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+    # Only used when the text mixes text and URLs (default `text`); a bare
+    # URL is always a link and text without URLs always a note.
+    type: TextItemType | None = None
 
     @field_validator("text")
     @classmethod
@@ -55,11 +66,14 @@ class UpdateItemRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # A note's or link's whole text (its type is detected again), or an
+    # A note's or link's whole text (its type is resolved again), or an
     # image's or file's caption; an empty caption removes it.
     text: str | None = Field(default=None, max_length=100_000)
     # Files only: the name shown and used for downloads.
     filename: str | None = Field(default=None, max_length=1_000)
+    # Notes and links only. Used when the resulting text mixes text and
+    # URLs (unset keeps the current type); otherwise the text decides.
+    type: TextItemType | None = None
 
 
 MAX_ITEMS_PER_DELETE = 100

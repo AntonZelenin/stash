@@ -452,6 +452,19 @@
     white-space: nowrap;
 }
 
+/* A link saved with text around it: the whole text, under the link. */
+.item-card-link-note {
+    margin: 0;
+    padding: 0 16px 10px;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    max-height: 18em;
+    overflow-y: auto;
+}
+
 /* ---- full-size image viewer ---- */
 
 /* Covers the whole viewport above everything else (drag-and-drop overlay is

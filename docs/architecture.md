@@ -722,12 +722,26 @@ keep in sync. The user is resolved on `tags` (`user_id` leads its unique
 index), and `ix_item_tags_tag_id_created_at` covers the per-tag count and
 latest use; `item_tags` has no `user_id` of its own.
 
+### Notes and links
+
+A saved text's type (`text` or `link`) is decided once, when it's saved or
+edited, and stored on the item; filtering, counts and clients read the
+stored type and never infer it from the content again
+(`app.items.services.resolve_text_item_type`):
+
+- Only a URL (a single http(s) URL with a host) → `link`.
+- No URLs → `text`.
+- Text and URLs (or several URLs) → whichever the user chose. Clients
+  detect this case with the same rules and offer a Text/Link choice. With
+  no choice sent, a new item is `text` and an edited one keeps its type.
+
 ### Editing items
 
 `PATCH /items/{id}` edits an item in place (its id never changes):
 
-- Notes and links: the whole text. It's classified again with the same
-  logic as on creation, so a note can become a link and vice versa.
+- Notes and links: the whole text, and the type. The type is resolved from
+  the resulting text with the same rules as on creation (below), so a note
+  can become a link and vice versa.
 - Images and files: the caption. The description is rebuilt as the new
   caption plus the generated description (`stash_shared.descriptions`,
   also used by the content analyzers), under a row lock on the item so an

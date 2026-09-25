@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use api::{
     ApiClient, ApiError, ItemCounts, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse,
-    ListedItem, NewUpload, SearchResponse, Tag, TokenPair, TokenStore, UploadType,
+    ListedItem, NewUpload, SearchResponse, Tag, TextItemType, TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -95,6 +95,7 @@ impl AuthSession {
         &self,
         text: &str,
         tags: Vec<String>,
+        item_type: Option<TextItemType>,
     ) -> Result<ItemCreated, ApiError> {
         let client = self.client.clone();
         let text = text.to_string();
@@ -102,7 +103,11 @@ impl AuthSession {
             let client = client.clone();
             let text = text.clone();
             let tags = tags.clone();
-            async move { client.create_text_item(&access_token, &text, &tags).await }
+            async move {
+                client
+                    .create_text_item(&access_token, &text, &tags, item_type)
+                    .await
+            }
         })
         .await
     }

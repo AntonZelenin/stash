@@ -156,6 +156,10 @@ paths:
   /items/text:
     post:
       summary: Save text content
+      description: >-
+        Saves a note or link. Text that is only a URL is saved as a `link`,
+        text without URLs as `text`. Text mixing text and URLs gets the
+        chosen `type` (default `text`).
       operationId: createTextItem
 
       security:
@@ -182,6 +186,8 @@ paths:
                   maxItems: 20
                   items:
                     type: string
+                type:
+                  $ref: "#/components/schemas/TextItemType"
 
       responses:
         "202":
@@ -634,9 +640,11 @@ paths:
       summary: Edit an item
       description: >-
         Changes the item's user-editable content in place; only the fields
-        sent are changed. The item keeps its id. A note's or link's new
-        text is classified again exactly as on creation, so the item can
-        turn from `text` into `link` or back. A file's new filename only
+        sent are changed. The item keeps its id. A note's or link's type is
+        resolved again from its resulting text exactly as on creation, so
+        the item can turn from `text` into `link` or back; for text mixing
+        text and URLs, `type` chooses (unset keeps the current type). A
+        file's new filename only
         changes the name it's shown and downloaded under; the stored file
         itself is untouched. When the searchable text changes, the item is
         embedded again, so search reflects the edit a few seconds later.
@@ -679,7 +687,8 @@ paths:
           description: >-
             The edit doesn't apply to this item or would leave it invalid:
             an empty note or link, an empty filename, a filename for
-            anything but a file, or an unknown field.
+            anything but a file, a type for an image or file, or an
+            unknown field.
 
   /items/counts:
     get:
@@ -1083,6 +1092,18 @@ components:
             - string
             - "null"
 
+    TextItemType:
+      description: >-
+        The type for a note/link whose text mixes text and URLs. Ignored
+        otherwise: text that is only a URL is always a `link`, text without
+        URLs always `text`. A URL here is a whitespace-separated word
+        (ignoring surrounding punctuation) that is an http(s) URL with a
+        host.
+      type: string
+      enum:
+        - text
+        - link
+
     UpdateItemRequest:
       type: object
       additionalProperties: false
@@ -1090,10 +1111,12 @@ components:
         text:
           description: >-
             For `text` and `link` items, the whole text (must not be blank;
-            the type is detected again). For `image` and `file` items, the
+            the type is resolved again). For `image` and `file` items, the
             caption; blank removes it.
           type: string
           maxLength: 100000
+        type:
+          $ref: "#/components/schemas/TextItemType"
         filename:
           description: >-
             `file` items only: the name shown and used for downloads.

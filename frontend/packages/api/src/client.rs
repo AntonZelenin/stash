@@ -6,7 +6,7 @@ use crate::models::{
     AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, ItemCounts, ItemCreated,
     ItemQuery, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
     NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SearchRequest,
-    SearchResponse, Tag, TokenPair, UploadStarted,
+    SearchResponse, Tag, TextItemType, TokenPair, UploadStarted,
 };
 
 #[derive(Clone)]
@@ -132,12 +132,14 @@ impl ApiClient {
         access_token: &str,
         text: &str,
         tags: &[String],
+        item_type: Option<TextItemType>,
     ) -> Result<ItemCreated, ApiError> {
         let response = self
             .authenticated(Method::POST, "/items/text", access_token)
             .json(&CreateTextItemRequest {
                 text: text.to_string(),
                 tags: tags.to_vec(),
+                item_type,
             })
             .send()
             .await

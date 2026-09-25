@@ -89,11 +89,60 @@ async def test_editing_a_link_into_prose_makes_it_a_note(client: AsyncClient, em
     item_id = await _note(client, token, "https://example.com")
     embedding_queue.published.clear()
 
-    body = (await _edit(client, token, item_id, text="https://example.com is worth a look")).json()
+    body = (await _edit(client, token, item_id, text="worth a look")).json()
 
     assert (body["id"], body["type"]) == (item_id, "text")
     [job] = embedding_queue.published
     assert job.item_type == QueueItemType.text
+
+
+async def test_mixed_text_gets_the_chosen_type(client: AsyncClient):
+    _, token = await register_and_login(client)
+    item_id = await _note(client, token, "https://example.com")
+
+    body = (await _edit(client, token, item_id, text="https://example.com is worth a look", type="text")).json()
+
+    assert (body["id"], body["type"]) == (item_id, "text")
+
+
+async def test_mixed_text_keeps_the_current_type_if_none_is_chosen(client: AsyncClient):
+    _, token = await register_and_login(client)
+    link = await _note(client, token, "https://example.com")
+    note = await _note(client, token, "a note")
+
+    assert (await _edit(client, token, link, text="https://example.com is worth a look")).json()["type"] == "link"
+    assert (await _edit(client, token, note, text="a note on https://example.com")).json()["type"] == "text"
+
+
+async def test_type_alone_can_be_changed_for_mixed_text(client: AsyncClient, embedding_queue: FakeJobQueue):
+    _, token = await register_and_login(client)
+    item_id = await _note(client, token, "read https://example.com later")
+    embedding_queue.published.clear()
+
+    body = (await _edit(client, token, item_id, type="link")).json()
+
+    assert (body["type"], body["text"]) == ("link", "read https://example.com later")
+    # The text didn't change, so there's nothing to embed again.
+    assert embedding_queue.published == []
+
+
+async def test_chosen_type_is_ignored_when_the_text_decides(client: AsyncClient):
+    _, token = await register_and_login(client)
+    item_id = await _note(client, token, "a note")
+
+    assert (await _edit(client, token, item_id, text="https://example.com", type="text")).json()["type"] == "link"
+    assert (await _edit(client, token, item_id, text="no urls here", type="link")).json()["type"] == "text"
+    assert (await _edit(client, token, item_id, type="link")).json()["type"] == "text"
+
+
+async def test_images_and_files_have_no_selectable_type(client: AsyncClient, storage: FakeObjectStorage):
+    _, token = await register_and_login(client)
+    item_id = await _image(client, storage, token, text="https://example.com cat")
+
+    response = await _edit(client, token, item_id, type="link")
+
+    assert response.status_code == 422
+    assert (await _edit(client, token, item_id, type="image")).status_code == 422
 
 
 async def test_unchanged_text_is_not_re_embedded(client: AsyncClient, embedding_queue: FakeJobQueue):

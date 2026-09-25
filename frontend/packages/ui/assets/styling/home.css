@@ -372,6 +372,26 @@
 }
 
 /* The row's controls are centered on the 40px send button via margin. */
+/* Text/Link choice, shown only for text mixing prose and URLs. */
+.home-input-type {
+    flex-shrink: 0;
+    margin-bottom: 5px;
+    padding: 5px 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fff;
+    color: #334155;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.home-input-type:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .home-input-tag-add {
     display: inline-flex;
     align-items: center;
