@@ -227,16 +227,24 @@ async def test_non_analyzable_files_are_completed_and_not_queued(
     assert document_queue.published == []
 
 
-async def test_analyzable_file_marked_failed_when_enqueue_fails(
+async def test_analyzable_file_whose_job_cannot_be_published_yet_stays_pending_until_a_later_request(
     client: AsyncClient, session: AsyncSession, document_queue: FakeJobQueue
 ):
-    """Same as images: rather than stay `pending` forever with no job."""
+    """Same as images: its job waits in the outbox for the next flush."""
     document_queue.fail_publish = True
     _, token = await register_and_login(client)
 
     response = await _upload(client, token, "notes.txt", b"hello")
 
     assert response.status_code == 202
-    assert response.json()["status"] == "failed"
-    item = await session.get(Item, UUID(response.json()["id"]))
-    assert item.status == "failed"
+    assert response.json()["status"] == "pending"
+    item_id = UUID(response.json()["id"])
+    item = await session.get(Item, item_id)
+    assert item.status == "pending"
+    assert document_queue.published == []
+
+    document_queue.fail_publish = False
+    await _upload(client, token, "other.bin", b"\x00\x01")
+
+    [job] = document_queue.published
+    assert job.item_id == item_id

@@ -11,7 +11,15 @@ from stash_shared import descriptions
 from stash_shared.log import bind_context, get_logger
 from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.embeddings import Embedder
-from stash_shared.queue.base import FileRef, ImageRef, JobQueue, ProcessingJob
+from stash_shared.outbox import OutboxPublisher, add_event
+from stash_shared.queue.base import (
+    DOCUMENT_ANALYSIS_JOBS,
+    EMBEDDING_JOBS,
+    THUMBNAIL_JOBS,
+    FileRef,
+    ImageRef,
+    ProcessingJob,
+)
 
 from app.config import get_settings
 from app.items import files
@@ -145,33 +153,27 @@ def _detect_image_content_type(data: bytes) -> str | None:
 
 
 def _log_created(item: Item, **fields) -> None:
-    """One line per saved item, after it's committed (and its processing
-    job published, if it has one): `item_status` says whether it went on
-    to processing (`pending`), needs none (`completed`), or couldn't be
-    enqueued (`failed`)."""
+    """One line per saved item, after it's committed (with its jobs in the
+    outbox): `item_status` says whether it goes on to processing
+    (`pending`) or needs none (`completed`)."""
     logger.info("Item created", item_id=item.id, item_type=item.type, item_status=item.status, **fields)
 
 
 class ItemService:
-    def __init__(
-        self,
-        session: AsyncSession,
-        storage: ObjectStorage,
-        queue: JobQueue,
-        document_queue: JobQueue | None = None,
-        embedding_queue: JobQueue | None = None,
-    ):
-        """`queue` is where new images go (the image pipeline's first
-        stage); `document_queue` is where analyzable files go (needed by
-        `create_file_item`); `embedding_queue` is where items whose
-        searchable text this service wrote go (needed by the `create_*`
-        methods)."""
+    def __init__(self, session: AsyncSession, storage: ObjectStorage, outbox: OutboxPublisher | None = None):
+        """`outbox` publishes the jobs this service's writes trigger; needed
+        by the methods that create or edit items.
+
+        Jobs are never published directly: each is added to the outbox in
+        the same transaction as the change that needs it (`_add_job`), and
+        published after the commit (`_publish_jobs`). So a change is never
+        committed without its job, and a job never refers to an uncommitted
+        (or rolled back) item: workers look items up on their own
+        connection."""
         self._session = session
         self._repo = ItemRepository(session)
         self._storage = storage
-        self._queue = queue
-        self._document_queue = document_queue
-        self._embedding_queue = embedding_queue
+        self._outbox = outbox
 
     async def list_items(
         self, *, user_id: uuid.UUID, limit: int, cursor: str | None, filters: ItemFilters = ItemFilters()
@@ -267,6 +269,8 @@ class ItemService:
             else:
                 needs_embedding = await self._edit_caption(item, edit.text)
 
+        if needs_embedding:
+            await self._add_embedding_job(item)
         await self._session.commit()
         logger.info(
             "Item updated",
@@ -277,7 +281,7 @@ class ItemService:
             reembedding=needs_embedding,
         )
         if needs_embedding:
-            await self._publish_embedding_job(item)
+            await self._publish_jobs()
 
         updated = await self._repo.get(item_id=item_id, user_id=user_id)
         if updated is None:
@@ -413,10 +417,11 @@ class ItemService:
         )
         # No analysis for text/links (stored already `completed`); their
         # text is their description, so it goes straight to embedding.
+        await self._add_embedding_job(item)
         await self._session.commit()
         bind_context(item_id=item.id)
         _log_created(item, text_chars=len(text), tag_count=len(resolved_tags))
-        await self._publish_embedding_job(item)
+        await self._publish_jobs()
         return item
 
     @_tracer.start_as_current_span("items.create_image")
@@ -454,13 +459,19 @@ class ItemService:
             text=text,
             tags=resolved_tags,
         )
-        job = ProcessingJob(
-            item_id=item.id,
-            user_id=item.user_id,
-            item_type=QueueItemType.image,
-            image=ImageRef(storage_key=storage_key, content_type=content_type),
+        await self._add_job(
+            THUMBNAIL_JOBS,
+            ProcessingJob(
+                item_id=item.id,
+                user_id=item.user_id,
+                item_type=QueueItemType.image,
+                image=ImageRef(storage_key=storage_key, content_type=content_type),
+            ),
         )
-        await self._commit_and_enqueue(item, job, self._queue)
+        if text is not None:
+            # Searchable by its caption now, not only once analysis is done.
+            await self._add_embedding_job(item)
+        await self._session.commit()
         _log_created(
             item,
             storage_key=storage_key,
@@ -469,9 +480,7 @@ class ItemService:
             has_caption=text is not None,
             tag_count=len(resolved_tags),
         )
-        if text is not None:
-            # Searchable by its caption now, not only once analysis is done.
-            await self._publish_embedding_job(item)
+        await self._publish_jobs()
         return item
 
     @_tracer.start_as_current_span("items.create_file")
@@ -528,24 +537,21 @@ class ItemService:
             has_caption=text is not None,
             tag_count=len(resolved_tags),
         )
-        if not classified.analyzable:
-            await self._session.commit()
-            _log_created(item, **created_fields)
-            if text is not None:
-                await self._publish_embedding_job(item)
-            return item
-
-        assert self._document_queue is not None, "create_file_item needs a document_queue"
-        job = ProcessingJob(
-            item_id=item.id,
-            user_id=item.user_id,
-            item_type=QueueItemType.file,
-            file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
-        )
-        await self._commit_and_enqueue(item, job, self._document_queue)
-        _log_created(item, **created_fields)
+        if classified.analyzable:
+            await self._add_job(
+                DOCUMENT_ANALYSIS_JOBS,
+                ProcessingJob(
+                    item_id=item.id,
+                    user_id=item.user_id,
+                    item_type=QueueItemType.file,
+                    file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
+                ),
+            )
         if text is not None:
-            await self._publish_embedding_job(item)
+            await self._add_embedding_job(item)
+        await self._session.commit()
+        _log_created(item, **created_fields)
+        await self._publish_jobs()
         return item
 
     async def _link_tags(self, user_id: uuid.UUID, names: list[str]) -> list[Tag]:
@@ -564,37 +570,22 @@ class ItemService:
             return []
         return await TagRepository(self._session).get_or_create_for_linking(user_id=user_id, names=names)
 
-    async def _publish_embedding_job(self, item: Item) -> None:
+    async def _add_embedding_job(self, item: Item) -> None:
         """Asks the embedding worker to (re)embed the item's description,
-        after it's committed. Best effort: the item is saved regardless, and
-        if publishing fails the content analyzer's sweeper finds the missing
-        embedding and publishes it later."""
-        assert self._embedding_queue is not None, "creating items needs an embedding_queue"
+        once this transaction commits."""
         job = ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType(item.type.value))
-        try:
-            await self._embedding_queue.publish(job)
-        except Exception:
-            logger.exception("Failed to publish embedding job; the sweeper will re-publish it", item_id=item.id)
+        await self._add_job(EMBEDDING_JOBS, job)
 
-    async def _commit_and_enqueue(self, item: Item, job: ProcessingJob, queue: JobQueue) -> None:
-        """Commits the item's creation, then publishes its processing job
-        to `queue`.
+    async def _add_job(self, queue_name: str, job: ProcessingJob) -> None:
+        """Adds `job` to the outbox in the session's open transaction: it's
+        committed with the change that needs it, or not at all."""
+        assert self._outbox is not None, "creating or editing items needs an outbox"
+        await add_event(self._session, queue_name, job)
 
-        The commit must happen first: the worker looks the item up in
-        Postgres on its own connection, so publishing before this row is
-        durably visible would race it. If publishing then fails, the item is
-        marked `failed` (committed separately) instead of being left stuck
-        at `pending` with no job that will ever advance it.
-        """
-        await self._session.commit()
-
-        try:
-            await queue.publish(job)
-        except Exception:
-            logger.exception("Failed to publish processing job; marking item failed", item_id=item.id)
-            transitioned = await self._repo.transition_status(
-                item.id, from_status=ItemStatus.pending, to_status=ItemStatus.failed
-            )
-            if transitioned:
-                item.status = ItemStatus.failed
-            await self._session.commit()
+    async def _publish_jobs(self) -> None:
+        """Publishes the outbox after a commit: the jobs just committed, and
+        any an earlier request left unpublished. Best effort: a job that
+        can't be published now stays in the outbox for the next flush, and
+        its item stays as committed (e.g. `pending`) until then."""
+        assert self._outbox is not None
+        await self._outbox.flush()

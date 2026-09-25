@@ -7,14 +7,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
-from stash_shared.queue.base import Delivery, JobQueue, ProcessingJob
+from stash_shared.queue.base import (
+    DOCUMENT_ANALYSIS_JOBS,
+    EMBEDDING_JOBS,
+    THUMBNAIL_JOBS,
+    Delivery,
+    JobQueue,
+    ProcessingJob,
+)
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import Description, Embedding, FileMetadata, ImageMetadata, Item, Tag, TextContent, item_tags
 from app.main import app
 from app.embeddings import get_embedder
-from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
+from app.outbox import outbox_events
+from app.queue import get_queue_resolver
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
@@ -32,6 +40,7 @@ _TEST_TABLES = [
     Embedding.__table__,
     Tag.__table__,
     item_tags,
+    outbox_events,
 ]
 
 
@@ -125,30 +134,39 @@ def storage() -> FakeObjectStorage:
     app.dependency_overrides.pop(get_object_storage, None)
 
 
-@pytest.fixture
-def queue() -> FakeJobQueue:
-    fake = FakeJobQueue()
-    app.dependency_overrides[get_job_queue] = lambda: fake
-    yield fake
-    app.dependency_overrides.pop(get_job_queue, None)
+class FakeQueues:
+    """Every queue the outbox publishes to, by name (a `QueueResolver`),
+    each a `FakeJobQueue` made on first use."""
+
+    def __init__(self):
+        self.by_name: dict[str, FakeJobQueue] = {}
+
+    def __call__(self, queue_name: str) -> FakeJobQueue:
+        return self.by_name.setdefault(queue_name, FakeJobQueue())
 
 
 @pytest.fixture
-def document_queue() -> FakeJobQueue:
-    """Stands in for the document-analysis queue, so tests never publish
-    to real Valkey."""
-    fake = FakeJobQueue()
-    app.dependency_overrides[get_document_analysis_queue] = lambda: fake
+def queues() -> FakeQueues:
+    fake = FakeQueues()
+    app.dependency_overrides[get_queue_resolver] = lambda: fake
     yield fake
-    app.dependency_overrides.pop(get_document_analysis_queue, None)
+    app.dependency_overrides.pop(get_queue_resolver, None)
 
 
 @pytest.fixture
-def embedding_queue() -> FakeJobQueue:
-    fake = FakeJobQueue()
-    app.dependency_overrides[get_embedding_queue] = lambda: fake
-    yield fake
-    app.dependency_overrides.pop(get_embedding_queue, None)
+def queue(queues: FakeQueues) -> FakeJobQueue:
+    """The image pipeline's first queue (thumbnails)."""
+    return queues(THUMBNAIL_JOBS)
+
+
+@pytest.fixture
+def document_queue(queues: FakeQueues) -> FakeJobQueue:
+    return queues(DOCUMENT_ANALYSIS_JOBS)
+
+
+@pytest.fixture
+def embedding_queue(queues: FakeQueues) -> FakeJobQueue:
+    return queues(EMBEDDING_JOBS)
 
 
 class FakeEmbedder(Embedder):

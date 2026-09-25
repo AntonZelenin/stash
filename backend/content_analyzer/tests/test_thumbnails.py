@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 from PIL import Image
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
@@ -17,6 +17,7 @@ from conftest import (
     fetch_status,
     fetch_thumbnail_key,
     insert_item,
+    outbox_for,
 )
 
 _ORIGINAL_KEY = "images/original.png"
@@ -112,7 +113,11 @@ def analysis_queue() -> FakeJobQueue:
 @pytest.fixture
 def handler(engine, storage, analysis_queue) -> ThumbnailHandler:
     return ThumbnailHandler(
-        storage=storage, engine=engine, analysis_queue=analysis_queue, max_size=1024, quality=80
+        storage=storage,
+        engine=engine,
+        outbox=outbox_for(engine, {CONTENT_ANALYSIS_JOBS: analysis_queue}),
+        max_size=1024,
+        quality=80,
     )
 
 
@@ -202,7 +207,10 @@ async def test_pipeline_sends_the_thumbnail_to_the_describer(engine, storage, an
         dead_letters=FakeDeadLetterQueue(),
         engine=engine,
         handler=ContentAnalysisHandler(
-            storage=storage, describer=describer, engine=engine, embedding_queue=embedding_queue
+            storage=storage,
+            describer=describer,
+            engine=engine,
+            outbox=outbox_for(engine, {EMBEDDING_JOBS: embedding_queue}),
         ),
     )
 
@@ -237,7 +245,7 @@ async def test_corrupt_upload_fails_item_at_thumbnail_stage(engine, analysis_que
         handler=ThumbnailHandler(
             storage=FakeObjectStore({_ORIGINAL_KEY: b"\x89PNG\r\n\x1a\n corrupt"}),
             engine=engine,
-            analysis_queue=analysis_queue,
+            outbox=outbox_for(engine, {CONTENT_ANALYSIS_JOBS: analysis_queue}),
             max_size=1024,
             quality=80,
         ),

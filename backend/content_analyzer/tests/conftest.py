@@ -1,5 +1,5 @@
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import hashlib
@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import DateTime, bindparam, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
+from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob, RetryMode
 
 from content_analyzer.errors import PermanentProcessingError
@@ -42,7 +43,7 @@ async def create_schema(engine: AsyncEngine) -> None:
         await conn.execute(
             text(
                 "CREATE TABLE items (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, "
-                "status TEXT NOT NULL, status_updated_at TIMESTAMP NOT NULL, requeue_count INTEGER NOT NULL)"
+                "status TEXT NOT NULL, status_updated_at TIMESTAMP NOT NULL)"
             )
         )
         await conn.execute(text("CREATE TABLE item_descriptions (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
@@ -64,6 +65,13 @@ async def create_schema(engine: AsyncEngine) -> None:
                 "content_type TEXT NOT NULL, thumbnail_key TEXT)"
             )
         )
+        # As created by the API's migrations (see `stash_shared.outbox`).
+        await conn.execute(
+            text(
+                "CREATE TABLE outbox_events (id TEXT PRIMARY KEY, queue TEXT NOT NULL, payload TEXT NOT NULL, "
+                "trace_context TEXT, created_at TIMESTAMP NOT NULL, published_at TIMESTAMP)"
+            )
+        )
 
 
 async def insert_item(
@@ -72,23 +80,21 @@ async def insert_item(
     *,
     status: str = "pending",
     item_type: str = "image",
-    age_seconds: float = 0,
-    requeue_count: int = 0,
     storage_key: str | None = "images/cat.png",
     caption: str | None = None,
     thumbnail_key: str | None = None,
     file: tuple[str, str, str] | None = None,
 ) -> None:
-    """`age_seconds` backdates `status_updated_at`. Image items also get an
-    `item_images` row unless `storage_key` is None, and an
+    """Image items also get an `item_images` row unless `storage_key` is
+    None, and an
     `item_text_contents` row if `caption` is given. `file` is a file item's
     (storage_key, content_type, filename) for its `item_files` row."""
-    updated_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    updated_at = datetime.now(UTC)
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO items (id, user_id, type, status, status_updated_at, requeue_count) "
-                "VALUES (:id, :user_id, :type, :status, :updated_at, :requeue_count)"
+                "INSERT INTO items (id, user_id, type, status, status_updated_at) "
+                "VALUES (:id, :user_id, :type, :status, :updated_at)"
             ).bindparams(bindparam("updated_at", type_=DateTime(timezone=True))),
             {
                 "id": str(item_id),
@@ -96,7 +102,6 @@ async def insert_item(
                 "type": item_type,
                 "status": status,
                 "updated_at": updated_at,
-                "requeue_count": requeue_count,
             },
         )
         if item_type == "image" and storage_key is not None:
@@ -122,12 +127,6 @@ async def insert_item(
             )
 
 
-async def fetch_requeue_count(engine: AsyncEngine, item_id: UUID) -> int:
-    async with engine.connect() as conn:
-        result = await conn.execute(text("SELECT requeue_count FROM items WHERE id = :id"), {"id": str(item_id)})
-        return result.scalar_one()
-
-
 async def fetch_status(engine: AsyncEngine, item_id: UUID) -> str | None:
     async with engine.connect() as conn:
         result = await conn.execute(text("SELECT status FROM items WHERE id = :id"), {"id": str(item_id)})
@@ -144,7 +143,7 @@ async def fetch_descriptions(engine: AsyncEngine, item_id: UUID) -> list[str]:
 
 
 class FakeJobQueue(JobQueue):
-    """Records what the worker/sweeper did instead of talking to Valkey
+    """Records what the worker/outbox did instead of talking to Valkey
     (retries after the consumer's backoff, like Valkey). Neither calls
     `receive` from the code under test."""
 
@@ -166,6 +165,21 @@ class FakeJobQueue(JobQueue):
 
     async def retry_later(self, delivery: Delivery, *, delay_seconds: float | None) -> None:
         self.retried.append((delivery, delay_seconds))
+
+
+def outbox_for(engine: AsyncEngine, queues: dict[str, JobQueue] | None = None) -> OutboxPublisher:
+    """An outbox publishing to `queues` (queue name -> queue); any other
+    queue it has events for gets a `FakeJobQueue`, made on first use."""
+    queues = dict(queues or {})
+    return OutboxPublisher(engine, lambda queue_name: queues.setdefault(queue_name, FakeJobQueue()))
+
+
+async def fetch_outbox_events(engine: AsyncEngine) -> list:
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("SELECT id, queue, payload, published_at FROM outbox_events ORDER BY created_at")
+        )
+        return result.all()
 
 
 class FakePlatformDeadLetteringQueue(FakeJobQueue):

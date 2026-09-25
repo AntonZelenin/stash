@@ -11,7 +11,7 @@ from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.worker import Worker
-from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item
+from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item, outbox_for
 
 _QUEUE = "content_analysis_jobs"
 
@@ -36,7 +36,7 @@ def _worker(engine, describer, queue: FakeJobQueue | None = None) -> Worker:
             storage=FakeObjectStore({"images/cat.png": b"png"}),
             describer=describer,
             engine=engine,
-            embedding_queue=FakeJobQueue(),
+            outbox=outbox_for(engine),
         ),
         max_attempts=2,
     )

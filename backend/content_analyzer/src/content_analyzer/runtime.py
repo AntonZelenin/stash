@@ -1,8 +1,11 @@
 """Wiring shared by the worker entrypoints (the `*_main` modules and
 `aws_lambda`)."""
 
+from functools import lru_cache
+
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import log, metrics, tracing
+from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.factory import build_dead_letter_queue, build_job_queue
 from stash_shared.queue.base import ItemType, JobQueue
 
@@ -45,6 +48,19 @@ def build_object_store(settings: Settings) -> S3ObjectStore:
 
 def build_queue(settings: Settings, queue_name: str) -> JobQueue:
     return build_job_queue(settings, queue_name)
+
+
+def build_outbox(settings: Settings, engine: AsyncEngine) -> OutboxPublisher:
+    """Publishes the outbox (`stash_shared.outbox`) — every unpublished
+    event, whichever process wrote it — to whichever queue each names,
+    built on first use. A queue that can't be built (no SQS URL for it)
+    only fails its own events."""
+
+    @lru_cache
+    def queue(queue_name: str) -> JobQueue:
+        return build_queue(settings, queue_name)
+
+    return OutboxPublisher(engine, queue)
 
 
 def build_stage_worker(

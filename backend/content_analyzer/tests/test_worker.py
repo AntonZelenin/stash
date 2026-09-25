@@ -14,8 +14,10 @@ from conftest import (
     FakeObjectStore,
     FakePlatformDeadLetteringQueue,
     fetch_descriptions,
+    fetch_outbox_events,
     fetch_status,
     insert_item,
+    outbox_for,
 )
 
 _MAX_ATTEMPTS = 5
@@ -76,7 +78,7 @@ def worker(engine, queue, dead_letters, describer) -> Worker:
             storage=FakeObjectStore({"images/cat.png": b"png-bytes"}),
             describer=describer,
             engine=engine,
-            embedding_queue=FakeJobQueue(),
+            outbox=outbox_for(engine),
         ),
         max_attempts=_MAX_ATTEMPTS,
         retry_base_delay_seconds=2.0,
@@ -278,7 +280,7 @@ def platform_worker(engine, platform_queue, describer) -> Worker:
             storage=FakeObjectStore({"images/cat.png": b"png-bytes"}),
             describer=describer,
             engine=engine,
-            embedding_queue=FakeJobQueue(),
+            outbox=outbox_for(engine),
         ),
         max_attempts=_MAX_ATTEMPTS,
     )
@@ -402,10 +404,14 @@ async def test_complete_item_is_idempotent(engine):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
 
-    assert await complete_item(engine, item_id, description="first") is True
-    assert await complete_item(engine, item_id, description="second") is False
+    embedding_job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image)
+
+    assert await complete_item(engine, item_id, description="first", embedding_job=embedding_job) is True
+    assert await complete_item(engine, item_id, description="second", embedding_job=embedding_job) is False
 
     assert await fetch_descriptions(engine, item_id) == ["first"]
+    # Only the call that completed it added the embedding job.
+    assert len(await fetch_outbox_events(engine)) == 1
 
 
 @pytest.mark.parametrize(

@@ -64,11 +64,8 @@ class Item(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # When `status` last changed — or, for `processing`, when the last
-    # processing attempt started. The content-analyzer's stale-item sweeper
-    # uses it to find items whose job was lost (see `content_analyzer.sweeper`).
+    # processing attempt started.
     status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # How many times the sweeper has re-published this item's job.
-    requeue_count: Mapped[int] = mapped_column(Integer, server_default="0")
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     text_content: Mapped["TextContent | None"] = relationship(back_populates="item", uselist=False)

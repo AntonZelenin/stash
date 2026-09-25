@@ -14,6 +14,13 @@ trace context) is shared by both backends in `queue.codec`.
 deletes) and `process_sqs_batch` (runs an event's records through a
 per-delivery callable, returns the partial batch response).
 
+Also holds `stash_shared.outbox`: the transactional outbox every job goes
+through. `add_event` records a job in `outbox_events` in the caller's
+transaction (connection or ORM session), and `OutboxPublisher.flush`
+publishes all unpublished events through a `JobQueue` resolved by queue
+name. It's at-least-once, so consumers must stay idempotent. It uses plain
+SQL only; the table itself is created by the API's Alembic migrations.
+
 Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
 API (search queries) and the embedding worker (item text), so both always
 use the same model and vector size (`EMBEDDING_DIMENSIONS`, which must
@@ -50,7 +57,7 @@ in this repo yet) — each consuming service installs it explicitly:
   it as a separate step (see `api/Dockerfile`, `content_analyzer/Dockerfile`).
 
 Keep this package free of framework-specific code (no FastAPI, no ORM
-models) so both services can depend on it without pulling in the other's
-stack.
+models; SQLAlchemy Core/plain SQL is fine) so both services can depend on
+it without pulling in the other's stack.
 
 See [../../docs/architecture.md](../../docs/architecture.md) for full architecture context.

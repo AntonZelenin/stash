@@ -18,9 +18,6 @@ the local ones. Each record is acked (deleted by Lambda) or reported in
 `batchItemFailures`, never deleted or dead-lettered from here: failed ones
 reappear after their visibility timeout (the retry backoff, for a retry),
 and SQS redrive moves them to the DLQ.
-
-The stale-item sweeper isn't part of any handler; locally it runs next to
-the content-analyzer loop (`content_analyzer.main`).
 """
 
 import asyncio

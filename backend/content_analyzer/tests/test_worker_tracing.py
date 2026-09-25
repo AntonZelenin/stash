@@ -12,12 +12,12 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 from stash_shared import tracing
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.worker import Worker
-from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item
+from conftest import FakeDeadLetterQueue, FakeJobQueue, FakeObjectStore, FakePlatformDeadLetteringQueue, insert_item, outbox_for
 
 _QUEUE = "content_analysis_jobs"
 _exporter = InMemorySpanExporter()
@@ -57,7 +57,7 @@ def _worker(
             storage=FakeObjectStore({"images/cat.png": b"png"}),
             describer=describer,
             engine=engine,
-            embedding_queue=embedding_queue or FakeJobQueue(),
+            outbox=outbox_for(engine, {EMBEDDING_JOBS: embedding_queue} if embedding_queue else None),
         ),
         max_attempts=2,
     )

@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, func, or_, select, text, update
+from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -86,20 +86,6 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
-
-    async def transition_status(
-        self, item_id: uuid.UUID, *, from_status: ItemStatus, to_status: ItemStatus
-    ) -> bool:
-        """Atomically moves an item from `from_status` to `to_status`,
-        guarded by a WHERE on the current status so a redelivered/duplicate
-        job (or a concurrent transition) can't race or double-apply. Returns
-        whether this call actually performed the transition."""
-        result = await self._session.execute(
-            update(Item)
-            .where(Item.id == item_id, Item.status == from_status)
-            .values(status=to_status, status_updated_at=func.now())
-        )
-        return result.rowcount == 1
 
     async def create_image_item(
         self,

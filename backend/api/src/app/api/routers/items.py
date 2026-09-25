@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from stash_shared.queue.base import JobQueue
+from stash_shared.outbox import OutboxPublisher
 
 from app.dependencies import get_current_user
 from app.api.schemas.items import (
@@ -32,7 +32,7 @@ from app.items.services import (
     UnsupportedImageTypeError,
 )
 from app.items.services import ListedItem as ListedItemResult
-from app.queue import get_document_analysis_queue, get_embedding_queue, get_job_queue
+from app.queue import get_outbox
 from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM, InvalidTagNameError
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -59,11 +59,10 @@ async def create_text_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
-    embedding_queue: JobQueue = Depends(get_embedding_queue),
+    outbox: OutboxPublisher = Depends(get_outbox),
 ) -> ItemCreated:
     try:
-        item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_text_item(
+        item = await ItemService(session, storage, outbox).create_text_item(
             user_id=current_user.id, text=payload.text, tags=payload.tags
         )
     except InvalidTagNameError:
@@ -84,12 +83,11 @@ async def create_image_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
-    embedding_queue: JobQueue = Depends(get_embedding_queue),
+    outbox: OutboxPublisher = Depends(get_outbox),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue, embedding_queue=embedding_queue).create_image_item(
+        item = await ItemService(session, storage, outbox).create_image_item(
             user_id=current_user.id, data=data, text=text, tags=tags
         )
     except EmptyImageError:
@@ -117,13 +115,11 @@ async def create_file_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
-    embedding_queue: JobQueue = Depends(get_embedding_queue),
-    document_queue: JobQueue = Depends(get_document_analysis_queue),
+    outbox: OutboxPublisher = Depends(get_outbox),
 ) -> ItemCreated:
     data = await file.read()
     try:
-        item = await ItemService(session, storage, queue, document_queue, embedding_queue).create_file_item(
+        item = await ItemService(session, storage, outbox).create_file_item(
             user_id=current_user.id, filename=file.filename, data=data, text=text, tags=tags
         )
     except EmptyFileError:
@@ -151,10 +147,9 @@ async def list_items(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
 ) -> ListItemsResponse:
     try:
-        listed_items, next_cursor = await ItemService(session, storage, queue).list_items(
+        listed_items, next_cursor = await ItemService(session, storage).list_items(
             user_id=current_user.id, limit=limit, cursor=cursor, filters=item_filters(type, tag_id, favorite)
         )
     except InvalidCursorError:
@@ -179,11 +174,10 @@ async def update_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
-    embedding_queue: JobQueue = Depends(get_embedding_queue),
+    outbox: OutboxPublisher = Depends(get_outbox),
 ) -> ListedItem:
     try:
-        listed = await ItemService(session, storage, queue, embedding_queue=embedding_queue).update_item(
+        listed = await ItemService(session, storage, outbox).update_item(
             user_id=current_user.id,
             item_id=item_id,
             edit=ItemEdit(text=payload.text, filename=payload.filename),
@@ -205,9 +199,8 @@ async def mark_favorite(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
 ) -> Response:
-    return await _set_favorite(ItemService(session, storage, queue), current_user, item_id, is_favorite=True)
+    return await _set_favorite(ItemService(session, storage), current_user, item_id, is_favorite=True)
 
 
 @router.delete(
@@ -220,9 +213,8 @@ async def unmark_favorite(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
 ) -> Response:
-    return await _set_favorite(ItemService(session, storage, queue), current_user, item_id, is_favorite=False)
+    return await _set_favorite(ItemService(session, storage), current_user, item_id, is_favorite=False)
 
 
 async def _set_favorite(service: ItemService, user: User, item_id: UUID, *, is_favorite: bool) -> Response:
@@ -243,10 +235,9 @@ async def delete_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    queue: JobQueue = Depends(get_job_queue),
 ) -> Response:
     try:
-        await ItemService(session, storage, queue).delete_item(user_id=current_user.id, item_id=item_id)
+        await ItemService(session, storage).delete_item(user_id=current_user.id, item_id=item_id)
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
     return Response(status_code=status.HTTP_204_NO_CONTENT)

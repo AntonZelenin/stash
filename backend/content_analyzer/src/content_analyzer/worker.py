@@ -40,7 +40,8 @@ def backoff_delay(delivery_count: int, *, base_seconds: float, max_seconds: floa
 class JobHandler(Protocol):
     """One pipeline stage's actual work for a job (thumbnailing, content
     analysis...). Must make its outcome durable before returning — persist
-    results, publish the next stage's job — because `Worker` acks right
+    results, with the next stage's job added to the outbox in the same
+    transaction (`stash_shared.outbox`) — because `Worker` acks right
     after. Must be safe to re-run for the same job: redelivery after a crash
     will call it again.
 

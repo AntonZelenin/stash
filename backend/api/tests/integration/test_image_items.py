@@ -119,9 +119,11 @@ async def test_create_image_item_publishes_processing_job(
     assert job.image.content_type == "image/png"
 
 
-async def test_create_image_item_marked_failed_when_enqueue_fails(
+async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_later_request(
     client: AsyncClient, session: AsyncSession, queue: FakeJobQueue
 ):
+    """The job is in the outbox with the item: the next request that
+    flushes it publishes it, and the item goes on to processing."""
     queue.fail_publish = True
     _, token = await register_and_login(client)
 
@@ -132,11 +134,18 @@ async def test_create_image_item_marked_failed_when_enqueue_fails(
     )
 
     assert response.status_code == 202
-    assert response.json()["status"] == "failed"
-
-    item = await session.get(Item, UUID(response.json()["id"]))
-    assert item.status == "failed"
+    assert response.json()["status"] == "pending"
+    item_id = UUID(response.json()["id"])
+    item = await session.get(Item, item_id)
+    assert item.status == "pending"
     assert queue.published == []
+
+    queue.fail_publish = False
+    await client.post("/items/text", json={"text": "later"}, headers={"Authorization": f"Bearer {token}"})
+
+    [job] = queue.published
+    assert job.item_id == item_id
+    assert job.image.storage_key == f"images/{item_id}.png"
 
 
 async def test_create_image_item_with_caption_stores_it_on_the_same_item(

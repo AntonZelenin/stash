@@ -5,7 +5,9 @@ Responsible for:
 - Creating and retrieving items.
 - Image uploads.
 - Search.
-- Sending content processing jobs to the queue.
+- Sending content processing jobs to the queue, always through the
+  transactional outbox (`stash_shared.outbox`): add the job in the same
+  transaction as the change, flush after the commit.
 
 See [../../docs/architecture.md](../../docs/architecture.md) for full architecture context.
 

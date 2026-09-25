@@ -98,13 +98,17 @@ Failure handling:
   duplicates are safe no-ops.
 - A worker crash mid-job is covered by the queue: the unacked message is
   redelivered after the visibility timeout.
-- Items whose job is lost entirely (the API crashed between commit and
-  publish, or Valkey lost un-persisted writes) are covered by a stale-item
-  sweeper running in the worker. `items.status_updated_at` is stamped on
-  every status write and at the start of every processing attempt. Items
-  `pending`/`processing` with no movement for 30 minutes get their job
-  re-published (tracked in `items.requeue_count`), and after 3 requeues
-  they are marked `failed`.
+- A job can't be lost between a database commit and its publish: every job
+  goes through the transactional outbox (see "Outbox" under Queue), in the
+  same transaction as the change that needs it. A stage's hand-off to the
+  next is part of its durable outcome in the same way.
+- Not covered: a message the queue itself loses after accepting it (Valkey
+  losing un-persisted writes, so run it with AOF persistence), and an item
+  whose last delivery SQS moves to its DLQ before the worker's last
+  attempt (keep `maxReceiveCount` = `MAX_DELIVERY_ATTEMPTS`). Both leave
+  the item `pending`/`processing`; dead-lettered jobs are replayed from the
+  DLQ. `items.status_updated_at` (stamped on every status write and at the
+  start of every processing attempt) shows how long an item has been stuck.
 
 ### PostgreSQL
 
@@ -184,10 +188,10 @@ redeliveries of jobs whose item has already failed:
   in Terraform) moves it to its DLQ. `maxReceiveCount` should equal
   `MAX_DELIVERY_ATTEMPTS` (default 5), so the worker's last attempt (which
   marks the item `failed`) is SQS's last receive. Lower, SQS moves messages
-  before the worker's last attempt, leaving their items `processing` until
-  the stale sweeper re-publishes or fails them; higher, the extra receives
-  are only skipped/abandoned on their way to the DLQ. Any message for a `failed` item ends
-  up in the DLQ, including one left over after the sweeper gave up on it.
+  before the worker's last attempt, leaving their items `processing` (only
+  a DLQ replay moves them on); higher, the extra receives are only
+  skipped/abandoned on their way to the DLQ. Any message for a `failed`
+  item ends up in the DLQ.
   The embedding worker doesn't track item status, so each redelivery of a
   message it gave up on is processed again (dead-lettered straight away
   once past `MAX_DELIVERY_ATTEMPTS`) until SQS moves it.
@@ -213,7 +217,31 @@ loop are set up on the first invocation and reused; metrics and spans are
 flushed at the end of every invocation, since Lambda freezes the process
 after it returns. The function's timeout must cover a whole batch processed
 sequentially, and the queue's visibility timeout must exceed the function
-timeout. The stale-item sweeper isn't part of any handler.
+timeout.
+
+Outbox. Nothing publishes a job directly after a commit. The API and the
+workers add each job to the `outbox_events` table with
+`stash_shared.outbox.add_event`, in the same database transaction as the
+change that needs it: item creation (thumbnail, document-analysis and
+embedding jobs), an edit of an item's searchable text (embedding), a
+recorded thumbnail (content analysis), and an analyzer completing an item
+(embedding). The change and its job are committed together or not at all.
+After the commit, `OutboxPublisher.flush` publishes every unpublished event,
+not only the ones just written, through the same `JobQueue` abstraction
+(Valkey or SQS), and sets each event's `published_at` once its queue has
+accepted it. A failed publish leaves the event for the next flush. There
+is no background flusher: after a crash or a queue outage, an event waits
+until the next API request or worker job that writes an event triggers a
+flush, in any process. Events keep the trace context they were created in,
+so a job published by a later flush still joins the trace that caused it.
+
+Concurrent flushes (API replicas, workers) claim batches with
+`FOR UPDATE SKIP LOCKED`, so they don't publish the same event at the
+same time. Delivery is still at-least-once: if a process dies after
+publishing but before `published_at` is saved, the event is published
+again. Every consumer is idempotent (see the worker's failure handling), so
+a duplicate is skipped or re-runs harmlessly. Published rows are kept (and
+nothing prunes them yet).
 
 Queues (on Valkey: stream key `stash:<name>`, one consumer group each, dead
 letters in `stash:<name>:dead-letter`):
@@ -297,7 +325,7 @@ What's traced:
   opens a client span with its log fields as attributes.
 - Business operations: the API's item create/update/delete/search, the
   thumbnail stage's image processing, the document stage's text
-  extraction, each stale-item sweep.
+  extraction.
 - The queue: `publish <queue>` (producer) for every published job and
   dead letter, `process <queue>` (consumer) for every delivery.
 
@@ -502,10 +530,11 @@ worker must use the same model) plus the MD5 of the text it was made from:
 unchanged text isn't re-embedded, and a vector is only saved if the
 description hasn't changed meanwhile. The embedding worker uses the same
 `Worker` as the other stages (retries, 5 attempts, dead-letter queue) but
-never changes an item's status. The content-analyzer's sweeper re-publishes
-embedding jobs for items whose embedding is missing or stale after
-`EMBEDDING_SETTLE_SECONDS`, covering events lost between saving a
-description and publishing.
+never changes an item's status. Its events go through the outbox, in the
+same transaction as the description they're for. An embedding job
+dead-lettered after its retries (e.g. an OpenAI outage longer than them)
+leaves the item without an up-to-date embedding until the job is replayed
+from the dead-letter queue or the text changes again.
 
 `POST /search` embeds the query with the same model and returns the user's
 items by cosine distance (`<=>`), nearest first, via an HNSW index

@@ -90,3 +90,14 @@ async def test_item_is_saved_even_if_embedding_event_cannot_be_published(
     assert response.json()["status"] == "completed"
     listed = (await client.get("/items", headers=_auth(token))).json()["items"]
     assert [item["text"] for item in listed] == ["call mom"]
+    assert embedding_queue.published == []
+
+    # Left in the outbox: the next request that flushes publishes it, with
+    # its own event.
+    embedding_queue.fail_publish = False
+    second = await client.post("/items/text", json={"text": "buy milk"}, headers=_auth(token))
+
+    assert [job.item_id for job in embedding_queue.published] == [
+        UUID(response.json()["id"]),
+        UUID(second.json()["id"]),
+    ]

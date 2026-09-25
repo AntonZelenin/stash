@@ -4,9 +4,10 @@ from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import tracing
 from stash_shared.log import get_logger
-from stash_shared.queue.base import JobQueue, ProcessingJob
+from stash_shared.outbox import OutboxPublisher
+from stash_shared.queue.base import ProcessingJob
 
-from content_analyzer.analysis import log_completion
+from content_analyzer.analysis import embedding_job_for, log_completion
 from content_analyzer.documents.describer import DocumentDescriber
 from content_analyzer.documents.excerpt import select_excerpt
 from content_analyzer.documents.parsers import normalize_text, parser_for
@@ -32,8 +33,9 @@ class DocumentAnalysisHandler:
     Safe to re-run: `complete_item` only writes if the item isn't finished
     yet, so a redelivered job costs at most a repeated OpenAI call.
 
-    Its job ends with the description: it then publishes to
-    `embedding_queue` for the embedding worker, and never embeds itself.
+    Its job ends with the description: completing the item also adds an
+    `EMBEDDING_JOBS` job to the outbox, in the same transaction, which it
+    then publishes via `outbox`; it never embeds itself.
     """
 
     def __init__(
@@ -43,13 +45,13 @@ class DocumentAnalysisHandler:
         describer: DocumentDescriber,
         engine: AsyncEngine,
         max_chars: int,
-        embedding_queue: JobQueue,
+        outbox: OutboxPublisher,
     ):
         self._storage = storage
         self._describer = describer
         self._engine = engine
         self._max_chars = max_chars
-        self._embedding_queue = embedding_queue
+        self._outbox = outbox
 
     async def handle(self, job: ProcessingJob) -> None:
         if job.file is None:
@@ -86,8 +88,8 @@ class DocumentAnalysisHandler:
         description = await self._describer.describe(
             filename=job.file.filename, text=excerpt.text, is_partial=excerpt.is_partial
         )
-        completed = await complete_item(self._engine, job.item_id, description=description)
-        await self._embedding_queue.publish(
-            ProcessingJob(item_id=job.item_id, user_id=job.user_id, item_type=job.item_type)
+        completed = await complete_item(
+            self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)
         )
         log_completion(completed, description_chars=len(description))
+        await self._outbox.flush()

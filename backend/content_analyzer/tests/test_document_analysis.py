@@ -1,7 +1,7 @@
 import uuid
 
 import pytest
-from stash_shared.queue.base import Delivery, FileRef, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, FileRef, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.documents.analysis import DocumentAnalysisHandler
 from content_analyzer.documents.excerpt import SEPARATOR
@@ -13,6 +13,7 @@ from conftest import (
     fetch_descriptions,
     fetch_status,
     insert_item,
+    outbox_for,
 )
 
 _KEY = "files/doc.txt"
@@ -75,7 +76,7 @@ def _worker(
             describer=describer,
             engine=engine,
             max_chars=max_chars,
-            embedding_queue=embedding_queue if embedding_queue is not None else FakeJobQueue(),
+            outbox=outbox_for(engine, {EMBEDDING_JOBS: embedding_queue} if embedding_queue is not None else None),
         ),
         item_type=ItemType.file,
         max_attempts=5,

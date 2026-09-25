@@ -24,13 +24,13 @@ from content_analyzer.describer import OpenAIImageDescriber
 from content_analyzer.documents.analysis import DocumentAnalysisHandler
 from content_analyzer.documents.describer import OpenAIDocumentDescriber
 from content_analyzer.embeddings import EmbeddingHandler
-from content_analyzer.runtime import build_object_store, build_queue, build_stage_worker
+from content_analyzer.runtime import build_object_store, build_outbox, build_stage_worker
 from content_analyzer.thumbnails import ThumbnailHandler
 from content_analyzer.worker import Worker
 
 
 def build_thumbnail_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | None = None) -> Worker:
-    """Consumes `THUMBNAIL_JOBS` and hands each image on to `CONTENT_ANALYSIS_JOBS`."""
+    """Consumes `THUMBNAIL_JOBS` and hands each image on to `CONTENT_ANALYSIS_JOBS` (via the outbox)."""
     return build_stage_worker(
         settings,
         queue_name=THUMBNAIL_JOBS,
@@ -39,7 +39,7 @@ def build_thumbnail_worker(settings: Settings, engine: AsyncEngine, *, queue: Jo
         handler=ThumbnailHandler(
             storage=build_object_store(settings),
             engine=engine,
-            analysis_queue=build_queue(settings, CONTENT_ANALYSIS_JOBS),
+            outbox=build_outbox(settings, engine),
             max_size=settings.thumbnail_max_size,
             quality=settings.thumbnail_quality,
         ),
@@ -64,7 +64,7 @@ def build_content_analysis_worker(
                 timeout_seconds=settings.openai_timeout_seconds,
             ),
             engine=engine,
-            embedding_queue=build_queue(settings, EMBEDDING_JOBS),
+            outbox=build_outbox(settings, engine),
         ),
     )
 
@@ -89,7 +89,7 @@ def build_document_analysis_worker(
             ),
             engine=engine,
             max_chars=settings.document_analysis_max_chars,
-            embedding_queue=build_queue(settings, EMBEDDING_JOBS),
+            outbox=build_outbox(settings, engine),
         ),
     )
 

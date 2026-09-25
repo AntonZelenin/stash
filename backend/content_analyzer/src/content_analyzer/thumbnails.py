@@ -7,7 +7,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import tracing
 from stash_shared.log import get_logger
-from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, JobQueue, ProcessingJob
+from stash_shared.outbox import OutboxPublisher
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, ProcessingJob
 
 from content_analyzer.errors import PermanentProcessingError
 from content_analyzer.items import record_thumbnail
@@ -57,12 +58,17 @@ class ThumbnailHandler:
     hands the item on to content analysis — pointing that job at the
     thumbnail, which is what gets sent to OpenAI.
 
+    The hand-off is added to the outbox in the same transaction that records
+    the thumbnail, then published via `outbox`, so a recorded thumbnail
+    always has its analysis job.
+
     Safe to re-run: the thumbnail key is deterministic (overwritten, never
     duplicated) and recording it is a plain UPDATE to the same value. The one
     side effect that can repeat is the hand-off itself — if the worker dies
-    after publishing but before its ack, the job runs again and publishes a
-    second analysis job — and the analysis stage is idempotent for exactly
-    that reason (a duplicate finds the item finished and is skipped).
+    after recording but before its ack, the job runs again and adds a
+    second analysis job (and the outbox may publish any job twice) — and the
+    analysis stage is idempotent for exactly that reason (a duplicate finds
+    the item finished and is skipped).
     """
 
     def __init__(
@@ -70,13 +76,13 @@ class ThumbnailHandler:
         *,
         storage: ObjectStore,
         engine: AsyncEngine,
-        analysis_queue: JobQueue,
+        outbox: OutboxPublisher,
         max_size: int,
         quality: int,
     ):
         self._storage = storage
         self._engine = engine
-        self._analysis_queue = analysis_queue
+        self._outbox = outbox
         self._max_size = max_size
         self._quality = quality
 
@@ -93,7 +99,13 @@ class ThumbnailHandler:
 
         key = thumbnail_key(job.item_id)
         await self._storage.upload(key, thumbnail, content_type=THUMBNAIL_CONTENT_TYPE)
-        if not await record_thumbnail(self._engine, job.item_id, thumbnail_key=key):
+        analysis_job = ProcessingJob(
+            item_id=job.item_id,
+            user_id=job.user_id,
+            item_type=job.item_type,
+            image=ImageRef(storage_key=key, content_type=THUMBNAIL_CONTENT_TYPE),
+        )
+        if not await record_thumbnail(self._engine, job.item_id, thumbnail_key=key, analysis_job=analysis_job):
             # The item was deleted while we worked. Its delete couldn't have
             # known about this thumbnail yet, so clean it up here, and don't
             # hand a deleted item on.
@@ -101,14 +113,6 @@ class ThumbnailHandler:
             await self._storage.delete(key)
             return
 
-        await self._analysis_queue.publish(
-            ProcessingJob(
-                item_id=job.item_id,
-                user_id=job.user_id,
-                item_type=job.item_type,
-                image=ImageRef(storage_key=key, content_type=THUMBNAIL_CONTENT_TYPE),
-            )
-        )
         logger.info(
             "Thumbnail stored; handed off to content analysis",
             storage_key=key,
@@ -116,3 +120,4 @@ class ThumbnailHandler:
             thumbnail_bytes=len(thumbnail),
             next_queue=CONTENT_ANALYSIS_JOBS,
         )
+        await self._outbox.flush()

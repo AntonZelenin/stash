@@ -9,6 +9,9 @@ dependencies = [
     # ReceiveMessage's `MessageSystemAttributeNames`.
     "boto3>=1.35",
     "openai>=1.66",
+    # The transactional outbox (`stash_shared.outbox`): plain SQL through
+    # the services' own async engines. Same range as the services pin.
+    "sqlalchemy[asyncio]>=2.0,<2.1",
     # Distributed tracing (`stash_shared.tracing`): OTLP/HTTP export, plus
     # the instrumentations every service uses (S3 via botocore, SQLAlchemy).
     "opentelemetry-api>=1.30",
@@ -26,6 +29,7 @@ aws = ["aws-lambda-powertools>=3.0"]
 test = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "aiosqlite>=0.20",
 ]
 
 [build-system]

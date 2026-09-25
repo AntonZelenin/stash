@@ -45,14 +45,6 @@ class Settings(BaseSettings):
     retry_base_delay_seconds: float = 2.0
     retry_max_delay_seconds: float = 120.0
 
-    # Stale-item sweeper (see `content_analyzer.sweeper`). `stale_item_after_seconds`
-    # must exceed queue_visibility_timeout_seconds + retry_max_delay_seconds
-    # plus the worst expected queue backlog, or live jobs get re-published
-    # (harmless duplicates, but wasted work).
-    stale_item_after_seconds: float = 1800.0
-    max_stale_requeues: int = 3
-    stale_sweep_interval_seconds: float = 60.0
-
     # Set the endpoint and both keys to "" on AWS: S3 itself, with the task
     # role's credentials.
     s3_endpoint_url: str = "http://localhost:9000"
@@ -75,9 +67,6 @@ class Settings(BaseSettings):
     # Must match the API's EMBEDDING_MODEL (queries and items have to be
     # embedded by the same model to be comparable).
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
-    # How long after an item's last status change the sweeper waits before
-    # treating a missing/stale embedding as lost (rather than in flight).
-    embedding_settle_seconds: float = 600.0
 
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"

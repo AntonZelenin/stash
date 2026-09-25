@@ -19,7 +19,7 @@ the same Docker image, each consuming its own queue from `backend/shared`
    stores a thumbnail, then publishes to `CONTENT_ANALYSIS_JOBS`.
 2. `content_analyzer.main` (compose service `content_analyzer`): consumes
    `CONTENT_ANALYSIS_JOBS`, describes the thumbnail via OpenAI and completes
-   the item. Also runs the stale-item sweeper for every queue.
+   the item.
 
 And one analyzes documents:
 
@@ -65,13 +65,12 @@ Layout:
   describers, and which OpenAI errors are permanent
   (`errors.PermanentProcessingError`) vs. transient (anything else).
 - `storage` — small S3 object store (download/upload/delete).
-- `sweeper.StaleItemSweeper` — re-publishes jobs for items stuck
-  `pending`/`processing` (by `status_updated_at`) whose job was lost, to the
-  stage they got stuck before, and fails them after too many requeues; also
-  re-publishes embedding jobs for items whose embedding is missing or stale.
 - `items` — the guarded SQL status/result writes. Every status write stamps
-  `status_updated_at`; keep it that way or the sweeper will misjudge items.
-- `runtime` — wiring shared by the entrypoints.
+  `status_updated_at`. A write that triggers a next-stage job (recording a
+  thumbnail, completing an item) adds that job to the outbox
+  (`stash_shared.outbox.add_event`) in the same transaction; the handler
+  then flushes the outbox. Never publish a job straight to a queue.
+- `runtime` — wiring shared by the entrypoints (including `build_outbox`).
 - `stages` — each queue stage's `Worker`, built from settings; the only
   place a stage is wired, used by both runtimes below.
 - Runtimes: the `*_main` modules (local: `run_forever` on Valkey) and

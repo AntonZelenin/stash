@@ -11,6 +11,7 @@ from app.auth import models as auth_models  # noqa: F401
 from app.config import get_settings
 from app.db import Base
 from app.items import models as items_models  # noqa: F401
+from app import outbox as outbox_models  # noqa: F401
 from app.users import models as users_models  # noqa: F401
 
 # this is the Alembic Config object, which provides

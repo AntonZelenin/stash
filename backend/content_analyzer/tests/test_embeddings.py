@@ -8,7 +8,6 @@ from stash_shared.queue.base import Delivery, ItemType, ProcessingJob
 
 from content_analyzer.embeddings import EmbeddingHandler
 from content_analyzer.items import description_hash, save_embedding
-from content_analyzer.sweeper import StaleItemSweeper
 from content_analyzer.worker import Worker
 from conftest import FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
 
@@ -145,7 +144,7 @@ async def test_text_changed_while_embedding_is_not_overwritten_by_stale_vector(e
     await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
 
     # The vector for "our cat" was dropped; the newer text's own job will
-    # embed it (or the sweeper will).
+    # embed it.
     assert await _embedding_hash(engine, item_id) is None
     assert len(queue.acked) == 1
 
@@ -197,39 +196,3 @@ async def test_rejected_input_is_dead_lettered_immediately(engine, queue, dead_l
     assert queue.retried == []
     assert len(dead_letters.letters) == 1
     assert await fetch_status(engine, item_id) == "completed"
-
-
-# ---- sweeper safety net ----
-
-
-def _sweeper(engine, embedding_queue) -> StaleItemSweeper:
-    return StaleItemSweeper(
-        thumbnail_queue=FakeJobQueue(),
-        analysis_queue=FakeJobQueue(),
-        document_queue=FakeJobQueue(),
-        embedding_queue=embedding_queue,
-        engine=engine,
-        stale_after_seconds=1800,
-        max_requeues=3,
-        interval_seconds=60,
-        embedding_settle_seconds=600,
-    )
-
-
-async def test_sweeper_republishes_missing_and_stale_embeddings(engine):
-    missing, stale, current, recent = (uuid.uuid4() for _ in range(4))
-    for item_id in (missing, stale, current):
-        await insert_item(engine, item_id, status="completed", item_type="text", age_seconds=3600)
-        await _set_description(engine, item_id, f"note {item_id}")
-    # Changed a moment ago: its embedding event may still be in flight.
-    await insert_item(engine, recent, status="completed", item_type="text", age_seconds=5)
-    await _set_description(engine, recent, "brand new note")
-    await save_embedding(engine, current, embedding="[0.1]", content_hash=description_hash(f"note {current}"))
-    await save_embedding(engine, stale, embedding="[0.1]", content_hash=description_hash(f"note {stale}"))
-    await _set_description(engine, stale, "edited later")
-    embedding_queue = FakeJobQueue()
-
-    await _sweeper(engine, embedding_queue).sweep_once()
-
-    assert {job.item_id for job in embedding_queue.published} == {missing, stale}
-    assert all(job.item_type == ItemType.text for job in embedding_queue.published)
