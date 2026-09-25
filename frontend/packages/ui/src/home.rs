@@ -373,13 +373,11 @@ pub fn Home() -> Element {
         .collect();
     let counts = mock::item_counts();
 
-    // Ctrl+F / ⌘F focuses the search box (see its keyboard hint). One
-    // document-level listener, registered once per page load.
-    let mut is_mac = use_signal(|| false);
+    // Ctrl+F / ⌘F focuses the search box. One document-level listener,
+    // registered once per page load.
     use_effect(move || {
-        spawn(async move {
-            let script = format!(
-                r#"
+        let script = format!(
+            r#"
                 if (!window.__stashSearchShortcut) {{
                     window.__stashSearchShortcut = true;
                     document.addEventListener("keydown", (e) => {{
@@ -393,13 +391,9 @@ pub fn Home() -> Element {
                         }}
                     }});
                 }}
-                return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
                 "#
-            );
-            if let Ok(mac) = document::eval(&script).join::<bool>().await {
-                is_mac.set(mac);
-            }
-        });
+        );
+        document::eval(&script);
     });
 
     rsx! {
@@ -641,9 +635,6 @@ pub fn Home() -> Element {
                                     placeholder: "Search in all items...",
                                     value: "{search_query}",
                                     oninput: move |evt| search_query.set(evt.value()),
-                                }
-                                kbd { class: "stash-search-kbd",
-                                    if is_mac() { "⌘F" } else { "Ctrl F" }
                                 }
                             }
                             TagFilter { selected: selected_tags }
