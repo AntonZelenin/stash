@@ -31,3 +31,20 @@ variable "extra_tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "vpc_cidr" {
+  description = "IPv4 CIDR of the VPC. Subnets are carved out as /24s (for a /16), so it must be /20 or larger."
+  type        = string
+  default     = "10.0.0.0/16"
+
+  validation {
+    condition     = can(cidrnetmask(var.vpc_cidr)) && tonumber(split("/", var.vpc_cidr)[1]) <= 20
+    error_message = "vpc_cidr must be a valid IPv4 CIDR of /20 or larger."
+  }
+}
+
+variable "enable_dns_hostnames" {
+  description = "Enable VPC DNS hostnames. Only required for publicly accessible RDS or interface VPC endpoints with private DNS."
+  type        = bool
+  default     = false
+}
