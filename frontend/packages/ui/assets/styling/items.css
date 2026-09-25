@@ -26,22 +26,88 @@
 }
 
 /* A plain box: nothing inside is clipped, so the tag picker's dropdown can
-   extend past short cards. Only its content part is clickable. */
+   extend past short cards. Only its content part is clickable.
+
+   Each type has an identity: a barely tinted background (--card-bg), and a
+   clearer accent (--card-accent) on the ⋯ icon and the tags'
+   text, with lighter shades of it for the border, the line between content
+   and footer, and the tags' fill. Images stay neutral, so the picture
+   itself is the focus. Date, body text and the red ♡ are the same on every
+   type.
+
+   Set on the shell rather than the card, so the ⋯ button (outside the card
+   box) gets them too. */
+.item-card-shell {
+    --card-bg: #fff;
+    --card-border: var(--border);
+    --card-border-hover: #d8dbe2;
+    --card-separator: var(--border);
+    --card-accent: var(--text-primary);
+    --card-tag-bg: #f1f5f9;
+    --card-tag-text: #475569;
+}
+
+/* Warm cream, amber accent. */
+.item-card-shell:has(> .item-card-note) {
+    --card-bg: #fffdf5;
+    --card-border: #f3e0a4;
+    --card-separator: #f4dc92;
+    --card-accent: #b45309;
+    --card-tag-bg: #fef3c7;
+    --card-tag-text: #92400e;
+}
+
+/* Pale lavender, violet accent. */
+.item-card-shell:has(> .item-card-link) {
+    --card-bg: #fbf9ff;
+    --card-border: #dcd0fc;
+    --card-border-hover: #c4b1fa;
+    --card-separator: #ddd1fd;
+    --card-accent: #7c3aed;
+    --card-tag-bg: #f1eaff;
+    --card-tag-text: #6d28d9;
+}
+
+/* Pale sky, blue accent. */
+.item-card-shell:has(> .item-card-file) {
+    --card-bg: #f6fbff;
+    --card-border: #c6e3f7;
+    --card-border-hover: #9fcdef;
+    --card-separator: #c6e3f7;
+    --card-accent: #0284c7;
+    --card-tag-bg: #e0f2fe;
+    --card-tag-text: #0369a1;
+}
+
 .item-card {
     display: block;
-    background: #fff;
-    border: 1px solid var(--border);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
     border-radius: 14px;
     text-align: left;
 }
 
+/* The card's tags take its type's colours (the viewer's keep the default). */
+.item-card .item-tags .tag-chip {
+    background: var(--card-tag-bg);
+    color: var(--card-tag-text);
+}
+
+.item-card-actions .item-menu-button {
+    color: var(--card-accent);
+}
+
 /* ---- footer: tags on the left, upload date bottom right ---- */
 
+/* Inset by the card's side padding and set off from the content by a thin
+   line in the card type's accent. */
 .item-card-footer {
     display: flex;
     align-items: flex-end;
     gap: 8px;
-    padding: 0 14px 12px;
+    margin: 0 14px;
+    padding: 8px 0 12px;
+    border-top: 1px solid var(--card-separator);
 }
 
 /* ♡ and the date, pushed to the bottom-right corner. */
@@ -292,15 +358,16 @@
     object-fit: cover;
 }
 
-/* The footer sits right under the image when there's no caption. */
+/* Right under the image there's nothing to separate, so no line; a caption
+   gets the neutral one. */
 .item-card-image .item-card-footer {
     padding-top: 10px;
+    border-top: none;
 }
 
-/* The note's scrolling text can end right at its box's edge, so the
-   footer keeps its own distance from it. */
-.item-card-note .item-card-footer {
-    padding-top: 8px;
+.item-card-image:has(.item-card-image-caption) .item-card-footer {
+    margin-top: 10px;
+    border-top: 1px solid var(--card-separator);
 }
 
 /* Same type as a note, with a shorter limit: the image is the main
@@ -332,7 +399,7 @@
 }
 
 .item-card-file:hover {
-    border-color: #d8dbe2;
+    border-color: var(--card-border-hover);
     box-shadow: 0 6px 16px rgba(20, 22, 27, 0.06);
 }
 
@@ -352,8 +419,8 @@
     height: 36px;
     flex-shrink: 0;
     border-radius: 10px;
-    background: #eef1ff;
-    color: #5b6bf0;
+    background: #dff1fd;
+    color: #0284c7;
 }
 
 .item-card-file-icon .icon {
@@ -419,7 +486,7 @@
 }
 
 .item-card-link:hover {
-    border-color: #d8dbe2;
+    border-color: var(--card-border-hover);
     box-shadow: 0 6px 16px rgba(20, 22, 27, 0.06);
 }
 
@@ -431,8 +498,8 @@
     height: 36px;
     flex-shrink: 0;
     border-radius: 10px;
-    background: #f1f2f5;
-    color: var(--text-muted);
+    background: #ede5ff;
+    color: #7c3aed;
 }
 
 .item-card-link-icon .icon {
