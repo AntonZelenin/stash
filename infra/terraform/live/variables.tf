@@ -233,9 +233,14 @@ variable "lambda_config" {
 }
 
 variable "lambda_log_retention_days" {
-  description = "CloudWatch Logs retention for the Lambda log groups."
+  description = "CloudWatch Logs retention for the Lambda log groups (application logs and EMF metric lines)."
   type        = number
   default     = 14
+
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365], var.lambda_log_retention_days)
+    error_message = "lambda_log_retention_days must be a CloudWatch Logs retention value of at most a year (1, 3, 5, 7, 14, 30, ...)."
+  }
 }
 
 variable "log_level" {
@@ -251,9 +256,31 @@ variable "metrics_namespace" {
 }
 
 variable "tracing_otlp_endpoint" {
-  description = "OTLP/HTTP collector for traces. Null disables tracing (TRACING_ENABLED=false); there is no collector on AWS yet."
+  description = "OTLP/HTTP base URL traces are exported to (TRACING_OTLP_ENDPOINT). Null, the default, disables tracing (TRACING_ENABLED=false). The functions reach the internet over IPv6 only, so it must be IPv6-reachable."
   type        = string
   default     = null
+}
+
+variable "alarm_email" {
+  description = "Email address subscribed to the alarm topic (the subscription must be confirmed from the email). Null: alarms only show in the console."
+  type        = string
+  default     = null
+}
+
+variable "alarm_thresholds" {
+  description = <<-EOT
+    CloudWatch alarm thresholds, all over 5-minute periods:
+    worker_errors: failed invocations of an alarmed worker (crashes, timeouts; not reported batch items),
+    api_5xx: API Gateway 5xx responses, rds_cpu_percent: average RDS CPU for 15 minutes,
+    rds_free_storage_gib: RDS free storage.
+  EOT
+  type = object({
+    worker_errors        = optional(number, 3)
+    api_5xx              = optional(number, 5)
+    rds_cpu_percent      = optional(number, 80)
+    rds_free_storage_gib = optional(number, 2)
+  })
+  default = {}
 }
 
 variable "api_cors_allowed_origins" {

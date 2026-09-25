@@ -4,7 +4,7 @@ Root configuration for Stash on AWS: provider, backend, naming, tags and
 the network (`network.tf`), the database (`database.tf`), object storage
 (`storage.tf`), queues and their Lambda triggers (`messaging.tf`), the
 Lambdas (`lambda.tf`, `iam.tf`, `secrets.tf`) and the public HTTP API
-(`api_gateway.tf`).
+(`api_gateway.tf`), plus alarms and a dashboard (`observability.tf`).
 
 - `local.name_prefix`: `{project}-{environment}`, e.g. `stash-prod`; prefix
   every resource name with it.
@@ -180,3 +180,66 @@ custom domain yet.
   capped at 30.
 - Only API Gateway may invoke the function (`aws_lambda_permission`,
   scoped to this API).
+
+## Observability
+
+Logs, metrics and alarms only, all CloudWatch; they cost next to nothing at
+this scale. Tracing is off on AWS.
+
+### Logs
+
+Each function logs to `/aws/lambda/stash-{env}-{function}`, created here with
+`lambda_log_retention_days` (14) retention. The services' EMF metric lines
+are in the same groups.
+
+### Metrics
+
+The services publish their own metrics (namespace `Stash`, see
+docs/architecture.md, "Metrics"). Everything below uses the metrics AWS
+publishes anyway: Lambda (`Errors`, `Throttles`, `ConcurrentExecutions`),
+SQS (`ApproximateNumberOfMessagesVisible`, `ApproximateAgeOfOldestMessage`),
+API Gateway (`Count`, `4xx`, `5xx`, `Latency`) and RDS (`CPUUtilization`,
+`DatabaseConnections`, `FreeStorageSpace`).
+
+### Alarms
+
+Only conditions worth being notified about and investigating: 10 alarms of
+one metric each, the size of the CloudWatch free tier (10 alarm metrics).
+All notify the SNS topic `stash-{env}-alarms` (output `alarm_topic_arn`),
+with an email subscription when `alarm_email` is set. Thresholds are in
+`alarm_thresholds`; periods are 5 minutes.
+
+| Alarm                                          | Fires when                                                                                   |
+|------------------------------------------------|----------------------------------------------------------------------------------------------|
+| `stash-{env}-{queue}-dlq-not-empty` (4)        | a message is in a DLQ (a job was given up on); stays in alarm until redriven or purged       |
+| `stash-{env}-api-5xx`                          | ≥ 5 API Gateway 5xx: application 500s, or the function crashing, timing out or throttled   |
+| `stash-{env}-thumbnailer-errors`               | ≥ 3 failed invocations (crash, timeout, OOM); reported batch items don't count              |
+| `stash-{env}-document-analyzer-errors`         | same                                                                                         |
+| `stash-{env}-embedding-oldest-message-age`     | a message is older than visibility timeout x `max_delivery_attempts` (30 min): not consumed |
+| `stash-{env}-rds-cpu`                          | average CPU > 80% for 15 minutes                                                             |
+| `stash-{env}-rds-free-storage`                 | < 2 GiB free (storage autoscaling failed or hit `db_max_allocated_storage`)                 |
+
+- API errors use API Gateway's `5xx`, not the function's Lambda `Errors`:
+  Mangum turns a route's exception into a 500 response, so the invocation
+  itself succeeds and `Errors` only counts crashes and timeouts.
+- Worker errors are alarmed for the two workers handling large, untrusted
+  inputs. The others' failures (and these') still reach their DLQ alarm
+  once retries run out, within 15–45 minutes.
+- The age alarm watches `embedding_jobs`, which gets a job for every item:
+  messages nobody consumes (mapping disabled, function unable to start)
+  never reach a DLQ; they expire after 4 days.
+- Not alarmed, but on the dashboard: latency, throttles, concurrency, other
+  queues' depth and age, RDS connections.
+
+The dashboard `stash-{env}` (output `dashboard_url`) shows the alarms, API
+traffic/latency, Lambda errors/throttles/concurrency, queue backlog and age,
+DLQs and RDS.
+
+### Tracing
+
+Off on AWS: with `tracing_otlp_endpoint` unset (the default) the functions
+get `TRACING_ENABLED=false` and create no spans. There is no tracing
+infrastructure on AWS. Setting it to an OTLP/HTTP base URL sets
+`TRACING_ENABLED=true` and `TRACING_OTLP_ENDPOINT`; the collector must be
+reachable over IPv6 (the functions have no IPv4 route to the internet).
+Locally, traces still go to Jaeger (docker-compose).

@@ -39,3 +39,12 @@ aws_region  = "eu-central-1"
 #   thumbnailer = { reserved_concurrency = -1 } # unreserved
 # }
 # api_cors_allowed_origins = ["https://stash.example.com"]
+
+# Observability. Alarms notify the alarm_topic_arn SNS topic; confirm the
+# email subscription from the message AWS sends.
+# alarm_email = "ops@example.com"
+# alarm_thresholds = {
+#   worker_errors = 3 # thumbnailer / document_analyzer, per 5 minutes
+#   api_5xx       = 5
+# }
+# lambda_log_retention_days = 14
