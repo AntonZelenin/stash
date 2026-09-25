@@ -563,7 +563,7 @@ pub fn Home() -> Element {
                                 disabled: is_submitting() || picking_tag(),
                                 onclick: move |_| picking_tag.set(true),
                                 span { class: "home-input-tag-plus", "+" }
-                                "Tag"
+                                "Add tag"
                             }
                             label {
                                 class: "home-input-attach",
