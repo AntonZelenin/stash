@@ -1,7 +1,9 @@
 use api::ApiError;
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 
 use crate::AuthSession;
+use crate::i18n::api_error_message;
 use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
 use crate::routes::Route;
 
@@ -46,7 +48,7 @@ fn split_error(err: ApiError) -> FormErrors {
             result
         }
         other => FormErrors {
-            general: Some(other.to_string()),
+            general: Some(api_error_message(&other)),
             email: None,
             password: None,
         },
@@ -54,16 +56,31 @@ fn split_error(err: ApiError) -> FormErrors {
 }
 
 /// Must match the backend's `UserCreateRequest.password` limits.
-const MIN_PASSWORD_CHARS: usize = 8;
+pub(crate) const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_PASSWORD_CHARS: usize = 72;
+
+#[derive(Debug, PartialEq)]
+enum EmailError {
+    Missing,
+    Invalid,
+}
+
+impl EmailError {
+    fn message(&self) -> String {
+        match self {
+            EmailError::Missing => t!("auth-email-missing"),
+            EmailError::Invalid => t!("auth-email-invalid"),
+        }
+    }
+}
 
 /// A deliberately loose shape check — something@domain.tld, no spaces — for
 /// instant feedback on obvious typos. The backend does the real validation,
 /// and its verdict still lands on the email field if it disagrees.
-fn validate_email(email: &str) -> Option<String> {
+fn validate_email(email: &str) -> Option<EmailError> {
     let email = email.trim();
     if email.is_empty() {
-        return Some("Enter your email".to_string());
+        return Some(EmailError::Missing);
     }
     let looks_valid = match email.split_once('@') {
         Some((local, domain)) => {
@@ -77,21 +94,32 @@ fn validate_email(email: &str) -> Option<String> {
         }
         None => false,
     };
-    (!looks_valid).then(|| "Enter a valid email address".to_string())
+    (!looks_valid).then_some(EmailError::Invalid)
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum NewPasswordError {
+    TooShort,
+    TooLong,
+}
+
+impl NewPasswordError {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            NewPasswordError::TooShort => t!("auth-password-too-short", min: MIN_PASSWORD_CHARS),
+            NewPasswordError::TooLong => t!("auth-password-too-long", max: MAX_PASSWORD_CHARS),
+        }
+    }
 }
 
 /// Signup rules for a new password (login only requires one to be entered).
 /// Also used when changing the password in account settings.
-pub(crate) fn validate_new_password(password: &str) -> Option<String> {
+pub(crate) fn validate_new_password(password: &str) -> Option<NewPasswordError> {
     let length = password.chars().count();
     if length < MIN_PASSWORD_CHARS {
-        Some(format!(
-            "Password must be at least {MIN_PASSWORD_CHARS} characters"
-        ))
+        Some(NewPasswordError::TooShort)
     } else if length > MAX_PASSWORD_CHARS {
-        Some(format!(
-            "Password must be at most {MAX_PASSWORD_CHARS} characters"
-        ))
+        Some(NewPasswordError::TooLong)
     } else {
         None
     }
@@ -121,11 +149,11 @@ pub fn Auth() -> Element {
             div { class: "auth-content",
                 div { class: "auth-brand",
                     IconStash {}
-                    h1 { class: "brand-name", "stash" }
+                    h1 { class: "brand-name", {t!("app-name")} }
                     p { class: "brand-tagline",
-                        "Save everything."
+                        {t!("auth-tagline-save")}
                         br {}
-                        "Find it anytime."
+                        {t!("auth-tagline-find")}
                     }
                 }
 
@@ -135,13 +163,13 @@ pub fn Auth() -> Element {
                             class: if tab() == AuthTab::Login { "auth-tab active" } else { "auth-tab" },
                             r#type: "button",
                             onclick: move |_| tab.set(AuthTab::Login),
-                            "Log in"
+                            {t!("auth-login")}
                         }
                         button {
                             class: if tab() == AuthTab::Signup { "auth-tab active" } else { "auth-tab" },
                             r#type: "button",
                             onclick: move |_| tab.set(AuthTab::Signup),
-                            "Sign up"
+                            {t!("auth-signup")}
                         }
                     }
 
@@ -182,11 +210,11 @@ fn LoginForm() -> Element {
                 }
 
                 general_error.set(None);
-                email_error.set(validate_email(&email()));
+                email_error.set(validate_email(&email()).map(|error| error.message()));
                 password_error.set(
                     password()
                         .is_empty()
-                        .then(|| "Enter your password".to_string()),
+                        .then(|| t!("auth-password-missing")),
                 );
                 if email_error().is_some() || password_error().is_some() {
                     return;
@@ -217,7 +245,7 @@ fn LoginForm() -> Element {
                 input {
                     class: "input-field",
                     r#type: "email",
-                    placeholder: "Email",
+                    placeholder: t!("auth-email"),
                     value: "{email}",
                     oninput: move |evt| {
                         email.set(evt.value());
@@ -235,7 +263,7 @@ fn LoginForm() -> Element {
                 input {
                     class: "input-field",
                     r#type: if show_password() { "text" } else { "password" },
-                    placeholder: "Password",
+                    placeholder: t!("auth-password"),
                     value: "{password}",
                     oninput: move |evt| {
                         password.set(evt.value());
@@ -257,14 +285,14 @@ fn LoginForm() -> Element {
                 class: "btn-primary",
                 r#type: "submit",
                 disabled: is_submitting(),
-                if is_submitting() { "Logging in..." } else { "Log in" }
+                if is_submitting() { {t!("auth-logging-in")} } else { {t!("auth-login")} }
             }
 
             a {
                 class: "link-forgot",
                 href: "#",
                 onclick: move |evt| evt.prevent_default(),
-                "Forgot password?"
+                {t!("auth-forgot-password")}
             }
         }
     }
@@ -298,11 +326,11 @@ fn SignupForm() -> Element {
                 }
 
                 general_error.set(None);
-                email_error.set(validate_email(&email()));
-                password_error.set(validate_new_password(&password()));
+                email_error.set(validate_email(&email()).map(|error| error.message()));
+                password_error.set(validate_new_password(&password()).map(|error| error.message()));
                 confirm_password_error.set(
                     (password() != confirm_password())
-                        .then(|| "Passwords don't match".to_string()),
+                        .then(|| t!("auth-passwords-mismatch")),
                 );
                 if email_error().is_some()
                     || password_error().is_some()
@@ -336,7 +364,7 @@ fn SignupForm() -> Element {
                 input {
                     class: "input-field",
                     r#type: "email",
-                    placeholder: "Email",
+                    placeholder: t!("auth-email"),
                     value: "{email}",
                     oninput: move |evt| {
                         email.set(evt.value());
@@ -354,7 +382,7 @@ fn SignupForm() -> Element {
                 input {
                     class: "input-field",
                     r#type: if show_password() { "text" } else { "password" },
-                    placeholder: "Password",
+                    placeholder: t!("auth-password"),
                     value: "{password}",
                     oninput: move |evt| {
                         password.set(evt.value());
@@ -378,7 +406,7 @@ fn SignupForm() -> Element {
                 input {
                     class: "input-field",
                     r#type: if show_password() { "text" } else { "password" },
-                    placeholder: "Confirm password",
+                    placeholder: t!("auth-confirm-password"),
                     value: "{confirm_password}",
                     oninput: move |evt| {
                         confirm_password.set(evt.value());
@@ -394,7 +422,7 @@ fn SignupForm() -> Element {
                 class: "btn-primary",
                 r#type: "submit",
                 disabled: is_submitting(),
-                if is_submitting() { "Signing up..." } else { "Sign up" }
+                if is_submitting() { {t!("auth-signing-up")} } else { {t!("auth-signup")} }
             }
         }
     }
@@ -417,7 +445,7 @@ mod tests {
 
     #[test]
     fn rejects_obvious_email_typos() {
-        assert_eq!(validate_email("   "), Some("Enter your email".to_string()));
+        assert_eq!(validate_email("   "), Some(EmailError::Missing));
         for email in [
             "not-an-email",
             "@example.com",
@@ -428,20 +456,38 @@ mod tests {
             "me@@example.com",
             "me @example.com",
         ] {
-            assert_eq!(
-                validate_email(email),
-                Some("Enter a valid email address".to_string()),
-                "{email}"
-            );
+            assert_eq!(validate_email(email), Some(EmailError::Invalid), "{email}");
         }
     }
 
     #[test]
+    fn password_length_errors_name_the_limit_in_every_language() {
+        use crate::i18n::{Language, tests::in_language};
+
+        let message = in_language(Language::English, || NewPasswordError::TooShort.message());
+        assert_eq!(
+            message.replace(['\u{2068}', '\u{2069}'], ""),
+            "Password must be at least 8 characters"
+        );
+        let message = in_language(Language::Ukrainian, || NewPasswordError::TooLong.message());
+        assert_eq!(
+            message.replace(['\u{2068}', '\u{2069}'], ""),
+            "Пароль має містити не більше 72 символів"
+        );
+    }
+
+    #[test]
     fn new_password_length_matches_backend_limits() {
-        assert!(validate_new_password("short").is_some());
+        assert_eq!(
+            validate_new_password("short"),
+            Some(NewPasswordError::TooShort)
+        );
         assert_eq!(validate_new_password("exactly8"), None);
         assert_eq!(validate_new_password(&"x".repeat(72)), None);
-        assert!(validate_new_password(&"x".repeat(73)).is_some());
+        assert_eq!(
+            validate_new_password(&"x".repeat(73)),
+            Some(NewPasswordError::TooLong)
+        );
         // Counted in characters, like the backend, not bytes.
         assert_eq!(validate_new_password("пароль12"), None);
     }

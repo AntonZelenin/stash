@@ -2,10 +2,12 @@ use std::rc::Rc;
 
 use api::ApiError;
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 
 use crate::AuthSession;
-use crate::auth::validate_new_password;
-use crate::icons::{IconClose, IconLock};
+use crate::auth::{MIN_PASSWORD_CHARS, validate_new_password};
+use crate::i18n::{Language, Localization, api_error_message};
+use crate::icons::{IconClose, IconGlobe, IconLock};
 
 const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
 
@@ -13,14 +15,16 @@ const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
     Password,
+    Language,
 }
 
 impl Section {
-    const ALL: [Section; 1] = [Section::Password];
+    const ALL: [Section; 2] = [Section::Password, Section::Language];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Section::Password => "Password",
+            Section::Password => t!("settings-section-password"),
+            Section::Language => t!("settings-section-language"),
         }
     }
 }
@@ -43,7 +47,7 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
             class: "settings-overlay",
             role: "dialog",
             aria_modal: "true",
-            aria_label: "Account settings",
+            aria_label: t!("account-settings"),
             // Focusable, so Escape reaches it even after a click on the
             // window's non-interactive parts moves focus off the fields.
             tabindex: "-1",
@@ -66,14 +70,17 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                 onclick: move |evt| evt.stop_propagation(),
 
                 nav { class: "settings-nav",
-                    h2 { class: "settings-nav-title", "Settings" }
+                    h2 { class: "settings-nav-title", {t!("settings-title")} }
                     for item in Section::ALL {
                         button {
                             class: if section() == item { "settings-nav-item active" } else { "settings-nav-item" },
                             r#type: "button",
                             aria_current: if section() == item { "page" } else { "false" },
                             onclick: move |_| section.set(item),
-                            IconLock {}
+                            match item {
+                                Section::Password => rsx! { IconLock {} },
+                                Section::Language => rsx! { IconGlobe {} },
+                            }
                             "{item.label()}"
                         }
                     }
@@ -84,14 +91,17 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                         Section::Password => rsx! {
                             PasswordSettings {}
                         },
+                        Section::Language => rsx! {
+                            LanguageSettings {}
+                        },
                     }
                 }
 
                 button {
                     class: "settings-close",
                     r#type: "button",
-                    title: "Close",
-                    aria_label: "Close",
+                    title: t!("common-close"),
+                    aria_label: t!("common-close"),
                     onclick: move |_| on_close.call(()),
                     IconClose {}
                 }
@@ -134,14 +144,14 @@ fn PasswordSettings() -> Element {
         let new_value = new();
         let mut valid = true;
         if current_value.is_empty() {
-            current_error.set(Some("Enter your current password".to_string()));
+            current_error.set(Some(t!("settings-current-password-missing")));
             valid = false;
         }
-        if let Some(message) = validate_new_password(&new_value) {
-            new_error.set(Some(message));
+        if let Some(error) = validate_new_password(&new_value) {
+            new_error.set(Some(error.message()));
             valid = false;
         } else if confirm() != new_value {
-            confirm_error.set(Some("Passwords don't match".to_string()));
+            confirm_error.set(Some(t!("auth-passwords-mismatch")));
             valid = false;
         }
         if !valid {
@@ -176,30 +186,27 @@ fn PasswordSettings() -> Element {
                         let _ = input.set_focus(true).await;
                     }
                 }
-                Err(err) => general_error.set(Some(err.to_string())),
+                Err(err) => general_error.set(Some(api_error_message(&err))),
             }
             saving.set(false);
         });
     };
 
     rsx! {
-        h3 { class: "settings-title", "Password" }
-        p { class: "settings-description",
-            "Change the password you use to log in. You'll need your current password. "
-            "Changing it signs you out on every other device."
-        }
+        h3 { class: "settings-title", {t!("settings-section-password")} }
+        p { class: "settings-description", {t!("settings-password-description")} }
 
         form { class: "settings-form", novalidate: true, onsubmit: submit,
             if let Some(message) = general_error() {
                 p { class: "settings-error", role: "alert", "{message}" }
             }
             if saved() {
-                p { class: "settings-success", role: "status", "Your password has been changed." }
+                p { class: "settings-success", role: "status", {t!("settings-password-changed")} }
             }
 
             PasswordField {
                 id: "settings-current-password",
-                label: "Current password",
+                label: t!("settings-current-password"),
                 autocomplete: "current-password",
                 value: current(),
                 error: current_error(),
@@ -217,9 +224,9 @@ fn PasswordSettings() -> Element {
             }
             PasswordField {
                 id: "settings-new-password",
-                label: "New password",
+                label: t!("settings-new-password"),
                 autocomplete: "new-password",
-                hint: "At least 8 characters.",
+                hint: t!("settings-new-password-hint", min: MIN_PASSWORD_CHARS),
                 value: new(),
                 error: new_error(),
                 on_input: move |value| {
@@ -230,7 +237,7 @@ fn PasswordSettings() -> Element {
             }
             PasswordField {
                 id: "settings-confirm-password",
-                label: "Confirm new password",
+                label: t!("settings-confirm-new-password"),
                 autocomplete: "new-password",
                 value: confirm(),
                 error: confirm_error(),
@@ -246,7 +253,44 @@ fn PasswordSettings() -> Element {
                     class: "settings-button",
                     r#type: "submit",
                     disabled: saving(),
-                    if saving() { "Saving…" } else { "Change password" }
+                    if saving() { {t!("common-saving")} } else { {t!("settings-change-password")} }
+                }
+            }
+        }
+    }
+}
+
+/// The UI language, chosen from every supported one (each listed by its
+/// own name). Takes effect at once and is remembered on this device.
+#[component]
+fn LanguageSettings() -> Element {
+    let localization = use_context::<Localization>();
+    let current = localization.language();
+
+    rsx! {
+        h3 { class: "settings-title", {t!("settings-section-language")} }
+        p { class: "settings-description", {t!("settings-language-description")} }
+
+        div { class: "settings-form",
+            div { class: "settings-field",
+                label { class: "settings-label", r#for: "settings-language", {t!("settings-language-label")} }
+                select {
+                    id: "settings-language",
+                    class: "settings-input",
+                    value: current.code(),
+                    onchange: move |evt| {
+                        if let Some(language) = Language::from_tag(&evt.value()) {
+                            localization.set_language(language);
+                        }
+                    },
+                    for language in Language::ALL {
+                        option {
+                            value: language.code(),
+                            lang: language.code(),
+                            selected: language == current,
+                            "{language.native_name()}"
+                        }
+                    }
                 }
             }
         }
@@ -257,9 +301,9 @@ fn PasswordSettings() -> Element {
 #[component]
 fn PasswordField(
     id: &'static str,
-    label: &'static str,
+    label: String,
     autocomplete: &'static str,
-    #[props(default)] hint: Option<&'static str>,
+    #[props(default)] hint: Option<String>,
     value: String,
     error: Option<String>,
     on_input: EventHandler<String>,

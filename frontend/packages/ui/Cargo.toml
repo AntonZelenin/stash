@@ -13,9 +13,12 @@ base64 = { workspace = true }
 futures-timer = "3"
 # Showing item dates in the user's local time zone. Native targets read the
 # OS time zone; wasm reads the browser's via `wasmbind` below.
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `unstable-locales` gives month names in the UI language.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "unstable-locales"] }
+# Translations (Fluent); see src/i18n.rs.
+dioxus-i18n = "0.5"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "wasmbind"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "unstable-locales", "wasmbind"] }
 

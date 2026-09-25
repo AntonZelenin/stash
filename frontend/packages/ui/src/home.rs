@@ -4,10 +4,12 @@ use api::{ItemCounts, ItemQuery, ListedItem, Tag, TextItemType};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
+use crate::i18n::api_error_message;
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
@@ -233,7 +235,10 @@ pub fn Home() -> Element {
                         search_results.restart();
                         item_counts.restart();
                     }
-                    Err(err) => status.set(Some(format!("Could not delete the item: {err}"))),
+                    Err(err) => status.set(Some(t!(
+                        "home-delete-failed",
+                        error: api_error_message(&err)
+                    ))),
                 }
             });
         }
@@ -278,8 +283,11 @@ pub fn Home() -> Element {
             spawn(async move {
                 match session.random_item().await {
                     Ok(Some(item)) => surprise.set(Some(item)),
-                    Ok(None) => status.set(Some("Nothing saved yet to surprise you with.".into())),
-                    Err(err) => status.set(Some(format!("Could not pick a random item: {err}"))),
+                    Ok(None) => status.set(Some(t!("surprise-me-nothing"))),
+                    Err(err) => status.set(Some(t!(
+                        "surprise-me-failed",
+                        error: api_error_message(&err)
+                    ))),
                 }
             });
         }
@@ -332,7 +340,7 @@ pub fn Home() -> Element {
                                 .await
                         };
                         if let Err(err) = result {
-                            last_error = Some(err.to_string());
+                            last_error = Some(api_error_message(&err));
                         }
                     }
                     // Keep the text and tags if anything failed, so they
@@ -374,7 +382,7 @@ pub fn Home() -> Element {
                         search_results.restart();
                         item_counts.restart();
                     }
-                    Err(err) => status.set(Some(err.to_string())),
+                    Err(err) => status.set(Some(api_error_message(&err))),
                 }
 
                 is_submitting.set(false);
@@ -394,7 +402,7 @@ pub fn Home() -> Element {
         for file in files {
             match stage_file(file).await {
                 Some(file) => pending_files.write().push(file),
-                None => status.set(Some("Could not read the selected file".to_string())),
+                None => status.set(Some(t!("home-read-failed"))),
             }
         }
     };
@@ -417,7 +425,7 @@ pub fn Home() -> Element {
             for file in files {
                 match stage_file(file).await {
                     Some(file) => pending_files.write().push(file),
-                    None => status.set(Some("Could not read the selected file".to_string())),
+                    None => status.set(Some(t!("home-read-failed"))),
                 }
             }
         });
@@ -498,13 +506,11 @@ pub fn Home() -> Element {
             }
 
             div { class: "home-hero",
-                h1 { class: "home-title", "Save anything. Find anytime." }
-                p { class: "home-tagline",
-                    "Save notes, links, images, videos, audio, and files — all in one place."
-                }
+                h1 { class: "home-title", {t!("home-title")} }
+                p { class: "home-tagline", {t!("home-tagline")} }
 
                 if drag_depth() > 0 {
-                    div { class: "home-drop-hint", "Drop files to upload" }
+                    div { class: "home-drop-hint", {t!("home-drop-hint")} }
                 }
 
                 form {
@@ -542,7 +548,7 @@ pub fn Home() -> Element {
                                         button {
                                             class: "home-image-preview-remove",
                                             r#type: "button",
-                                            title: "Remove file",
+                                            title: t!("home-remove-file"),
                                             disabled: is_submitting(),
                                             onclick: move |_| {
                                                 pending_files.write().remove(index);
@@ -563,8 +569,8 @@ pub fn Home() -> Element {
                                         button {
                                             class: "tag-chip-remove",
                                             r#type: "button",
-                                            title: "Remove tag",
-                                            aria_label: "Remove tag {name}",
+                                            title: t!("tags-remove"),
+                                            aria_label: t!("tags-remove-named", name: name.as_str()),
                                             disabled: is_submitting(),
                                             onclick: move |_| {
                                                 pending_tags.write().remove(index);
@@ -601,7 +607,7 @@ pub fn Home() -> Element {
                                 textarea {
                                     class: "home-input",
                                     rows: 1,
-                                    placeholder: "Paste a link, drag an image, or type a fleeting thought...",
+                                    placeholder: t!("home-input-placeholder"),
                                     value: "{note}",
                                     oninput: move |evt| note.set(evt.value()),
                                     // Enter sends; Shift+Enter is a new line.
@@ -644,23 +650,23 @@ pub fn Home() -> Element {
                             button {
                                 class: "home-input-tag-add",
                                 r#type: "button",
-                                title: "Add tags",
+                                title: t!("tags-add-title"),
                                 disabled: is_submitting() || picking_tag(),
                                 onclick: move |_| picking_tag.set(true),
                                 span { class: "home-input-tag-plus", "+" }
-                                "Add tag"
+                                {t!("tags-add")}
                             }
                             label {
                                 class: "home-input-attach",
                                 r#for: FILE_UPLOAD_INPUT_ID,
-                                title: "Attach images or files",
+                                title: t!("home-attach"),
                                 IconPaperclip {}
                             }
                             button {
                                 class: "home-input-submit",
                                 r#type: "submit",
                                 disabled: is_submitting(),
-                                span { "Stash" }
+                                span { {t!("home-submit")} }
                                 IconArrowUp {}
                             }
                         }
@@ -669,7 +675,7 @@ pub fn Home() -> Element {
                         // user has no tags to suggest.
                         if !suggestions.is_empty() {
                             div { class: "home-suggested",
-                                span { class: "home-suggested-label", "Suggested:" }
+                                span { class: "home-suggested-label", {t!("tags-suggested-label")} }
                                 for (index , name) in suggestions.into_iter().enumerate() {
                                     if index > 0 {
                                         span { class: "home-suggested-sep", "•" }
@@ -718,7 +724,7 @@ pub fn Home() -> Element {
                                     id: SEARCH_INPUT_ID,
                                     class: "stash-search-input",
                                     r#type: "search",
-                                    placeholder: "Search naturally...",
+                                    placeholder: t!("search-placeholder"),
                                     value: "{search_query}",
                                     oninput: move |evt| search_query.set(evt.value()),
                                 }
@@ -731,23 +737,23 @@ pub fn Home() -> Element {
                         {match &*saved_items.read() {
                             None => rsx! {
                                 div { class: "stash-empty",
-                                    p { "Loading your stash..." }
+                                    p { {t!("home-loading")} }
                                 }
                             },
                             Some(Err(err)) => rsx! {
                                 div { class: "stash-empty",
-                                    p { "Could not load your stash: {err}" }
+                                    p { {t!("home-load-failed", error: api_error_message(err))} }
                                 }
                             },
                             Some(Ok(response)) if response.items.is_empty() && current_filters() == ItemQuery::default() => rsx! {
                                 div { class: "stash-empty",
                                     IconStash {}
-                                    p { "Nothing saved yet — items you capture will show up here." }
+                                    p { {t!("home-empty")} }
                                 }
                             },
                             Some(Ok(response)) => item_results(
                                 &response.items,
-                                "Nothing matches these filters.".to_string(),
+                                t!("home-no-filter-matches"),
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
@@ -759,7 +765,7 @@ pub fn Home() -> Element {
                         {match &*search_results.read() {
                             Some(Some((query, Ok(response)))) => item_results(
                                 &response.items,
-                                format!("Nothing matches “{query}”."),
+                                t!("search-no-results", query: query.as_str()),
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
@@ -768,13 +774,13 @@ pub fn Home() -> Element {
                             ),
                             Some(Some((_, Err(err)))) => rsx! {
                                 div { class: "stash-empty",
-                                    p { "Search failed: {err}" }
+                                    p { {t!("search-failed", error: api_error_message(err))} }
                                 }
                             },
                             // Debouncing, or the request is in flight.
                             _ => rsx! {
                                 div { class: "stash-empty",
-                                    p { "Searching..." }
+                                    p { {t!("search-searching")} }
                                 }
                             },
                         }}
@@ -841,7 +847,7 @@ fn TopBar(can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
         header { class: "top-bar",
             div { class: "top-bar-brand",
                 img { class: "top-bar-logo", src: LOGO_PNG, alt: "" }
-                span { class: "top-bar-name", "stash" }
+                span { class: "top-bar-name", {t!("app-name")} }
             }
 
             div { class: "top-bar-actions",
@@ -849,17 +855,17 @@ fn TopBar(can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
                     class: "top-bar-surprise",
                     r#type: "button",
                     disabled: !can_surprise,
-                    title: if can_surprise { "Inspire me with a random stash item" } else { "Save something first" },
+                    title: if can_surprise { t!("surprise-me-title") } else { t!("surprise-me-disabled") },
                     onclick: move |_| on_surprise.call(()),
                     span { class: "top-bar-surprise-star", "✦" }
-                    span { "Surprise me" }
+                    span { {t!("surprise-me")} }
                 }
 
                 div { class: "top-bar-menu",
                     button {
                         class: "avatar-button",
                         r#type: "button",
-                        title: "Account",
+                        title: t!("account-menu"),
                         onclick: move |_| menu_open.set(!menu_open()),
                         span { class: "avatar-initials", "{initials}" }
                     }
@@ -881,7 +887,7 @@ fn TopBar(can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
                                 settings_open.set(true);
                             },
                             IconUser {}
-                            "Account settings"
+                            {t!("account-settings")}
                         }
                         div { class: "menu-divider" }
                         button {
@@ -889,7 +895,7 @@ fn TopBar(can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
                             r#type: "button",
                             onclick: move |_| session.logout(),
                             IconLogout {}
-                            "Logout"
+                            {t!("account-logout")}
                         }
                     }
                 }

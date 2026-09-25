@@ -8,6 +8,9 @@ pub use navbar::Navbar;
 
 mod icons;
 
+mod i18n;
+pub use i18n::{Language, LanguageStore, Localization, use_init_localization};
+
 mod auth;
 pub use auth::Auth;
 

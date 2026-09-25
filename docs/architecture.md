@@ -828,3 +828,10 @@ Component-specific `CLAUDE.md` files may be added inside individual directories.
   `http://localhost:8000`), see `frontend/packages/web/README.md`.
 - Keep the architecture compatible with future Dioxus desktop/mobile clients where reasonable.
 - Keep business logic on the backend.
+- The UI is translated (English, Ukrainian) with `dioxus-i18n` (Fluent):
+  strings live in `frontend/packages/ui/i18n/<lang>.ftl` and components look
+  them up by key with `t!`; see `frontend/packages/ui/src/i18n.rs`. The
+  language is the user's saved choice (kept by the platform, `localStorage`
+  on the web), else the browser's, else English, which also fills in any
+  key a translation lacks. Only UI text is translated: user content, API
+  values and backend validation messages are shown as they are.

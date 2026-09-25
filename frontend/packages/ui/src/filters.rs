@@ -2,9 +2,11 @@ use std::time::Duration;
 
 use api::{ItemCounts, Tag};
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::i18n::api_error_message;
 use crate::icons::{IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconTag};
 
 const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
@@ -39,13 +41,13 @@ impl TypeFilter {
         TypeFilter::Files,
     ];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            TypeFilter::All => "All Items",
-            TypeFilter::Text => "Text & Notes",
-            TypeFilter::Images => "Images & Media",
-            TypeFilter::Links => "Links",
-            TypeFilter::Files => "Files",
+            TypeFilter::All => t!("nav-all-items"),
+            TypeFilter::Text => t!("nav-text-notes"),
+            TypeFilter::Images => t!("nav-images"),
+            TypeFilter::Links => t!("nav-links"),
+            TypeFilter::Files => t!("nav-files"),
         }
     }
 
@@ -125,14 +127,14 @@ pub fn FavoritesToggle(value: Signal<bool>, count: Option<u32>) -> Element {
             class: if value() { "favorites-toggle favorites-toggle-active" } else { "favorites-toggle" },
             r#type: "button",
             aria_pressed: if value() { "true" } else { "false" },
-            title: if value() { "Showing favorites only" } else { "Show favorites only" },
+            title: if value() { t!("nav-favorites-only-on") } else { t!("nav-favorites-only-off") },
             onclick: move |_| value.toggle(),
             if value() {
                 IconHeartFilled {}
             } else {
                 IconHeart {}
             }
-            span { "Favorites" }
+            span { {t!("nav-favorites")} }
             if let Some(count) = count {
                 span { class: "favorites-count", "{count}" }
             }
@@ -172,7 +174,7 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                 },
                 IconTag {}
                 if chosen.is_empty() {
-                    span { class: "filter-button-label", "Tags" }
+                    span { class: "filter-button-label", {t!("tags-label")} }
                 } else {
                     span { class: "tag-filter-chips",
                         for tag in chosen.iter().take(MAX_VISIBLE_TAG_CHIPS).cloned() {
@@ -181,8 +183,8 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                                 button {
                                     class: "tag-chip-remove",
                                     r#type: "button",
-                                    title: "Remove filter",
-                                    aria_label: "Remove {tag.name} filter",
+                                    title: t!("tags-remove-filter"),
+                                    aria_label: t!("tags-remove-filter-named", name: tag.name.as_str()),
                                     onclick: move |evt| {
                                         // Don't also toggle the dropdown.
                                         evt.stop_propagation();
@@ -235,7 +237,7 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
             input {
                 class: "tag-filter-search",
                 r#type: "search",
-                placeholder: "Search tags...",
+                placeholder: t!("tags-search-placeholder"),
                 value: "{query}",
                 oninput: move |evt| query.set(evt.value()),
                 onmounted: move |evt| async move {
@@ -246,7 +248,7 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
                 match &*matches.read() {
                     Some(Ok(tags)) if tags.is_empty() => rsx! {
                         p { class: "tag-filter-empty",
-                            if query().trim().is_empty() { "No tags yet — add some on your items." } else { "No matching tags" }
+                            if query().trim().is_empty() { {t!("tags-none-yet")} } else { {t!("tags-no-matches")} }
                         }
                     },
                     Some(Ok(tags)) => rsx! {
@@ -269,10 +271,10 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
                         }
                     },
                     Some(Err(err)) => rsx! {
-                        p { class: "tag-filter-empty", "Could not load tags: {err}" }
+                        p { class: "tag-filter-empty", {t!("tags-load-failed", error: api_error_message(err))} }
                     },
                     None => rsx! {
-                        p { class: "tag-filter-empty", "Loading..." }
+                        p { class: "tag-filter-empty", {t!("common-loading")} }
                     },
                 }
             }

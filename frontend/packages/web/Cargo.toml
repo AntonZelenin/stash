@@ -8,7 +8,7 @@ dioxus = { workspace = true }
 ui = { workspace = true }
 api = { workspace = true }
 serde_json = "1"
-web-sys = { version = "0.3", features = ["Storage", "Window"] }
+web-sys = { version = "0.3", features = ["Navigator", "Storage", "Window"] }
 
 [features]
 default = ["web"]

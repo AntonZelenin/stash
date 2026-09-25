@@ -1,10 +1,12 @@
 use api::{ItemUpdate, ListedItem, Tag, TextItemType};
 use chrono::{DateTime, Local, TimeZone};
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
+use crate::i18n::{Language, api_error_message, current_language};
 use crate::icons::{
     IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
     IconTrash,
@@ -126,21 +128,25 @@ struct UploadDate {
 impl UploadDate {
     /// `created_at` is the API's RFC 3339 timestamp; shown in the user's
     /// local time zone, so an item saved just before midnight isn't dated
-    /// the next day. None if the timestamp can't be parsed.
+    /// the next day, with month names in the UI language. None if the
+    /// timestamp can't be parsed.
     fn from_api(created_at: &str) -> Option<Self> {
-        Self::in_zone(created_at, &Local)
+        Self::in_zone(created_at, &Local, current_language())
     }
 
-    fn in_zone<Tz: TimeZone>(created_at: &str, zone: &Tz) -> Option<Self>
+    fn in_zone<Tz: TimeZone>(created_at: &str, zone: &Tz, language: Language) -> Option<Self>
     where
         Tz::Offset: std::fmt::Display,
     {
         let local = DateTime::parse_from_rfc3339(created_at)
             .ok()?
             .with_timezone(zone);
+        let locale = language.chrono_locale();
         Some(Self {
-            label: local.format("%-d %b %Y").to_string(),
-            full: local.format("%-d %B %Y, %H:%M").to_string(),
+            label: local.format_localized("%-d %b %Y", locale).to_string(),
+            full: local
+                .format_localized("%-d %B %Y, %H:%M", locale)
+                .to_string(),
         })
     }
 }
@@ -647,7 +653,7 @@ fn ItemEditor(
                 }
                 if let Some(err) = failure {
                     on_tags_changed.call(());
-                    error.set(Some(err.to_string()));
+                    error.set(Some(api_error_message(&err)));
                     saving.set(false);
                     return;
                 }
@@ -662,7 +668,7 @@ fn ItemEditor(
                     // This form closes; nothing more to reset here.
                     Ok(updated) => on_saved.call(Some(updated)),
                     Err(err) => {
-                        error.set(Some(err.to_string()));
+                        error.set(Some(api_error_message(&err)));
                         saving.set(false);
                     }
                 }
@@ -688,7 +694,7 @@ fn ItemEditor(
                     }
                 }
                 label { class: "item-editor-field",
-                    span { class: "item-editor-label", "Filename" }
+                    span { class: "item-editor-label", {t!("item-field-filename")} }
                     input {
                         class: "item-editor-input",
                         r#type: "text",
@@ -709,14 +715,14 @@ fn ItemEditor(
                 label { class: "item-editor-field",
                     span { class: "item-editor-label",
                         if edits_text {
-                            "Text"
+                            {t!("item-field-text")}
                         } else {
-                            "Caption"
+                            {t!("item-field-caption")}
                         }
                     }
                     textarea {
                         class: if edits_text { "item-editor-input item-editor-textarea item-editor-textarea-tall" } else { "item-editor-input item-editor-textarea" },
-                        placeholder: if edits_text { "" } else { "Add a caption" },
+                        placeholder: if edits_text { String::new() } else { t!("item-caption-placeholder") },
                         value: "{text}",
                         disabled: saving(),
                         oninput: move |evt| text.set(evt.value()),
@@ -728,7 +734,7 @@ fn ItemEditor(
                 }
             }
             div { class: "item-editor-field",
-                span { class: "item-editor-label", "Tags" }
+                span { class: "item-editor-label", {t!("item-field-tags")} }
                 div { class: "item-editor-tags",
                     for tag in kept_tags {
                         RemovableTagChip {
@@ -761,14 +767,14 @@ fn ItemEditor(
                             r#type: "button",
                             disabled: saving(),
                             onclick: move |_| adding_tag.set(true),
-                            "+ Add tag"
+                            {t!("tags-add-button")}
                         }
                     }
                 }
             }
             if chooses_type {
                 label { class: "item-editor-field",
-                    span { class: "item-editor-label", "Type" }
+                    span { class: "item-editor-label", {t!("item-field-type")} }
                     TextTypeSelect {
                         class: "item-editor-input",
                         value: chosen_type(),
@@ -786,7 +792,7 @@ fn ItemEditor(
                     r#type: "button",
                     disabled: saving(),
                     onclick: move |_| on_cancel.call(()),
-                    "Cancel"
+                    {t!("common-cancel")}
                 }
                 button {
                     class: "item-editor-button item-editor-save",
@@ -794,9 +800,9 @@ fn ItemEditor(
                     disabled: saving() || invalid,
                     onclick: move |_| save.call(()),
                     if saving() {
-                        "Saving…"
+                        {t!("common-saving")}
                     } else {
-                        "Save"
+                        {t!("common-save")}
                     }
                 }
             }
@@ -813,8 +819,8 @@ fn RemovableTagChip(name: String, disabled: bool, on_remove: EventHandler<()>) -
             button {
                 class: "tag-chip-remove",
                 r#type: "button",
-                title: "Remove tag",
-                aria_label: "Remove tag {name}",
+                title: t!("tags-remove"),
+                aria_label: t!("tags-remove-named", name: name.as_str()),
                 disabled,
                 onclick: move |_| on_remove.call(()),
                 IconClose {}
@@ -828,16 +834,16 @@ fn RemovableTagChip(name: String, disabled: bool, on_remove: EventHandler<()>) -
 #[component]
 fn FavoriteButton(is_favorite: bool, on_toggle: EventHandler<()>) -> Element {
     let label = if is_favorite {
-        "Remove from favorites"
+        t!("item-unlike")
     } else {
-        "Add to favorites"
+        t!("item-like")
     };
 
     rsx! {
         button {
             class: if is_favorite { "item-favorite-button item-favorite-active" } else { "item-favorite-button" },
             r#type: "button",
-            title: label,
+            title: label.clone(),
             aria_label: label,
             aria_pressed: if is_favorite { "true" } else { "false" },
             onclick: move |_| on_toggle.call(()),
@@ -862,7 +868,7 @@ fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<(
             button {
                 class: "item-menu-button",
                 r#type: "button",
-                title: "More actions",
+                title: t!("item-more-actions"),
                 onclick: move |_| open.toggle(),
                 IconMoreHorizontal {}
             }
@@ -883,7 +889,7 @@ fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<(
                                 on_edit.call(());
                             },
                             IconPencil {}
-                            "Edit"
+                            {t!("item-edit")}
                         }
                     }
                     button {
@@ -894,7 +900,7 @@ fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<(
                             on_delete.call(());
                         },
                         IconTrash {}
-                        "Delete"
+                        {t!("item-delete")}
                     }
                 }
             }
@@ -935,7 +941,7 @@ fn ItemTags(
                         adding.set(false);
                         on_changed.call(());
                     }
-                    Err(err) => error.set(Some(err.to_string())),
+                    Err(err) => error.set(Some(api_error_message(&err))),
                 }
                 busy.set(false);
             });
@@ -951,7 +957,7 @@ fn ItemTags(
                     class: "tag-chip tag-chip-link",
                     key: "{tag.id}",
                     r#type: "button",
-                    title: "Show items tagged {tag.name}",
+                    title: t!("tags-show-tagged", name: tag.name.as_str()),
                     onclick: move |_| on_tag_click.call(tag.clone()),
                     span { class: "tag-chip-name", "{tag.name}" }
                 }
@@ -972,7 +978,7 @@ fn ItemTags(
                         error.set(None);
                         adding.set(true);
                     },
-                    "+ Add tag"
+                    {t!("tags-add-button")}
                 }
             }
             if let Some(message) = error() {
@@ -1072,7 +1078,7 @@ pub(crate) fn TagPicker(
             input {
                 class: "tag-picker-input",
                 r#type: "text",
-                placeholder: "Tag name",
+                placeholder: t!("tags-name-placeholder"),
                 maxlength: "50",
                 disabled: busy,
                 value: "{query}",
@@ -1110,7 +1116,7 @@ pub(crate) fn TagPicker(
             if show_menu {
                 div { class: "tag-picker-menu",
                     if suggesting {
-                        p { class: "tag-picker-heading", "Suggested" }
+                        p { class: "tag-picker-heading", {t!("tags-suggested")} }
                     }
                     for tag in found {
                         button {
@@ -1131,7 +1137,7 @@ pub(crate) fn TagPicker(
                                 let typed = typed.clone();
                                 move |_| on_pick.call(typed.clone())
                             },
-                            "Create “{typed}”"
+                            {t!("tags-create", name: typed.as_str())}
                         }
                     }
                 }
@@ -1152,7 +1158,7 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
         div {
             class: "item-card-image-main",
             onclick: move |_| on_open.call(()),
-            img { src: "{url}", alt: "Saved image", loading: "lazy" }
+            img { src: "{url}", alt: t!("item-image-alt"), loading: "lazy" }
             if let Some(caption) = caption {
                 p { class: "item-card-image-caption", "{caption}" }
             }
@@ -1202,7 +1208,7 @@ fn ItemView(
             class: if reading { "lightbox lightbox-reading" } else { "lightbox" },
             role: "dialog",
             aria_modal: "true",
-            aria_label: if has_image { "Image viewer" } else { "Item" },
+            aria_label: if has_image { t!("item-image-viewer") } else { t!("item-viewer") },
             // Focusable so it can receive Escape (see the effect above).
             tabindex: "-1",
             onmounted: move |evt| dialog.set(Some(evt.data())),
@@ -1232,7 +1238,7 @@ fn ItemView(
                         img {
                             class: "lightbox-image",
                             src: "{url}",
-                            alt: "Saved image",
+                            alt: t!("item-image-alt"),
                         }
                     }
                 }
@@ -1241,8 +1247,8 @@ fn ItemView(
             button {
                 class: "lightbox-close",
                 r#type: "button",
-                title: "Close",
-                aria_label: "Close",
+                title: t!("common-close"),
+                aria_label: t!("common-close"),
                 onclick: move |evt| {
                     evt.stop_propagation();
                     on_close.call(());
@@ -1282,9 +1288,10 @@ fn FileBody(url: String, filename: String, size_bytes: u64, caption: Option<Stri
     }
 }
 
-/// "PDF · 1.2 MB": the extension as a type label, plus a readable size.
+/// "PDF · 1.2 MB": the extension as a type label, plus a readable size in
+/// the UI language.
 fn file_details(filename: &str, size_bytes: u64) -> String {
-    let size = format_size(size_bytes);
+    let size = format_size(size_bytes, current_language());
     match filename.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
             format!("{} · {size}", extension.to_uppercase())
@@ -1293,16 +1300,16 @@ fn file_details(filename: &str, size_bytes: u64) -> String {
     }
 }
 
-fn format_size(bytes: u64) -> String {
+fn format_size(bytes: u64, language: Language) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     let bytes_f = bytes as f64;
     if bytes_f >= MB {
-        format!("{:.1} MB", bytes_f / MB)
+        t!("size-megabytes", size: language.format_decimal(bytes_f / MB, 1))
     } else if bytes_f >= KB {
-        format!("{:.0} KB", bytes_f / KB)
+        t!("size-kilobytes", size: language.format_decimal(bytes_f / KB, 0))
     } else {
-        format!("{bytes} B")
+        t!("size-bytes", size: bytes.to_string())
     }
 }
 
@@ -1318,8 +1325,8 @@ pub(crate) fn TextTypeSelect(
     rsx! {
         select {
             class,
-            title: "Save as",
-            aria_label: "Save as",
+            title: t!("item-save-as"),
+            aria_label: t!("item-save-as"),
             disabled,
             value: value.as_api(),
             onchange: move |evt| {
@@ -1327,8 +1334,8 @@ pub(crate) fn TextTypeSelect(
                     on_change.call(chosen);
                 }
             },
-            option { value: "text", selected: value == TextItemType::Text, "Text" }
-            option { value: "link", selected: value == TextItemType::Link, "Link" }
+            option { value: "text", selected: value == TextItemType::Text, {t!("item-type-text")} }
+            option { value: "link", selected: value == TextItemType::Link, {t!("item-type-link")} }
         }
     }
 }
@@ -1413,6 +1420,7 @@ fn split_url(url: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::tests::in_language;
 
     #[test]
     fn column_count_follows_available_width() {
@@ -1435,7 +1443,8 @@ mod tests {
         let new_york = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
 
         // Pydantic's format: fractional seconds, "Z" for UTC.
-        let date = UploadDate::in_zone("2026-09-24T12:21:14.658513Z", &utc).unwrap();
+        let date =
+            UploadDate::in_zone("2026-09-24T12:21:14.658513Z", &utc, Language::English).unwrap();
         assert_eq!(date.label, "24 Sep 2026");
         assert_eq!(date.full, "24 September 2026, 12:21");
 
@@ -1443,20 +1452,34 @@ mod tests {
         // and just after is still the previous day four hours west.
         let late = "2026-09-24T23:30:00+00:00";
         assert_eq!(
-            UploadDate::in_zone(late, &lisbon_summer).unwrap().label,
+            UploadDate::in_zone(late, &lisbon_summer, Language::English)
+                .unwrap()
+                .label,
             "25 Sep 2026"
         );
         let early = "2026-09-25T01:00:00Z";
         assert_eq!(
-            UploadDate::in_zone(early, &new_york).unwrap().label,
+            UploadDate::in_zone(early, &new_york, Language::English)
+                .unwrap()
+                .label,
             "24 Sep 2026"
         );
     }
 
     #[test]
+    fn upload_date_uses_the_ui_languages_month_names() {
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        let date = UploadDate::in_zone("2026-09-24T12:21:14Z", &utc, Language::Ukrainian).unwrap();
+        assert_eq!(date.label, "24 вер 2026");
+        assert_eq!(date.full, "24 вересня 2026, 12:21");
+    }
+
+    #[test]
     fn unparseable_upload_date_is_omitted() {
-        assert!(UploadDate::from_api("not a date").is_none());
-        assert!(UploadDate::from_api("").is_none());
+        in_language(Language::English, || {
+            assert!(UploadDate::from_api("not a date").is_none());
+            assert!(UploadDate::from_api("").is_none());
+        });
     }
 
     #[test]
@@ -1467,12 +1490,23 @@ mod tests {
 
     #[test]
     fn file_details_show_type_and_readable_size() {
-        assert_eq!(file_details("Report Q3.pdf", 1_258_291), "PDF · 1.2 MB");
-        assert_eq!(file_details("notes.md", 2_048), "MD · 2 KB");
-        assert_eq!(file_details("tiny.txt", 12), "TXT · 12 B");
+        // Without Fluent's invisible bidi isolation marks around values.
+        let details = |language, filename: &str, size| {
+            in_language(language, || file_details(filename, size))
+                .replace(['\u{2068}', '\u{2069}'], "")
+        };
+        let english = Language::English;
+        assert_eq!(details(english, "Report Q3.pdf", 1_258_291), "PDF · 1.2 MB");
+        assert_eq!(details(english, "notes.md", 2_048), "MD · 2 KB");
+        assert_eq!(details(english, "tiny.txt", 12), "TXT · 12 B");
         // No usable extension: size only.
-        assert_eq!(file_details("README", 12), "12 B");
-        assert_eq!(file_details(".bashrc", 12), "12 B");
+        assert_eq!(details(english, "README", 12), "12 B");
+        assert_eq!(details(english, ".bashrc", 12), "12 B");
+        // The size in the UI language.
+        assert_eq!(
+            details(Language::Ukrainian, "Report Q3.pdf", 1_258_291),
+            "PDF · 1,2 МБ"
+        );
     }
 
     #[test]
