@@ -159,8 +159,8 @@ enum ViewMode {
     Editing,
 }
 
-/// One saved item: its type-specific content, a footer with its tags and
-/// upload date, and its actions menu.
+/// One saved item: its type-specific content, a footer with its tags,
+/// favorite button and upload date, and its actions menu.
 ///
 /// The card is a plain box; only the content part is clickable (a link or
 /// file opens, an image opens the viewer), so the tag controls in the
@@ -279,7 +279,7 @@ fn ItemCard(
 
     let item_id = item.id.clone();
     rsx! {
-        div { class: if is_favorite { "item-card-shell is-favorite" } else { "item-card-shell" },
+        div { class: "item-card-shell",
             div { class: "item-card {kind}",
                 {body}
                 div { class: "item-card-footer",
@@ -288,12 +288,15 @@ fn ItemCard(
                         tags: item.tags.clone(),
                         on_changed: on_tags_changed,
                     }
-                    CardDate { date: date.clone() }
+                    // Bottom-right: ♡ then the upload date.
+                    div { class: "item-card-meta",
+                        FavoriteButton { is_favorite, on_toggle: toggle_favorite.clone() }
+                        CardDate { date: date.clone() }
+                    }
                 }
             }
-            // Top-right, over the card: ♡ then ⋯.
+            // Top-right, over the card: ⋯.
             div { class: "item-card-actions",
-                FavoriteButton { is_favorite, on_toggle: toggle_favorite.clone() }
                 ItemMenu {
                     can_edit: true,
                     on_edit: move |_| view.set(Some(ViewMode::Editing)),
@@ -533,7 +536,8 @@ fn ItemEditor(
     }
 }
 
-/// ♡ button: outlined, or filled while the item is a favorite.
+/// ♡ button, a bare icon: outlined, or filled red while the item is a
+/// favorite.
 #[component]
 fn FavoriteButton(is_favorite: bool, on_toggle: EventHandler<()>) -> Element {
     let label = if is_favorite {

@@ -44,9 +44,17 @@
     padding: 0 14px 12px;
 }
 
+/* ♡ and the date, pushed to the bottom-right corner. */
+.item-card-meta {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
 .item-card-date {
     flex-shrink: 0;
-    margin-left: auto;
     color: var(--text-muted);
     font-size: 12px;
     line-height: 24px;
@@ -97,7 +105,7 @@
     position: relative;
 }
 
-/* ♡ and ⋯, top-right over the card. */
+/* ⋯, top-right over the card. */
 .item-card-actions {
     position: absolute;
     top: 8px;
@@ -111,27 +119,27 @@
     position: relative;
 }
 
-/* Same subtle look as the ⋯ button: hidden until the card is hovered —
-   except on a favorite, whose filled heart always shows. */
+/* A bare heart icon, no background: grey until hovered (then red), and
+   hidden until the card is hovered, like "+ Add tag" — except on a
+   favorite, whose filled red heart always shows. 24px tall, the date's
+   line height, so the two line up. */
 .item-favorite-button {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    width: 22px;
+    height: 24px;
     padding: 0;
     border: none;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.92);
-    box-shadow: 0 2px 8px rgba(20, 22, 27, 0.15);
-    color: var(--text-muted);
+    background: none;
+    color: #94a3b8;
     cursor: pointer;
     opacity: 0;
     transition: opacity 0.12s ease, color 0.12s ease;
 }
 
 .item-favorite-button:hover {
-    color: #e11d48;
+    color: #f43f5e;
 }
 
 .item-card-shell:hover .item-favorite-button,
@@ -140,13 +148,15 @@
     opacity: 1;
 }
 
-.item-favorite-active {
+.item-favorite-active,
+.item-favorite-active:hover {
     color: #e11d48;
 }
 
 .item-favorite-button .icon {
-    width: 16px;
-    height: 16px;
+    display: flex;
+    width: 14px;
+    height: 14px;
 }
 
 .item-menu-button {
@@ -234,12 +244,6 @@
 }
 
 /* ---- note: height follows the text, up to a limit ---- */
-
-/* A favorite's heart stays visible, so keep the note's text clear of it
-   (other notes only show the controls on hover, over the text). */
-.is-favorite .item-card-note-text {
-    padding-right: 72px;
-}
 
 .item-card-note-text {
     margin: 0;
@@ -542,15 +546,24 @@
 }
 
 /* No image underneath here, so a flat look instead of the floating one. */
-.lightbox .item-favorite-button,
 .lightbox .item-menu-button {
     background: #f1f2f5;
     box-shadow: none;
 }
 
-.lightbox .item-favorite-button:hover,
 .lightbox .item-menu-button:hover {
     background: #e6e8ed;
+}
+
+/* The heart stays a bare icon, sized to match the ⋯ button beside it. */
+.lightbox .item-favorite-button {
+    width: 30px;
+    height: 30px;
+}
+
+.lightbox .item-favorite-button .icon {
+    width: 16px;
+    height: 16px;
 }
 
 /* Without an image (notes, links and files, opened for editing): just the

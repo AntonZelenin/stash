@@ -10,7 +10,7 @@ use config::API_BASE_URL;
 mod token_store;
 use token_store::LocalStorageTokenStore;
 
-const FAVICON: Asset = asset!("/assets/favicon.ico");
+const FAVICON: Asset = asset!("/assets/favicon.png");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
 fn main() {
@@ -28,7 +28,7 @@ fn App() -> Element {
 
     rsx! {
         document::Title { "Stash" }
-        document::Link { rel: "icon", href: FAVICON }
+        document::Link { rel: "icon", r#type: "image/png", href: FAVICON }
         document::Link { rel: "stylesheet", href: MAIN_CSS }
 
         Router::<Route> {}
