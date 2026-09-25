@@ -337,11 +337,10 @@ fn ItemCard(
                                 on_changed: on_tags_changed,
                             }
                         },
-                        // Tags are left out while editing: they save the
-                        // moment they change, so Cancel couldn't undo them.
                         ViewMode::Editing => rsx! {
                             ItemEditor {
                                 item: item.clone(),
+                                on_tags_changed,
                                 on_cancel: move |_| view.set(Some(ViewMode::Viewing)),
                                 on_saved: move |updated: Option<ListedItem>| {
                                     if let Some(updated) = updated {
@@ -394,13 +393,18 @@ fn ItemDetails(item: ListedItem) -> Element {
 /// from its edited text (a bare URL is a link, text without URLs a note);
 /// for text mixing both, a Text/Link choice is shown, starting at the
 /// item's current type. The text or caption field has focus when the form
-/// opens.
+/// opens. Below it, the item's tags, each with a × to remove it, and an
+/// "Add tag" control; tag changes are only applied on Save, so Cancel
+/// undoes them too.
 ///
 /// Only changed fields are sent. `on_saved` gets the updated item, or None
-/// if nothing had changed; `on_cancel` drops the changes.
+/// if nothing had changed; `on_cancel` drops the changes. If a tag change
+/// fails, the form stays open and `on_tags_changed` lets the page refetch,
+/// as the tag changes before it were applied.
 #[component]
 fn ItemEditor(
     item: ListedItem,
+    on_tags_changed: EventHandler<()>,
     on_cancel: EventHandler<()>,
     on_saved: EventHandler<Option<ListedItem>>,
 ) -> Element {
@@ -413,6 +417,34 @@ fn ItemEditor(
     let mut chosen_type = use_signal(|| original_type.unwrap_or(TextItemType::Text));
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
+    // Tag changes made in this form, applied on Save: ids of the item's
+    // tags ×'d, and names of tags added.
+    let mut removed_tag_ids = use_signal(Vec::<String>::new);
+    let mut added_tag_names = use_signal(Vec::<String>::new);
+    let mut adding_tag = use_signal(|| false);
+    let kept_tags: Vec<Tag> = item
+        .tags
+        .iter()
+        .filter(|tag| !removed_tag_ids.read().contains(&tag.id))
+        .cloned()
+        .collect();
+    let shown_tag_names: Vec<String> = kept_tags
+        .iter()
+        .map(|tag| tag.name.clone())
+        .chain(added_tag_names())
+        .collect();
+    let add_tag = {
+        let tags = item.tags.clone();
+        move |name: String| {
+            adding_tag.set(false);
+            // Picking a tag ×'d here just brings it back.
+            let lowercase = name.to_lowercase();
+            match tags.iter().find(|tag| tag.name.to_lowercase() == lowercase) {
+                Some(tag) => removed_tag_ids.write().retain(|id| *id != tag.id),
+                None => added_tag_names.write().push(name),
+            }
+        }
+    };
 
     let kind = item.r#type.as_str();
     let edits_text = matches!(kind, "text" | "link");
@@ -436,21 +468,60 @@ fn ItemEditor(
         || (edits_filename && filename().trim().is_empty());
 
     let save = use_callback({
-        let item_id = item.id.clone();
+        let item = item.clone();
+        let kept_tags = kept_tags.clone();
         move |()| {
             if saving() || invalid {
                 return;
             }
-            if update == ItemUpdate::default() {
+            let removed = removed_tag_ids();
+            let added = added_tag_names();
+            if update == ItemUpdate::default() && removed.is_empty() && added.is_empty() {
                 on_saved.call(None);
                 return;
             }
             let session = session.clone();
-            let item_id = item_id.clone();
+            let item = item.clone();
+            let kept_tags = kept_tags.clone();
             let update = update.clone();
             spawn(async move {
                 saving.set(true);
-                match session.update_item(item_id, update).await {
+                // Tags first, so an updated item from the server below
+                // already has them right. Both calls are no-ops when
+                // repeated, so saving again after a failure is safe.
+                let mut tags = kept_tags;
+                let mut failure = None;
+                for tag_id in removed {
+                    if let Err(err) = session.remove_tag(item.id.clone(), tag_id).await {
+                        failure = Some(err);
+                        break;
+                    }
+                }
+                if failure.is_none() {
+                    for name in added {
+                        match session.assign_tag(item.id.clone(), name).await {
+                            Ok(tag) => tags.push(tag),
+                            Err(err) => {
+                                failure = Some(err);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(err) = failure {
+                    on_tags_changed.call(());
+                    error.set(Some(err.to_string()));
+                    saving.set(false);
+                    return;
+                }
+                if update == ItemUpdate::default() {
+                    // Only tags changed: the item as it now is, its tags
+                    // sorted by name as the server lists them.
+                    tags.sort_by_key(|tag| tag.name.to_lowercase());
+                    on_saved.call(Some(ListedItem { tags, ..item }));
+                    return;
+                }
+                match session.update_item(item.id, update).await {
                     // This form closes; nothing more to reset here.
                     Ok(updated) => on_saved.call(Some(updated)),
                     Err(err) => {
@@ -519,6 +590,45 @@ fn ItemEditor(
                     }
                 }
             }
+            div { class: "item-editor-field",
+                span { class: "item-editor-label", "Tags" }
+                div { class: "item-editor-tags",
+                    for tag in kept_tags {
+                        RemovableTagChip {
+                            key: "{tag.id}",
+                            name: tag.name.clone(),
+                            disabled: saving(),
+                            on_remove: move |_| removed_tag_ids.write().push(tag.id.clone()),
+                        }
+                    }
+                    for (index , name) in added_tag_names().into_iter().enumerate() {
+                        RemovableTagChip {
+                            key: "added-{name}",
+                            name,
+                            disabled: saving(),
+                            on_remove: move |_| {
+                                added_tag_names.write().remove(index);
+                            },
+                        }
+                    }
+                    if adding_tag() {
+                        TagPicker {
+                            exclude: shown_tag_names,
+                            busy: saving(),
+                            on_pick: add_tag,
+                            on_close: move |_| adding_tag.set(false),
+                        }
+                    } else {
+                        button {
+                            class: "tag-add",
+                            r#type: "button",
+                            disabled: saving(),
+                            onclick: move |_| adding_tag.set(true),
+                            "+ Add tag"
+                        }
+                    }
+                }
+            }
             if chooses_type {
                 label { class: "item-editor-field",
                     span { class: "item-editor-label", "Type" }
@@ -552,6 +662,25 @@ fn ItemEditor(
                         "Save"
                     }
                 }
+            }
+        }
+    }
+}
+
+/// A tag chip with a × after its name, calling `on_remove`.
+#[component]
+fn RemovableTagChip(name: String, disabled: bool, on_remove: EventHandler<()>) -> Element {
+    rsx! {
+        span { class: "tag-chip", title: "{name}",
+            span { class: "tag-chip-name", "{name}" }
+            button {
+                class: "tag-chip-remove",
+                r#type: "button",
+                title: "Remove tag",
+                aria_label: "Remove tag {name}",
+                disabled,
+                onclick: move |_| on_remove.call(()),
+                IconClose {}
             }
         }
     }
@@ -636,10 +765,9 @@ fn ItemMenu(can_edit: bool, on_edit: EventHandler<()>, on_delete: EventHandler<(
     }
 }
 
-/// The item's tags as chips (× removes one), plus an "Add tag" control.
-/// Changes go straight to the server; `on_changed` then lets the page
-/// refetch, which also keeps tag filters honest (an item that loses a
-/// filtered-by tag drops out of the results).
+/// The item's tags as chips, plus an "Add tag" control. Tags are removed in
+/// the `ItemEditor`. An added tag goes straight to the server; `on_changed`
+/// then lets the page refetch, which also keeps tag filters honest.
 #[component]
 fn ItemTags(item_id: String, tags: Vec<Tag>, on_changed: EventHandler<()>) -> Element {
     let session = use_context::<AuthSession>();
@@ -678,34 +806,6 @@ fn ItemTags(item_id: String, tags: Vec<Tag>, on_changed: EventHandler<()>) -> El
             for tag in tags {
                 span { class: "tag-chip", key: "{tag.id}", title: "{tag.name}",
                     span { class: "tag-chip-name", "{tag.name}" }
-                    button {
-                        class: "tag-chip-remove",
-                        r#type: "button",
-                        title: "Remove tag",
-                        aria_label: "Remove tag {tag.name}",
-                        disabled: busy(),
-                        onclick: {
-                            let session = session.clone();
-                            let item_id = item_id.clone();
-                            move |_| {
-                                let session = session.clone();
-                                let item_id = item_id.clone();
-                                let tag_id = tag.id.clone();
-                                spawn(async move {
-                                    busy.set(true);
-                                    match session.remove_tag(item_id, tag_id).await {
-                                        Ok(()) => {
-                                            error.set(None);
-                                            on_changed.call(());
-                                        }
-                                        Err(err) => error.set(Some(err.to_string())),
-                                    }
-                                    busy.set(false);
-                                });
-                            }
-                        },
-                        IconClose {}
-                    }
                 }
             }
             if adding() {

@@ -71,6 +71,12 @@
     min-width: 0;
 }
 
+/* No × on these chips (tags are removed in the editor), so no room kept
+   for one on the right. */
+.item-tags .tag-chip {
+    padding: 0 10px;
+}
+
 /* The "+ Add tag" pill itself is in tags.css. */
 
 /* Hidden until the card is hovered (always visible on touch screens and
@@ -289,6 +295,12 @@
 /* The footer sits right under the image when there's no caption. */
 .item-card-image .item-card-footer {
     padding-top: 10px;
+}
+
+/* The note's scrolling text can end right at its box's edge, so the
+   footer keeps its own distance from it. */
+.item-card-note .item-card-footer {
+    padding-top: 8px;
 }
 
 /* Same type as a note, with a shorter limit: the image is the main
@@ -680,6 +692,12 @@
 /* A note's whole text gets more room than a caption. */
 .item-editor-textarea-tall {
     min-height: 200px;
+}
+
+.item-editor-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
 .item-editor-error {
