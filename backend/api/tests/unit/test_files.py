@@ -3,7 +3,15 @@ from io import BytesIO
 
 import pytest
 
-from app.items.files import FORMATS, GENERIC_CONTENT_TYPE, classify, clean_filename, is_inline
+from app.items.files import (
+    FORMATS,
+    GENERIC_CONTENT_TYPE,
+    SNIFF_BYTES,
+    classify,
+    clean_filename,
+    expected_format,
+    is_inline,
+)
 
 _ZIP = b"PK\x03\x04" + b"\x00" * 64
 _OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64
@@ -134,3 +142,27 @@ def test_clean_filename_caps_length_keeping_extension():
 
     assert len(cleaned) == 255
     assert cleaned.endswith(".pdf")
+
+
+def test_utf8_is_judged_from_the_sniffed_sample_only():
+    """Only the first SNIFF_BYTES are read back from storage; a multi-byte
+    character cut off at the end of that sample doesn't make it non-UTF-8."""
+    sample = ("я" * SNIFF_BYTES).encode()[: SNIFF_BYTES - 1]
+
+    assert classify("long.txt", sample).content_type == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("filename", "extension", "content_type"),
+    [
+        ("Report.PDF", ".pdf", "application/pdf"),
+        ("book.fb2.zip", ".fb2.zip", "application/x-zip-compressed-fb2"),
+        ("notes.txt", ".txt", "text/plain"),
+        ("setup.exe", "", GENERIC_CONTENT_TYPE),
+        ("no-extension", "", GENERIC_CONTENT_TYPE),
+    ],
+)
+def test_expected_format_comes_from_the_extension_alone(filename, extension, content_type):
+    expected = expected_format(filename)
+
+    assert (expected.extension, expected.content_type) == (extension, content_type)

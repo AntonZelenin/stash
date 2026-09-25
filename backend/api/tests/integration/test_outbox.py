@@ -12,8 +12,8 @@ from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, EMBEDDING_JOBS, THUM
 from app.items import services
 from app.items.models import Item
 from app.outbox import outbox_events
-from conftest import FakeJobQueue, FakeQueues
-from helpers import register_and_login
+from conftest import FakeJobQueue, FakeObjectStorage, FakeQueues
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -37,16 +37,11 @@ async def _item_count(session: AsyncSession) -> int:
 
 
 async def test_item_and_its_jobs_are_committed_together_and_published(
-    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue, embedding_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, queue: FakeJobQueue, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "our cat"},
-        headers=_auth(token),
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, text="our cat")
 
     item_id = UUID(response.json()["id"])
     assert await session.get(Item, item_id) is not None
@@ -58,7 +53,7 @@ async def test_item_and_its_jobs_are_committed_together_and_published(
 
 
 async def test_item_is_not_committed_if_its_job_cannot_be_added(
-    client: AsyncClient, session: AsyncSession, queues: FakeQueues, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, queues: FakeQueues, monkeypatch: pytest.MonkeyPatch
 ):
     """The item is already written (flushed) in the transaction when adding
     its job fails: the whole transaction rolls back."""
@@ -70,7 +65,7 @@ async def test_item_is_not_committed_if_its_job_cannot_be_added(
     monkeypatch.setattr(services, "add_event", failing_add_event)
 
     with pytest.raises(RuntimeError, match="outbox insert failed"):
-        await client.post("/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, headers=_auth(token))
+        await upload_image(client, storage, token, _PNG_BYTES)
 
     assert await _item_count(session) == 0
     assert await _events(session) == []
@@ -100,7 +95,7 @@ async def test_job_is_not_committed_if_the_item_is_not(
 
 
 async def test_unpublished_jobs_of_every_queue_are_published_by_the_next_flush(
-    client: AsyncClient,
+    client: AsyncClient, storage: FakeObjectStorage,
     session: AsyncSession,
     queue: FakeJobQueue,
     document_queue: FakeJobQueue,
@@ -112,10 +107,8 @@ async def test_unpublished_jobs_of_every_queue_are_published_by_the_next_flush(
     for fake in (queue, document_queue, embedding_queue):
         fake.fail_publish = True
 
-    image = await client.post("/items/image", files={"file": ("a.png", _PNG_BYTES, "image/png")}, headers=_auth(token))
-    document = await client.post(
-        "/items/file", files={"file": ("notes.txt", b"hello", "text/plain")}, headers=_auth(token)
-    )
+    image = await upload_image(client, storage, token, _PNG_BYTES)
+    document = await upload_file(client, storage, token, "notes.txt", b"hello")
     note = await client.post("/items/text", json={"text": "call mom"}, headers=_auth(token))
     assert len([event for event in await _events(session) if event.published_at is None]) == 3
 
@@ -134,17 +127,12 @@ async def test_unpublished_jobs_of_every_queue_are_published_by_the_next_flush(
 
 
 async def test_one_unreachable_queue_does_not_hold_up_the_others(
-    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue, embedding_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, queue: FakeJobQueue, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
     queue.fail_publish = True
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "our cat"},
-        headers=_auth(token),
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, text="our cat")
 
     item_id = UUID(response.json()["id"])
     assert queue.published == []
@@ -167,13 +155,11 @@ async def test_edit_and_its_embedding_job_are_committed_together(
 
 
 async def test_file_that_needs_no_analysis_gets_no_document_job(
-    client: AsyncClient, session: AsyncSession, document_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, document_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
 
-    await client.post(
-        "/items/file", files={"file": ("setup.exe", b"MZ\x90\x00", "application/octet-stream")}, headers=_auth(token)
-    )
+    await upload_file(client, storage, token, "setup.exe", b"MZ\x90\x00")
 
     assert document_queue.published == []
     assert DOCUMENT_ANALYSIS_JOBS not in [event.queue for event in await _events(session)]

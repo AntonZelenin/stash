@@ -8,7 +8,7 @@ from stash_shared.queue.base import ItemType as QueueItemType
 from app.items.models import Description, Embedding, FileMetadata, TextContent
 
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import register_and_login
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -26,17 +26,13 @@ async def _note(client: AsyncClient, token: str, text: str) -> str:
     return (await client.post("/items/text", json={"text": text}, headers=_auth(token))).json()["id"]
 
 
-async def _image(client: AsyncClient, token: str, **form) -> str:
-    response = await client.post(
-        "/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, data=form, headers=_auth(token)
-    )
+async def _image(client: AsyncClient, storage: FakeObjectStorage, token: str, **form) -> str:
+    response = await upload_image(client, storage, token, _PNG_BYTES, **form)
     return response.json()["id"]
 
 
-async def _file(client: AsyncClient, token: str, filename: str = "report.pdf", **form) -> str:
-    response = await client.post(
-        "/items/file", files={"file": (filename, _PDF_BYTES, "application/pdf")}, data=form, headers=_auth(token)
-    )
+async def _file(client: AsyncClient, storage: FakeObjectStorage, token: str, filename: str = "report.pdf", **form) -> str:
+    response = await upload_file(client, storage, token, filename, _PDF_BYTES, **form)
     return response.json()["id"]
 
 
@@ -120,10 +116,10 @@ async def test_note_text_cannot_be_emptied(client: AsyncClient):
 
 
 async def test_edit_image_caption_keeps_the_generated_description(
-    client: AsyncClient, session: AsyncSession, embedding_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
-    item_id = await _image(client, token, text="our cat")
+    item_id = await _image(client, storage, token, text="our cat")
     await _set_description(session, item_id, "our cat\n\nA grey cat asleep on a sofa.")
     embedding_queue.published.clear()
 
@@ -136,9 +132,9 @@ async def test_edit_image_caption_keeps_the_generated_description(
     assert job.item_type == QueueItemType.image
 
 
-async def test_add_caption_to_uncaptioned_analyzed_image(client: AsyncClient, session: AsyncSession):
+async def test_add_caption_to_uncaptioned_analyzed_image(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     _, token = await register_and_login(client)
-    item_id = await _image(client, token)
+    item_id = await _image(client, storage, token)
     await _set_description(session, item_id, "A grey cat.")
 
     await _edit(client, token, item_id, text="Tom")
@@ -147,9 +143,9 @@ async def test_add_caption_to_uncaptioned_analyzed_image(client: AsyncClient, se
     assert await _description(session, item_id) == "Tom\n\nA grey cat."
 
 
-async def test_caption_edited_before_analysis_is_the_whole_description(client: AsyncClient, session: AsyncSession):
+async def test_caption_edited_before_analysis_is_the_whole_description(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     _, token = await register_and_login(client)
-    item_id = await _image(client, token, text="old")
+    item_id = await _image(client, storage, token, text="old")
 
     await _edit(client, token, item_id, text="new")
 
@@ -157,9 +153,9 @@ async def test_caption_edited_before_analysis_is_the_whole_description(client: A
     assert await _description(session, item_id) == "new"
 
 
-async def test_removing_caption_keeps_the_generated_description(client: AsyncClient, session: AsyncSession):
+async def test_removing_caption_keeps_the_generated_description(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     _, token = await register_and_login(client)
-    item_id = await _image(client, token, text="our cat")
+    item_id = await _image(client, storage, token, text="our cat")
     await _set_description(session, item_id, "our cat\n\nA grey cat.")
 
     body = (await _edit(client, token, item_id, text="")).json()
@@ -171,10 +167,10 @@ async def test_removing_caption_keeps_the_generated_description(client: AsyncCli
 
 
 async def test_removing_the_only_searchable_text_removes_description_and_embedding(
-    client: AsyncClient, session: AsyncSession, embedding_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
-    item_id = await _image(client, token, text="our cat")
+    item_id = await _image(client, storage, token, text="our cat")
     session.add(Embedding(item_id=UUID(item_id), embedding="[0]", content_hash="x"))
     await session.commit()
     embedding_queue.published.clear()
@@ -191,7 +187,7 @@ async def test_rename_file_changes_only_its_displayed_name(
     client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
 ):
     _, token = await register_and_login(client)
-    item_id = await _file(client, token)
+    item_id = await _file(client, storage, token)
     [storage_key] = storage.uploads
 
     body = (await _edit(client, token, item_id, filename="Q3 results.pdf")).json()
@@ -206,9 +202,9 @@ async def test_rename_file_changes_only_its_displayed_name(
     assert list(storage.uploads) == [storage_key]
 
 
-async def test_rename_file_and_edit_caption_together(client: AsyncClient, session: AsyncSession):
+async def test_rename_file_and_edit_caption_together(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     _, token = await register_and_login(client)
-    item_id = await _file(client, token, text="draft")
+    item_id = await _file(client, storage, token, text="draft")
 
     body = (await _edit(client, token, item_id, filename="final.pdf", text="signed copy")).json()
 
@@ -217,9 +213,9 @@ async def test_rename_file_and_edit_caption_together(client: AsyncClient, sessio
     assert await _description(session, item_id) == "signed copy"
 
 
-async def test_filename_cannot_be_empty(client: AsyncClient):
+async def test_filename_cannot_be_empty(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
-    item_id = await _file(client, token)
+    item_id = await _file(client, storage, token)
 
     response = await _edit(client, token, item_id, filename="  ")
 
@@ -237,9 +233,9 @@ async def test_only_files_have_a_filename(client: AsyncClient):
     assert response.json()["detail"] == "Only files have a filename"
 
 
-async def test_storage_details_are_not_editable(client: AsyncClient, session: AsyncSession):
+async def test_storage_details_are_not_editable(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     _, token = await register_and_login(client)
-    item_id = await _file(client, token)
+    item_id = await _file(client, storage, token)
 
     response = await _edit(client, token, item_id, storage_key="files/elsewhere.pdf")
 
@@ -268,10 +264,10 @@ async def test_edit_requires_auth(client: AsyncClient):
 
 
 async def test_add_caption_to_uncaptioned_file(
-    client: AsyncClient, session: AsyncSession, embedding_queue: FakeJobQueue
+    client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
-    item_id = await _file(client, token)
+    item_id = await _file(client, storage, token)
     await _set_description(session, item_id, "A quarterly sales report.")
     embedding_queue.published.clear()
 

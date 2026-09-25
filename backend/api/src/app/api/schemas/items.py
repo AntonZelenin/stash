@@ -49,6 +49,47 @@ class UpdateItemRequest(BaseModel):
     filename: str | None = Field(default=None, max_length=1_000)
 
 
+class UploadType(str, Enum):
+    image = "image"
+    file = "file"
+
+
+class StartUploadRequest(BaseModel):
+    """What the client is about to upload. Unknown fields are rejected: in
+    particular, the client can never choose the storage key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: UploadType
+    # Exact size of the content; the upload URL is signed for it.
+    size_bytes: int = Field(ge=0)
+    # Files: kept for display and downloads; its extension picks the
+    # expected format. Never part of the storage key. Ignored for images.
+    filename: str | None = Field(default=None, max_length=1_000)
+    # Images: png, jpeg, gif or webp; must match the content. Ignored for
+    # files, whose type the backend decides.
+    content_type: str | None = Field(default=None, max_length=255)
+    # Optional caption stored on the new item; blank is none.
+    text: str | None = Field(default=None, max_length=100_000)
+    # Tag names to put on the new item.
+    tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+
+
+class PresignedUpload(BaseModel):
+    # Send the file's bytes as the whole body, with exactly `headers`.
+    url: str
+    method: str
+    headers: dict[str, str]
+
+
+class UploadStarted(BaseModel):
+    # Finalize with it once the upload succeeded; also the new item's id.
+    upload_id: UUID
+    upload: PresignedUpload
+    # When `upload.url` stops accepting uploads.
+    expires_at: datetime
+
+
 class ItemCreated(BaseModel):
     id: UUID
     status: ItemStatus

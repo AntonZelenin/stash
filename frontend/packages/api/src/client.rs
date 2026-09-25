@@ -4,8 +4,9 @@ use serde::Deserialize;
 use crate::error::{ApiError, FieldError};
 use crate::models::{
     AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, ItemCreated, ItemQuery,
-    ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, RefreshRequest,
-    RegisterRequest, RegisterResponse, SearchRequest, SearchResponse, Tag, TokenPair,
+    ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, NewUpload,
+    PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SearchRequest,
+    SearchResponse, Tag, TokenPair, UploadStarted,
 };
 
 #[derive(Clone)]
@@ -327,76 +328,69 @@ impl ApiClient {
         }
     }
 
-    pub async fn create_image_item(
+    /// Step 1 of saving an image or file: asks the API to authorize an
+    /// upload. The bytes are then sent straight to storage
+    /// (`upload_to_storage`), never through the API, and the item is
+    /// created by `finalize_upload`.
+    pub async fn start_upload(
         &self,
         access_token: &str,
-        file_name: &str,
-        content_type: &str,
-        data: Vec<u8>,
-        text: Option<&str>,
-        tags: &[String],
-    ) -> Result<ItemCreated, ApiError> {
-        self.upload_file(
-            "/items/image",
-            access_token,
-            file_name,
-            content_type,
-            data,
-            ItemFields { text, tags },
-        )
-        .await
-    }
-
-    /// Uploads any file (PDF, e-book, archive, anything). The backend decides the
-    /// type from the file name's extension and checks the content matches.
-    pub async fn create_file_item(
-        &self,
-        access_token: &str,
-        file_name: &str,
-        content_type: &str,
-        data: Vec<u8>,
-        text: Option<&str>,
-        tags: &[String],
-    ) -> Result<ItemCreated, ApiError> {
-        self.upload_file(
-            "/items/file",
-            access_token,
-            file_name,
-            content_type,
-            data,
-            ItemFields { text, tags },
-        )
-        .await
-    }
-
-    /// Shared multipart upload: the file as `file`, plus an optional
-    /// caption as `text`, stored on the same item.
-    async fn upload_file(
-        &self,
-        path: &str,
-        access_token: &str,
-        file_name: &str,
-        content_type: &str,
-        data: Vec<u8>,
-        fields: ItemFields<'_>,
-    ) -> Result<ItemCreated, ApiError> {
-        let ItemFields { text, tags } = fields;
-        let part = reqwest::multipart::Part::bytes(data)
-            .file_name(file_name.to_string())
-            .mime_str(content_type)
-            .map_err(|_| ApiError::Server)?;
-        let mut form = reqwest::multipart::Form::new().part("file", part);
-        if let Some(text) = text {
-            form = form.text("text", text.to_string());
-        }
-        // One `tags` field per tag name.
-        for tag in tags {
-            form = form.text("tags", tag.clone());
-        }
-
+        upload: &NewUpload,
+    ) -> Result<UploadStarted, ApiError> {
         let response = self
-            .authenticated(Method::POST, path, access_token)
-            .multipart(form)
+            .authenticated(Method::POST, "/uploads", access_token)
+            .json(upload)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            201 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// Step 2: sends the file's bytes to object storage with the
+    /// pre-signed request from `start_upload`. Unauthenticated: the URL's
+    /// signature is the authorization, so no API token is sent there.
+    pub async fn upload_to_storage(
+        &self,
+        upload: &PresignedUpload,
+        data: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        let method = Method::from_bytes(upload.method.as_bytes()).map_err(|_| ApiError::Server)?;
+        let mut request = self.http.request(method, &upload.url).body(data);
+        for (name, value) in &upload.headers {
+            request = request.header(name, value);
+        }
+        let response = request.send().await.map_err(|_| ApiError::Network)?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            // Storage answers in its own (XML) format; an expired URL or a
+            // body that doesn't match what was signed ends up here.
+            Err(ApiError::Server)
+        }
+    }
+
+    /// Step 3: creates the item from the finished upload. Safe to retry: an
+    /// upload that already became an item returns that item.
+    pub async fn finalize_upload(
+        &self,
+        access_token: &str,
+        upload_id: &str,
+    ) -> Result<ItemCreated, ApiError> {
+        let response = self
+            .authenticated(
+                Method::POST,
+                &format!("/uploads/{upload_id}/finalize"),
+                access_token,
+            )
             .send()
             .await
             .map_err(|_| ApiError::Network)?;
@@ -404,7 +398,9 @@ impl ApiClient {
         match response.status().as_u16() {
             202 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            422 => Err(ApiError::Validation(
+            // Upload not found (404) or not in storage (409): the backend's
+            // message says which, as for invalid content (422).
+            404 | 409 | 422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
             _ => Err(ApiError::Server),
@@ -448,13 +444,6 @@ impl ApiClient {
             _ => Err(ApiError::Server),
         }
     }
-}
-
-/// The optional fields sent along with an uploaded file: its caption and
-/// tag names.
-struct ItemFields<'a> {
-    text: Option<&'a str>,
-    tags: &'a [String],
 }
 
 /// FastAPI's shape for a 422 from request-body validation:

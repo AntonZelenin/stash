@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import Description, ImageMetadata, Item, TextContent
 from conftest import FakeObjectStorage
-from helpers import register_and_login
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -23,12 +23,7 @@ async def test_delete_image_item_removes_rows_and_stored_file(
     client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
 ):
     _, token = await register_and_login(client)
-    created = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "caption"},
-        headers=_auth(token),
-    )
+    created = await upload_image(client, storage, token, _PNG_BYTES, text="caption")
     item_id = UUID(created.json()["id"])
     [storage_key] = storage.uploads
 
@@ -89,9 +84,7 @@ async def test_delete_image_item_also_removes_thumbnail(
     client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
 ):
     user_id, token = await register_and_login(client)
-    created = await client.post(
-        "/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, headers=_auth(token)
-    )
+    created = await upload_image(client, storage, token, _PNG_BYTES)
     item_id = UUID(created.json()["id"])
     # As the thumbnail worker would have left it.
     image = await session.get(ImageMetadata, item_id)

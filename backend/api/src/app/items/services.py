@@ -2,7 +2,7 @@ import base64
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from opentelemetry import trace
@@ -23,11 +23,11 @@ from stash_shared.queue.base import (
 
 from app.config import get_settings
 from app.items import files
-from app.items.models import Description, Item, ItemStatus, ItemType, Tag, TextContent
+from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
 from app.items.repos import ItemFilters, ItemRepository
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
-from app.storage.base import ObjectStorage
+from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -83,6 +83,25 @@ class FileTooLargeError(Exception):
     pass
 
 
+class UploadNotFoundError(Exception):
+    """No upload with this id was started by this user (or it was
+    discarded)."""
+
+
+class UploadNotCompletedError(Exception):
+    """Finalized before its content arrived in storage."""
+
+
+# The stored content failed validation: the upload is discarded.
+_INVALID_UPLOAD_ERRORS = (
+    EmptyImageError,
+    ImageTooLargeError,
+    UnsupportedImageTypeError,
+    EmptyFileError,
+    FileTooLargeError,
+)
+
+
 class InvalidCursorError(Exception):
     pass
 
@@ -119,6 +138,28 @@ class ListedItem:
     item: Item
     download_url: str | None
     thumbnail_url: str | None
+
+
+@dataclass(frozen=True)
+class StartedUpload:
+    # Also the id of the item the upload becomes.
+    upload_id: uuid.UUID
+    upload: PresignedUpload
+    expires_at: datetime
+
+
+def _clean_caption(text: str | None) -> str | None:
+    """An upload's optional caption; blank is none."""
+    return (text.strip() if text is not None else None) or None
+
+
+def _check_size(
+    size_bytes: int, max_size_bytes: int, *, empty: type[Exception], too_large: type[Exception]
+) -> None:
+    if size_bytes <= 0:
+        raise empty()
+    if size_bytes > max_size_bytes:
+        raise too_large()
 
 
 def _encode_cursor(created_at: datetime, item_id: uuid.UUID) -> str:
@@ -397,19 +438,29 @@ class ItemService:
             return await self._presign(row.image.storage_key)
         if row.file is not None:
             # With the original filename, so it opens/saves under its name;
-            # displayed inline only if its format is safe to render.
+            # displayed inline only if its format is safe to render. Served
+            # as the validated type from the row: the client uploaded the
+            # object itself, and it was stored with the type expected from
+            # the filename, before its content was checked.
             return await self._presign(
                 row.file.storage_key,
                 filename=row.file.filename,
                 inline=files.is_inline(row.file.content_type),
+                content_type=row.file.content_type,
             )
         return None
 
-    async def _presign(self, key: str | None, *, filename: str | None = None, inline: bool = True) -> str | None:
+    async def _presign(
+        self, key: str | None, *, filename: str | None = None, inline: bool = True, content_type: str | None = None
+    ) -> str | None:
         if key is None:
             return None
         return await self._storage.generate_download_url(
-            key=key, expires_in=get_settings().image_download_url_ttl_seconds, filename=filename, inline=inline
+            key=key,
+            expires_in=get_settings().image_download_url_ttl_seconds,
+            filename=filename,
+            inline=inline,
+            content_type=content_type,
         )
 
     @_tracer.start_as_current_span("items.create_text")
@@ -429,39 +480,134 @@ class ItemService:
         await self._publish_jobs()
         return item
 
-    @_tracer.start_as_current_span("items.create_image")
-    async def create_image_item(
-        self, *, user_id: uuid.UUID, data: bytes, text: str | None = None, tags: list[str] = ()
-    ) -> Item:
-        """`text` is an optional caption stored on the same item; blank is
-        treated as none. `tags` are tag names to put on it."""
-        text = text.strip() if text is not None else None
-        text = text or None
+    @_tracer.start_as_current_span("items.start_upload")
+    async def start_upload(
+        self,
+        *,
+        user_id: uuid.UUID,
+        item_type: ItemType,
+        size_bytes: int,
+        filename: str | None = None,
+        content_type: str | None = None,
+        text: str | None = None,
+        tags: list[str] = (),
+    ) -> StartedUpload:
+        """Authorizes one image or file upload straight to storage; the
+        bytes never go through the API.
 
-        if not data:
-            raise EmptyImageError()
-        if len(data) > _MAX_IMAGE_SIZE_BYTES:
-            raise ImageTooLargeError()
+        Everything the client declares is checked before a URL is issued:
+        the size, an image's type, the caption and tags. The item id and
+        storage key are generated here, never taken from the client, and
+        the URL is signed for that key, type and size only. Nothing is
+        visible yet: the upload is recorded as pending (`PendingUpload`)
+        until `finalize_upload` checks what arrived and creates the item.
 
-        content_type = _detect_image_content_type(data)
-        if content_type is None:
-            raise UnsupportedImageTypeError()
+        `content_type` is an image's declared type (it picks the key's
+        extension, and must match the content on finalize); ignored for
+        files, whose type comes from `filename`'s extension and, on
+        finalize, their content. `text` is an optional caption (blank is
+        none), `tags` are tag names to put on the item."""
+        caption = _clean_caption(text)
         tag_names = normalize_tag_names(list(tags))
 
-        item_id = uuid.uuid4()
-        storage_key = storage_keys.image_key(user_id, item_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
-        bind_context(item_id=item_id)
+        upload_id = uuid.uuid4()
+        if item_type == ItemType.image:
+            _check_size(size_bytes, _MAX_IMAGE_SIZE_BYTES, empty=EmptyImageError, too_large=ImageTooLargeError)
+            content_type = (content_type or "").split(";", 1)[0].strip().lower()
+            if content_type not in _IMAGE_EXTENSIONS_BY_CONTENT_TYPE:
+                raise UnsupportedImageTypeError()
+            storage_key = storage_keys.image_key(user_id, upload_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
+            filename = None
+        elif item_type == ItemType.file:
+            _check_size(size_bytes, _MAX_FILE_SIZE_BYTES, empty=EmptyFileError, too_large=FileTooLargeError)
+            filename = files.clean_filename(filename)
+            expected = files.expected_format(filename)
+            content_type = expected.content_type
+            storage_key = storage_keys.file_key(user_id, upload_id, expected.extension)
+        else:
+            raise ValueError(f"{item_type} items aren't uploaded")
+        bind_context(item_id=upload_id)
 
-        await self._storage.upload(key=storage_key, data=data, content_type=content_type)
-
-        resolved_tags = await self._link_tags(user_id, tag_names)
-        item = await self._repo.create_image_item(
-            item_id=item_id,
+        ttl = get_settings().upload_url_ttl_seconds
+        upload = await self._storage.generate_upload_url(
+            key=storage_key, content_type=content_type, size_bytes=size_bytes, expires_in=ttl
+        )
+        pending = PendingUpload(
+            id=upload_id,
             user_id=user_id,
+            type=item_type,
             storage_key=storage_key,
             content_type=content_type,
-            size_bytes=len(data),
-            text=text,
+            size_bytes=size_bytes,
+            filename=filename,
+            caption=caption,
+            tag_names=tag_names,
+            expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
+        )
+        await self._repo.add_pending_upload(pending)
+        await self._session.commit()
+        # The filename is user content, so it isn't logged.
+        logger.info(
+            "Upload started",
+            item_type=item_type,
+            storage_key=storage_key,
+            content_type=content_type,
+            size_bytes=size_bytes,
+        )
+        return StartedUpload(upload_id=upload_id, upload=upload, expires_at=pending.expires_at)
+
+    @_tracer.start_as_current_span("items.finalize_upload")
+    async def finalize_upload(self, *, user_id: uuid.UUID, upload_id: uuid.UUID) -> Item:
+        """Creates the item for an upload `start_upload` authorized, once
+        its content is in storage. The item gets the upload's id, and the
+        storage key recorded when it started; nothing about it comes from
+        this request.
+
+        Only the user who started the upload can finalize it: anyone else's
+        is indistinguishable from a missing one. The stored content is
+        checked as before direct uploads (size, and the type sniffed from
+        its first bytes); content that fails the check is discarded, object
+        included, and no item is created. Not uploaded (yet): the upload
+        stays pending, so the client can still upload and finalize again.
+
+        Idempotent: finalizing an upload that already became an item (e.g.
+        a retry after a lost response) returns that item, without creating
+        it or triggering its processing again."""
+        bind_context(item_id=upload_id)
+        upload = await self._repo.get_pending_upload_for_update(upload_id=upload_id, user_id=user_id)
+        if upload is None:
+            item = await self._repo.get(item_id=upload_id, user_id=user_id)
+            if item is None or item.type not in (ItemType.image, ItemType.file):
+                raise UploadNotFoundError()
+            return item
+
+        stored = await self._storage.inspect(key=upload.storage_key, head_bytes=files.SNIFF_BYTES)
+        if stored is None:
+            raise UploadNotCompletedError()
+        try:
+            if upload.type == ItemType.image:
+                return await self._create_image_item(upload, stored)
+            return await self._create_file_item(upload, stored)
+        except _INVALID_UPLOAD_ERRORS as exc:
+            await self._discard_upload(upload, reason=type(exc).__name__)
+            raise
+
+    async def _create_image_item(self, upload: PendingUpload, stored: StoredObject) -> Item:
+        _check_size(stored.size_bytes, _MAX_IMAGE_SIZE_BYTES, empty=EmptyImageError, too_large=ImageTooLargeError)
+        # Sniffed from the stored bytes, and must be the type the upload was
+        # signed for: the one it's stored and served with, and the key's
+        # extension.
+        if _detect_image_content_type(stored.head) != upload.content_type:
+            raise UnsupportedImageTypeError()
+
+        resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
+        item = await self._repo.create_image_item(
+            item_id=upload.id,
+            user_id=upload.user_id,
+            storage_key=upload.storage_key,
+            content_type=upload.content_type,
+            size_bytes=stored.size_bytes,
+            text=upload.caption,
             tags=resolved_tags,
         )
         await self._add_job(
@@ -470,77 +616,49 @@ class ItemService:
                 item_id=item.id,
                 user_id=item.user_id,
                 item_type=QueueItemType.image,
-                image=ImageRef(storage_key=storage_key, content_type=content_type),
+                image=ImageRef(storage_key=upload.storage_key, content_type=upload.content_type),
             ),
         )
-        if text is not None:
+        if upload.caption is not None:
             # Searchable by its caption now, not only once analysis is done.
             await self._add_embedding_job(item)
+        await self._repo.delete_pending_upload(upload)
         await self._session.commit()
         _log_created(
             item,
-            storage_key=storage_key,
-            content_type=content_type,
-            size_bytes=len(data),
-            has_caption=text is not None,
+            storage_key=upload.storage_key,
+            content_type=upload.content_type,
+            size_bytes=stored.size_bytes,
+            has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
         )
         await self._publish_jobs()
         return item
 
-    @_tracer.start_as_current_span("items.create_file")
-    async def create_file_item(
-        self,
-        *,
-        user_id: uuid.UUID,
-        filename: str | None,
-        data: bytes,
-        text: str | None = None,
-        tags: list[str] = (),
-    ) -> Item:
-        """Stores an uploaded file as-is. Any file type is accepted: a
-        recognized format keeps its real content type, anything else is
-        stored as a generic binary (see `app.items.files`). An `analyzable`
-        format is created `pending` and enqueued for document analysis;
-        anything else is `completed` right away. `text` is an optional
-        caption, as for images."""
-        text = text.strip() if text is not None else None
-        text = text or None
+    async def _create_file_item(self, upload: PendingUpload, stored: StoredObject) -> Item:
+        """Any file type is accepted: a recognized format keeps its real
+        content type, anything else is stored as a generic binary (see
+        `app.items.files`). An `analyzable` format is created `pending` and
+        enqueued for document analysis; anything else is `completed` right
+        away."""
+        _check_size(stored.size_bytes, _MAX_FILE_SIZE_BYTES, empty=EmptyFileError, too_large=FileTooLargeError)
+        filename = upload.filename or files.clean_filename(None)
+        # May differ from the type the object was stored with (a charset
+        # added, or generic if the content doesn't match the extension):
+        # downloads are served with this one.
+        classified = files.classify(filename, stored.head)
 
-        if not data:
-            raise EmptyFileError()
-        if len(data) > _MAX_FILE_SIZE_BYTES:
-            raise FileTooLargeError()
-        tag_names = normalize_tag_names(list(tags))
-
-        filename = files.clean_filename(filename)
-        classified = files.classify(filename, data)
-
-        item_id = uuid.uuid4()
-        storage_key = storage_keys.file_key(user_id, item_id, classified.extension)
-        bind_context(item_id=item_id)
-        await self._storage.upload(key=storage_key, data=data, content_type=classified.content_type)
-
-        resolved_tags = await self._link_tags(user_id, tag_names)
+        resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
         item = await self._repo.create_file_item(
-            item_id=item_id,
-            user_id=user_id,
-            storage_key=storage_key,
+            item_id=upload.id,
+            user_id=upload.user_id,
+            storage_key=upload.storage_key,
             filename=filename,
             content_type=classified.content_type,
-            size_bytes=len(data),
-            text=text,
+            size_bytes=stored.size_bytes,
+            text=upload.caption,
             status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
             tags=resolved_tags,
-        )
-        # The filename is user content, so it isn't logged.
-        created_fields = dict(
-            storage_key=storage_key,
-            content_type=classified.content_type,
-            size_bytes=len(data),
-            analyzable=classified.analyzable,
-            has_caption=text is not None,
-            tag_count=len(resolved_tags),
         )
         if classified.analyzable:
             await self._add_job(
@@ -549,15 +667,40 @@ class ItemService:
                     item_id=item.id,
                     user_id=item.user_id,
                     item_type=QueueItemType.file,
-                    file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
+                    file=FileRef(
+                        storage_key=upload.storage_key, content_type=classified.content_type, filename=filename
+                    ),
                 ),
             )
-        if text is not None:
+        if upload.caption is not None:
             await self._add_embedding_job(item)
+        await self._repo.delete_pending_upload(upload)
         await self._session.commit()
-        _log_created(item, **created_fields)
+        # The filename is user content, so it isn't logged.
+        _log_created(
+            item,
+            storage_key=upload.storage_key,
+            content_type=classified.content_type,
+            size_bytes=stored.size_bytes,
+            analyzable=classified.analyzable,
+            has_caption=upload.caption is not None,
+            tag_count=len(resolved_tags),
+        )
         await self._publish_jobs()
         return item
+
+    async def _discard_upload(self, upload: PendingUpload, *, reason: str) -> None:
+        """Drops an upload whose content was rejected: the pending row, then
+        (best effort, as when deleting an item) its object. A failed object
+        delete leaves an orphan that no row points at any more."""
+        storage_key = upload.storage_key
+        await self._repo.delete_pending_upload(upload)
+        await self._session.commit()
+        logger.info("Upload rejected", storage_key=storage_key, reason=reason)
+        try:
+            await self._storage.delete(key=storage_key)
+        except Exception:
+            logger.exception("Failed to delete rejected upload; object orphaned", storage_key=storage_key)
 
     async def _link_tags(self, user_id: uuid.UUID, names: list[str]) -> list[Tag]:
         """The user's tags with these names (already normalized, see

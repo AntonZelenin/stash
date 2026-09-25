@@ -18,12 +18,22 @@ from stash_shared.queue.base import (
 
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
-from app.items.models import Description, Embedding, FileMetadata, ImageMetadata, Item, Tag, TextContent, item_tags
+from app.items.models import (
+    Description,
+    Embedding,
+    FileMetadata,
+    ImageMetadata,
+    Item,
+    PendingUpload,
+    Tag,
+    TextContent,
+    item_tags,
+)
 from app.main import app
 from app.embeddings import get_embedder
 from app.outbox import outbox_events
 from app.queue import get_queue_resolver
-from app.storage.base import ObjectStorage
+from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
 from app.storage.minio import get_object_storage
 from app.users.models import User
 
@@ -41,24 +51,66 @@ _TEST_TABLES = [
     Tag.__table__,
     item_tags,
     outbox_events,
+    PendingUpload.__table__,
 ]
 
 
 class FakeObjectStorage(ObjectStorage):
-    """In-memory stand-in for MinIO, so tests never touch real storage."""
+    """In-memory stand-in for MinIO, so tests never touch real storage.
+
+    `uploads` holds the stored objects (key -> (data, content type)). Like
+    S3, a pre-signed upload only accepts the key, content type and size it
+    was signed for: `put` (what the browser does with the URL) rejects
+    anything else."""
+
+    _UPLOAD_URL_PREFIX = "https://fake-storage.test/upload/"
 
     def __init__(self):
         self.uploads: dict[str, tuple[bytes, str]] = {}
+        # key -> (content type, size) each issued upload URL was signed for.
+        self.signed_uploads: dict[str, tuple[str, int]] = {}
+        self.inspected: list[str] = []
+        # key -> the content type its last download URL overrides it with.
+        self.download_content_types: dict[str, str | None] = {}
 
-    async def upload(self, *, key: str, data: bytes, content_type: str) -> None:
+    async def generate_upload_url(
+        self, *, key: str, content_type: str, size_bytes: int, expires_in: int
+    ) -> PresignedUpload:
+        self.signed_uploads[key] = (content_type, size_bytes)
+        return PresignedUpload(
+            url=f"{self._UPLOAD_URL_PREFIX}{key}?expires_in={expires_in}",
+            method="PUT",
+            headers={"Content-Type": content_type},
+        )
+
+    def put(self, url: str, headers: dict[str, str], data: bytes) -> None:
+        """A client uploading to a pre-signed URL."""
+        key = url.removeprefix(self._UPLOAD_URL_PREFIX).split("?", 1)[0]
+        content_type, size_bytes = self.signed_uploads[key]
+        if headers.get("Content-Type") != content_type or len(data) != size_bytes:
+            raise PermissionError("SignatureDoesNotMatch")
         self.uploads[key] = (data, content_type)
+
+    async def inspect(self, *, key: str, head_bytes: int) -> StoredObject | None:
+        self.inspected.append(key)
+        if key not in self.uploads:
+            return None
+        data, _ = self.uploads[key]
+        return StoredObject(size_bytes=len(data), head=data[:head_bytes])
 
     async def delete(self, *, key: str) -> None:
         self.uploads.pop(key, None)
 
     async def generate_download_url(
-        self, *, key: str, expires_in: int, filename: str | None = None, inline: bool = True
+        self,
+        *,
+        key: str,
+        expires_in: int,
+        filename: str | None = None,
+        inline: bool = True,
+        content_type: str | None = None,
     ) -> str:
+        self.download_content_types[key] = content_type
         url = f"https://fake-storage.test/{key}?expires_in={expires_in}"
         if filename is None:
             return url

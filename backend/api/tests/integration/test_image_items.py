@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared import storage_keys
 from stash_shared.queue.base import ItemType as QueueItemType
 
-from app.items.models import Description, ImageMetadata, Item, ItemType, TextContent
+from app.items.models import Description, ImageMetadata, Item, ItemType, PendingUpload, TextContent
 from app.items.services import _MAX_IMAGE_SIZE_BYTES
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import register_and_login
+from helpers import finalize_upload, register_and_login, start_upload, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -23,11 +23,7 @@ async def test_create_image_item_persists_and_associates_with_user(
 ):
     user_id, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, filename="photo.png")
 
     assert response.status_code == 202
     body = response.json()
@@ -51,49 +47,94 @@ async def test_create_image_item_persists_and_associates_with_user(
     assert uploaded_content_type == "image/png"
 
 
-async def test_create_image_item_rejects_empty_file(client: AsyncClient):
-    _, token = await register_and_login(client)
+async def test_start_upload_signs_a_url_for_a_generated_user_scoped_key(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    user_id, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("empty.png", b"", "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
+    response = await start_upload(
+        client, token, type="image", size_bytes=len(_PNG_BYTES), content_type="image/jpeg", filename="../../x.png"
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 201
+    body = response.json()
+    upload_id = body["upload_id"]
+    key = f"users/{user_id}/images/{upload_id}.jpg"
+    # Signed for that key, type and exact size only.
+    assert storage.signed_uploads == {key: ("image/jpeg", len(_PNG_BYTES))}
+    assert body["upload"] == {
+        "url": f"https://fake-storage.test/upload/{key}?expires_in=900",
+        "method": "PUT",
+        "headers": {"Content-Type": "image/jpeg"},
+    }
+    assert body["expires_at"]
+    # Nothing exists yet but the pending upload.
+    assert await session.get(Item, UUID(upload_id)) is None
+    pending = await session.get(PendingUpload, UUID(upload_id))
+    assert (pending.storage_key, str(pending.user_id)) == (key, user_id)
 
 
-async def test_create_image_item_rejects_non_image_content(client: AsyncClient):
+async def test_create_image_item_rejects_empty_file(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("not-an-image.txt", b"just some text", "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, b"")
 
     assert response.status_code == 422
+    assert response.json()["detail"] == "File is empty"
+    assert storage.signed_uploads == {}
 
 
-async def test_create_image_item_rejects_oversized_file(client: AsyncClient):
+async def test_create_image_item_rejects_unsupported_declared_type(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
 
-    oversized = _PNG_BYTES[:8] + b"\x00" * (_MAX_IMAGE_SIZE_BYTES + 1)
-
-    response = await client.post(
-        "/items/image",
-        files={"file": ("big.png", oversized, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, content_type="image/heic")
 
     assert response.status_code == 422
+    assert response.json()["detail"] == "Unsupported image type"
+    assert storage.signed_uploads == {}
+
+
+async def test_create_image_item_rejects_non_image_content(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    """Declared as a PNG, but what arrived isn't one: no item, and the
+    upload is discarded, object included."""
+    _, token = await register_and_login(client)
+
+    response = await upload_image(client, storage, token, b"just some text", content_type="image/png")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unsupported image type"
+    assert storage.uploads == {}
+    assert (await session.execute(Item.__table__.select())).first() is None
+    assert (await session.execute(PendingUpload.__table__.select())).first() is None
+
+
+async def test_create_image_item_rejects_content_of_another_image_type(
+    client: AsyncClient, storage: FakeObjectStorage
+):
+    """The key's extension and the type the object is served with come
+    from the declared type, so the content must be exactly that."""
+    _, token = await register_and_login(client)
+
+    response = await upload_image(client, storage, token, _PNG_BYTES, content_type="image/jpeg")
+
+    assert response.status_code == 422
+    assert storage.uploads == {}
+
+
+async def test_create_image_item_rejects_oversized_file(client: AsyncClient, storage: FakeObjectStorage):
+    _, token = await register_and_login(client)
+
+    response = await start_upload(client, token, type="image", size_bytes=_MAX_IMAGE_SIZE_BYTES + 1, content_type="image/png")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "File is too large"
+    assert storage.signed_uploads == {}
 
 
 async def test_create_image_item_rejects_missing_token(client: AsyncClient):
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-    )
+    response = await client.post("/uploads", json={"type": "image", "size_bytes": 10, "content_type": "image/png"})
 
     assert response.status_code == 401
 
@@ -102,14 +143,16 @@ async def test_create_image_item_publishes_processing_job(
     client: AsyncClient, queue: FakeJobQueue, storage: FakeObjectStorage
 ):
     user_id, token = await register_and_login(client)
+    started = await start_upload(client, token, type="image", size_bytes=len(_PNG_BYTES), content_type="image/png")
+    storage.put(started.json()["upload"]["url"], started.json()["upload"]["headers"], _PNG_BYTES)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    # Nothing is processed until the upload is finalized.
+    assert queue.published == []
+
+    response = await finalize_upload(client, token, started.json()["upload_id"])
 
     assert response.status_code == 202
+    assert response.json()["id"] == started.json()["upload_id"]
     assert len(queue.published) == 1
     job = queue.published[0]
     assert str(job.item_id) == response.json()["id"]
@@ -123,18 +166,14 @@ async def test_create_image_item_publishes_processing_job(
 
 
 async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_later_request(
-    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue
+    client: AsyncClient, session: AsyncSession, queue: FakeJobQueue, storage: FakeObjectStorage
 ):
     """The job is in the outbox with the item: the next request that
     flushes it publishes it, and the item goes on to processing."""
     queue.fail_publish = True
     user_id, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES)
 
     assert response.status_code == 202
     assert response.json()["status"] == "pending"
@@ -153,16 +192,11 @@ async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_lat
 
 
 async def test_create_image_item_with_caption_stores_it_on_the_same_item(
-    client: AsyncClient, session: AsyncSession
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
 ):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "  our cat Mochi  "},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, text="  our cat Mochi  ")
 
     assert response.status_code == 202
     item_id = UUID(response.json()["id"])
@@ -176,15 +210,12 @@ async def test_create_image_item_with_caption_stores_it_on_the_same_item(
     assert listed[0]["download_url"] is not None
 
 
-async def test_create_image_item_ignores_blank_caption(client: AsyncClient, session: AsyncSession):
+async def test_create_image_item_ignores_blank_caption(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "   "},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, text="   ")
 
     assert response.status_code == 202
     item_id = UUID(response.json()["id"])
@@ -192,13 +223,11 @@ async def test_create_image_item_ignores_blank_caption(client: AsyncClient, sess
     assert await session.get(Description, item_id) is None
 
 
-async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(client: AsyncClient, session: AsyncSession):
+async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
     user_id, token = await register_and_login(client)
-    created = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    created = await upload_image(client, storage, token, _PNG_BYTES)
     item_id = UUID(created.json()["id"])
 
     listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]

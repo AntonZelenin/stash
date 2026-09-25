@@ -27,7 +27,8 @@ similarity (pgvector).
 Responsible for:
 - Authentication and user management.
 - Creating and retrieving items.
-- Image uploads.
+- Authorizing image/file uploads, which clients send straight to object
+  storage (see "Uploads"), and creating their items.
 - Search.
 - Sending content processing jobs to the queue.
 
@@ -183,15 +184,83 @@ unscoped layout (`images/…`, `files/…`, `thumbnails/…`) keep working.
 
 Access: the bucket is private, and clients never get credentials or
 direct bucket access. The only way to an object is a short-lived pre-signed
-GET URL (`IMAGE_DOWNLOAD_URL_TTL_SECONDS`). The API issues it only for keys
-of items it loaded filtered by the authenticated user's id, so someone
-else's item is indistinguishable from a missing one (404). Deletes likewise
-take their keys from the owned item's row. Clients can never send a key: the
-edit request rejects unknown fields. The user id in a key is for organizing
-the bucket (per-user cleanup, lifecycle rules, usage), not authorization.
-Ownership in PostgreSQL is the only source of truth. The thumbnail worker
-builds its key from the job's `user_id` and records it only if that user
-still owns the item.
+URL: GET for downloads (`IMAGE_DOWNLOAD_URL_TTL_SECONDS`), PUT for uploads
+(`UPLOAD_URL_TTL_SECONDS`, see "Uploads"). The API issues a download URL
+only for keys of items it loaded filtered by the authenticated user's id, so
+someone else's item is indistinguishable from a missing one (404), and an
+upload URL only for a key it just generated under the requesting user's
+prefix. Deletes likewise take their keys from the owned item's row. Clients
+can never send a key: the upload and edit requests reject unknown fields.
+The user id in a key is for organizing the bucket (per-user cleanup,
+lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
+only source of truth. The thumbnail worker builds its key from the job's
+`user_id` and records it only if that user still owns the item.
+
+Behind `app.storage.base.ObjectStorage` (the S3 implementation,
+`MinioStorage`, serves MinIO and AWS S3 alike); item logic never calls
+boto3 or knows which backend it's on.
+
+### Uploads
+
+Image and file bytes never pass through the API (or its Lambda): the client
+uploads them straight to object storage.
+
+    client → POST /uploads {type, filename, content_type, size_bytes, text, tags}
+           ← {upload_id, upload: {url, method: PUT, headers}, expires_at}
+    client → PUT upload.url (the bytes, with upload.headers) → S3 / MinIO
+    client → POST /uploads/{upload_id}/finalize
+           ← {id: upload_id, status}   (item created, processing started)
+
+Start (`ItemService.start_upload`): the API validates the declared metadata
+first — size (images ≤ 100 MB, files ≤ 50 MB, not empty), an image's type
+(PNG/JPEG/GIF/WebP), caption and tags — and issues nothing if it's invalid.
+It then generates the item id and the storage key, under the user's prefix,
+with the extension from the declared image type or the filename's
+recognized extension (`app.items.files.expected_format`), never the
+filename itself. The upload URL is signed for that key, that content type
+and that exact `Content-Length`, so S3 rejects any other key, type or size
+(the size limit is enforced by S3 itself, not only by the API). Last, it
+records a pending upload (`pending_uploads`: id = the future item id, user,
+key, signed type and size, filename, caption, tag names, `expires_at`).
+
+Finalize (`ItemService.finalize_upload`): loads the pending upload by id
+*and* the authenticated user's id, row-locked (another user's is a 404),
+and reads back what arrived: its size (HEAD) and first 8 KB (a ranged GET),
+never the whole object. The content is validated as it always was: size,
+and the format sniffed from those bytes (an image must be the declared type;
+a file is classified by extension + content, falling back to generic). If
+nothing has arrived yet it's a 409 and the upload stays pending. Invalid
+content discards the upload (row and object) with a 422. Otherwise, in one
+transaction: the item is created with the upload's id and key, its tags
+linked, its jobs added to the outbox exactly as before direct uploads
+(thumbnail / document analysis / embedding), and the pending row deleted;
+the outbox is flushed after the commit. Finalizing again returns the same
+item without re-processing it.
+
+A file's object is stored with the type expected from its extension (what
+the URL was signed for), which the content check may then refine (a
+charset) or reject (generic). Downloads are therefore always served with
+the validated type from `item_files.content_type`
+(`ResponseContentType`), not the object's own.
+
+Incomplete uploads: a started upload that is never finalized (the upload
+failed, the tab closed, finalize never arrived) is only a
+`pending_uploads` row, maybe with an object at its key. It's not an item:
+not listed, searched or processed, and no job exists for it. Nothing
+cleans these up yet. The rows are exactly the candidates for a future
+cleanup job: for each row whose `expires_at` is well past (by more than the
+longest upload can take; S3 only checks the URL's expiry when a request
+starts), delete the object at its `storage_key` (a no-op if never
+uploaded), then the row, locking it `FOR UPDATE SKIP LOCKED` so it can't
+race a finalize (`ix_pending_uploads_expires_at` serves that scan). A
+bucket lifecycle rule can't do it, since finalized and abandoned uploads
+share the same prefixes. Rejected uploads are removed at once; only if that
+object delete fails is an object orphaned with no row pointing at it.
+
+Locally the same flow runs against MinIO: upload URLs are signed for
+`S3_PUBLIC_ENDPOINT_URL` (reachable from the browser), and MinIO allows
+cross-origin requests by default. On AWS the bucket's CORS rule
+(`s3_cors_allowed_origins`) must list the web app's origin for PUT.
 
 ### Queue
 
@@ -268,7 +337,7 @@ Outbox. Nothing publishes a job directly after a commit. The API and the
 workers add each job to the `outbox_events` table with
 `stash_shared.outbox.add_event`, in the same database transaction as the
 change that needs it: item creation (thumbnail, document-analysis and
-embedding jobs), an edit of an item's searchable text (embedding), a
+embedding jobs; for uploads, on finalize), an edit of an item's searchable text (embedding), a
 recorded thumbnail (content analysis), and an analyzer completing an item
 (embedding). The change and its job are committed together or not at all.
 After the commit, `OutboxPublisher.flush` publishes every unpublished event,
@@ -368,7 +437,8 @@ What's traced:
   SQL statement (SQLAlchemy), every S3 call (botocore).
 - `stash_shared.log.logged_call` — every external API call (OpenAI) —
   opens a client span with its log fields as attributes.
-- Business operations: the API's item create/update/delete/search, the
+- Business operations: the API's item create/update/delete/search and
+  upload start/finalize, the
   thumbnail stage's image processing, the document stage's text
   extraction.
 - The queue: `publish <queue>` (producer) for every published job and
@@ -381,7 +451,7 @@ unchanged — and the `Worker` opens each delivery's span as a child of the
 publish span that sent it. So an upload and every stage it triggers are
 one trace:
 
-    POST /items/image (api)
+    POST /uploads/{upload_id}/finalize (api)
       └ publish thumbnail_jobs
           └ process thumbnail_jobs (thumbnailer)
               └ publish content_analysis_jobs
@@ -456,7 +526,8 @@ Namespace `Stash` (`METRICS_NAMESPACE`):
 `route` is the route template (`/items/{item_id}`), or `unmatched` when no
 route matched. `method` is the HTTP method, or `OTHER` for a non-standard
 one. `operation` is `openai.responses`, `openai.embeddings`,
-`storage.upload`, `storage.download` or `storage.delete`. Any exception
+`storage.upload`, `storage.download`, `storage.inspect` (the API reading
+back a finished upload's size and first bytes) or `storage.delete`. Any exception
 counts as an external-call error, including a storage key that doesn't
 exist or an input OpenAI rejects.
 
@@ -534,10 +605,13 @@ Client → API → PostgreSQL → Queue → Worker → PostgreSQL
 
 ### Save File
 
-Client → API → Object Storage (`users/{user_id}/files/{item_id}[.{ext}]`)
-             → PostgreSQL (`item_files`)
-             → document_analysis_jobs → Document Analyzer → OpenAI
-                                                          → PostgreSQL
+Client → API (start upload) → PostgreSQL (`pending_uploads`)
+Client → Object Storage (`users/{user_id}/files/{item_id}[.{ext}]`, pre-signed PUT)
+Client → API (finalize) → PostgreSQL (`item_files`)
+                        → document_analysis_jobs → Document Analyzer → OpenAI
+                                                                     → PostgreSQL
+
+See "Uploads" for the upload itself.
 
 Only `analyzable` formats are enqueued (item created `pending`); anything
 else is created `completed` with no processing. The document analyzer
@@ -558,12 +632,13 @@ else.
 
 ### Save Image
 
-Client → API → Object Storage
-             → PostgreSQL
-             → thumbnail_jobs → Thumbnail Worker → Object Storage (thumbnail)
-                                                → PostgreSQL
-                                                → content_analysis_jobs → Content Analyzer → OpenAI
-                                                                                           → PostgreSQL
+Client → API (start upload) → PostgreSQL (`pending_uploads`)
+Client → Object Storage (`users/{user_id}/images/{item_id}.{ext}`, pre-signed PUT)
+Client → API (finalize) → PostgreSQL
+                        → thumbnail_jobs → Thumbnail Worker → Object Storage (thumbnail)
+                                                           → PostgreSQL
+                                                           → content_analysis_jobs → Content Analyzer → OpenAI
+                                                                                                      → PostgreSQL
 
 ### Search
 

@@ -10,9 +10,12 @@ never displayed inline, never analyzed.
 
 A format is recognized by its extension *and* a cheap check of its content
 (leading "magic" bytes, or for text formats, the absence of NUL bytes), so a
-file can't get a type — or inline display — just by being renamed.
+file can't get a type — or inline display — just by being renamed. Only the
+first `SNIFF_BYTES` of the content are ever looked at: files are uploaded
+straight to storage, and the API reads back just that much to classify them.
 """
 
+import codecs
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -23,8 +26,9 @@ GENERIC_CONTENT_TYPE = "application/octet-stream"
 _INLINE_CONTENT_TYPES = {"application/pdf", "text/plain", "application/json"}
 
 _MAX_FILENAME_LENGTH = 255
-# How much of a text file is checked for NUL bytes (binary content).
-_TEXT_SNIFF_BYTES = 8192
+# How much of a file's content classification needs (magic bytes, NUL bytes
+# in text, UTF-8 validity): what the API reads back from storage.
+SNIFF_BYTES = 8192
 
 
 def _starts_with(signature: bytes) -> Callable[[bytes], bool]:
@@ -46,12 +50,12 @@ def _is_mobi(data: bytes) -> bool:
 
 
 def _is_text(data: bytes) -> bool:
-    return b"\x00" not in data[:_TEXT_SNIFF_BYTES]
+    return b"\x00" not in data[:SNIFF_BYTES]
 
 
 def _is_fb2(data: bytes) -> bool:
     # XML; often not UTF-8 (e.g. windows-1251), which the XML prolog declares.
-    return _is_text(data) and b"<FictionBook" in data[:_TEXT_SNIFF_BYTES]
+    return _is_text(data) and b"<FictionBook" in data[:SNIFF_BYTES]
 
 
 @dataclass(frozen=True)
@@ -126,9 +130,30 @@ class ClassifiedFile:
     analyzable: bool
 
 
+@dataclass(frozen=True)
+class ExpectedFormat:
+    # Recognized extension (for the storage key), or "" for a generic file.
+    extension: str
+    # Without a charset: that depends on the content.
+    content_type: str
+
+
+def expected_format(filename: str) -> ExpectedFormat:
+    """What an upload named `filename` (already cleaned) should be, from
+    its extension alone, before its content exists: picks the storage key's
+    extension and the type the object is stored with. `classify` still
+    decides once the content is uploaded, and may fall back to generic."""
+    for extension in _candidate_extensions(filename):
+        file_format = FORMATS.get(extension)
+        if file_format is not None:
+            return ExpectedFormat(extension=extension, content_type=file_format.content_type)
+    return ExpectedFormat(extension="", content_type=GENERIC_CONTENT_TYPE)
+
+
 def classify(filename: str, data: bytes) -> ClassifiedFile:
-    """Classifies an upload by its (already cleaned) filename and content.
-    Never rejects: an unrecognized or mismatched file comes back generic."""
+    """Classifies an upload by its (already cleaned) filename and content;
+    `data` may be just the file's first `SNIFF_BYTES`. Never rejects: an
+    unrecognized or mismatched file comes back generic."""
     for extension in _candidate_extensions(filename):
         file_format = FORMATS.get(extension)
         if file_format is None:
@@ -173,8 +198,11 @@ def _candidate_extensions(filename: str) -> list[str]:
 
 
 def _is_utf8(data: bytes) -> bool:
+    """Whether the (leading part of the) content is valid UTF-8. Judged
+    from the first `SNIFF_BYTES` only, and a character cut off at the end of
+    that sample doesn't count against it."""
     try:
-        data.decode("utf-8")
+        codecs.getincrementaldecoder("utf-8")().decode(data[:SNIFF_BYTES], final=False)
     except UnicodeDecodeError:
         return False
     return True

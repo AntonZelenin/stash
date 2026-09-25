@@ -38,12 +38,30 @@ fn image_content_type(file_name: &str) -> Option<&'static str> {
     }
 }
 
+/// An image's actual format, from its leading bytes. The upload is
+/// authorized for the declared type and the backend checks the content
+/// matches, so e.g. a PNG saved as ".jpg" must be declared as a PNG.
+fn sniffed_image_content_type(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// A file the user has picked or dropped but not yet sent.
 ///
-/// The content type is a guess from the extension: the browser normally
-/// supplies one via `File.type`, but Dioxus's cross-platform `FileData` only
-/// exposes the name. The backend ignores it anyway and determines the real
-/// type itself; for non-images it's just `application/octet-stream`.
+/// Whether it's an image is decided by the extension (Dioxus's
+/// cross-platform `FileData` only exposes the name, not `File.type`); an
+/// image's content type comes from its bytes where recognizable. For
+/// non-images it's just `application/octet-stream`: the backend determines
+/// the real type itself.
 #[derive(Clone, PartialEq)]
 struct PendingFile {
     file_name: String,
@@ -69,13 +87,16 @@ async fn stage_file(file: FileData) -> Option<PendingFile> {
     let data = file.read_bytes().await.ok()?.to_vec();
 
     let (content_type, preview_url) = match image_content_type(&file_name) {
-        Some(content_type) => (
-            content_type,
-            Some(format!(
-                "data:{content_type};base64,{}",
-                BASE64_STANDARD.encode(&data)
-            )),
-        ),
+        Some(guessed) => {
+            let content_type = sniffed_image_content_type(&data).unwrap_or(guessed);
+            (
+                content_type,
+                Some(format!(
+                    "data:{content_type};base64,{}",
+                    BASE64_STANDARD.encode(&data)
+                )),
+            )
+        }
         None => ("application/octet-stream", None),
     };
 

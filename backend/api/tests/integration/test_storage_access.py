@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import FileMetadata, ImageMetadata, Item, ItemStatus, ItemType
 from conftest import FakeObjectStorage
-from helpers import register_and_login
+from helpers import register_and_login, upload_file, upload_image
 
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 # A minimal, valid 1x1 PNG.
@@ -23,18 +23,14 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _upload_file(client: AsyncClient, token: str, filename: str = "report.pdf", data: bytes = _PDF_BYTES):
-    response = await client.post(
-        "/items/file", files={"file": (filename, data, "application/octet-stream")}, headers=_auth(token)
-    )
+async def _upload_file(client: AsyncClient, storage: FakeObjectStorage, token: str, filename: str = "report.pdf", data: bytes = _PDF_BYTES):
+    response = await upload_file(client, storage, token, filename, data)
     assert response.status_code == 202
     return UUID(response.json()["id"])
 
 
-async def _upload_image(client: AsyncClient, token: str) -> UUID:
-    response = await client.post(
-        "/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, headers=_auth(token)
-    )
+async def _upload_image(client: AsyncClient, storage: FakeObjectStorage, token: str) -> UUID:
+    response = await upload_image(client, storage, token, _PNG_BYTES)
     assert response.status_code == 202
     return UUID(response.json()["id"])
 
@@ -53,8 +49,8 @@ async def test_same_filename_from_two_users_does_not_collide(
     bob_id, bob_token = await register_and_login(client, email="bob@example.com")
     alice_data, bob_data = _PDF_BYTES, _PDF_BYTES + b"% bob's copy\n"
 
-    alice_item = await _upload_file(client, alice_token, "Report.pdf", alice_data)
-    bob_item = await _upload_file(client, bob_token, "Report.pdf", bob_data)
+    alice_item = await _upload_file(client, storage, alice_token, "Report.pdf", alice_data)
+    bob_item = await _upload_file(client, storage, bob_token, "Report.pdf", bob_data)
 
     alice_file = await session.get(FileMetadata, alice_item)
     bob_file = await session.get(FileMetadata, bob_item)
@@ -71,10 +67,10 @@ async def test_same_filename_from_two_users_does_not_collide(
     assert "filename=Report.pdf" in listed["download_url"]
 
 
-async def test_uploaded_filename_never_shapes_the_key(client: AsyncClient, session: AsyncSession):
+async def test_uploaded_filename_never_shapes_the_key(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     user_id, token = await register_and_login(client)
 
-    item_id = await _upload_file(client, token, "../../users/someone-else/files/x.pdf")
+    item_id = await _upload_file(client, storage, token, "../../users/someone-else/files/x.pdf")
 
     stored = await session.get(FileMetadata, item_id)
     assert stored.storage_key == f"users/{user_id}/files/{item_id}.pdf"
@@ -84,10 +80,10 @@ async def test_uploaded_filename_never_shapes_the_key(client: AsyncClient, sessi
 # ---- presigned access ----
 
 
-async def test_owner_gets_presigned_urls_for_their_objects(client: AsyncClient, session: AsyncSession):
+async def test_owner_gets_presigned_urls_for_their_objects(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     user_id, token = await register_and_login(client)
-    image_id = await _upload_image(client, token)
-    file_id = await _upload_file(client, token)
+    image_id = await _upload_image(client, storage, token)
+    file_id = await _upload_file(client, storage, token)
     image = await session.get(ImageMetadata, image_id)
     image.thumbnail_key = f"users/{user_id}/thumbnails/{image_id}.webp"
     await session.commit()
@@ -111,7 +107,7 @@ async def test_other_user_gets_no_access_to_an_item(
     item answers someone else's item exactly like a missing one."""
     _, owner_token = await register_and_login(client, email="owner@example.com")
     _, other_token = await register_and_login(client, email="other@example.com")
-    item_id = await _upload_file(client, owner_token)
+    item_id = await _upload_file(client, storage, owner_token)
     [key] = storage.uploads
 
     assert await _listed(client, other_token) == []
@@ -136,15 +132,15 @@ async def test_urls_are_only_issued_to_authenticated_users(client: AsyncClient):
     assert (await client.patch(f"/items/{uuid.uuid4()}", json={"text": "x"})).status_code == 401
 
 
-async def test_client_cannot_point_an_item_at_another_users_object(client: AsyncClient, session: AsyncSession):
+async def test_client_cannot_point_an_item_at_another_users_object(client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession):
     """Keys are never accepted from clients: an edit carrying one (here,
     another user's object) is rejected outright, and the item keeps its own
     key — the only one ever signed for it."""
     _, victim_token = await register_and_login(client, email="victim@example.com")
-    victim_item = await _upload_file(client, victim_token)
+    victim_item = await _upload_file(client, storage, victim_token)
     victim_key = (await session.get(FileMetadata, victim_item)).storage_key
     user_id, token = await register_and_login(client, email="attacker@example.com")
-    item_id = await _upload_file(client, token)
+    item_id = await _upload_file(client, storage, token)
 
     response = await client.patch(
         f"/items/{item_id}", json={"text": "note", "storage_key": victim_key}, headers=_auth(token)

@@ -2,7 +2,7 @@
 # does:
 #
 #                      S3 objects (users/...)          SQS                     Secrets
-#   api                put images|files, get, delete   send: all               db, openai
+#   api                sign uploads, get, delete       send: all               db, openai
 #   thumbnailer        get images, put|delete thumbs   send: all, consume own  db
 #   image_analyzer     get thumbnails                  send: all, consume own  db, openai
 #   document_analyzer  get files                       send: all, consume own  db, openai
@@ -11,17 +11,19 @@
 # "send: all": after its commit, a process flushes the whole transactional
 # outbox (stash_shared.outbox), publishing every pending event whatever its
 # queue, so each publisher may send to every queue. The embedding worker
-# never flushes. "consume own": what the worker's SQS event source mapping
+# never flushes. "sign uploads": the API never writes objects itself; its
+# PutObject grant is what the pre-signed URLs it hands to browsers act
+# with, so it's scoped to the originals' prefixes. "consume own": what the worker's SQS event source mapping
 # (messaging.tf) needs on its queue. API Gateway invokes the API through a
 # resource-based permission (api_gateway.tf), not a role.
 
 locals {
   lambda_s3_access = {
     api = {
-      put    = ["users/*/images/*", "users/*/files/*"]
-      get    = ["users/*"] # presigned downloads of originals and thumbnails
-      delete = ["users/*"] # deleting an item removes its original and thumbnail
-      list   = false
+      put    = ["users/*/images/*", "users/*/files/*"] # presigned direct uploads
+      get    = ["users/*"]                             # presigned downloads; reading an upload's first bytes on finalize
+      delete = ["users/*"]                             # deleting an item removes its original and thumbnail
+      list   = true                                    # finalizing before the upload arrived: 404, not 403
     }
     thumbnailer = {
       put    = ["users/*/thumbnails/*"]
@@ -140,7 +142,8 @@ data "aws_iam_policy_document" "lambda" {
 
   # Without ListBucket, S3 answers a missing key with AccessDenied, which
   # the workers retry as transient; with it, NoSuchKey, which they treat as
-  # permanent (stash_worker_core.storage). It can't be narrowed by prefix:
+  # permanent (stash_worker_core.storage), and the API tells an upload that
+  # hasn't arrived yet from a real error. It can't be narrowed by prefix:
   # GetObject's request carries no s3:prefix to match.
   dynamic "statement" {
     for_each = local.lambda_s3_access[each.key].list ? [1] : []

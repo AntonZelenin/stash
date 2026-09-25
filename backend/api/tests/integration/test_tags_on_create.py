@@ -2,7 +2,7 @@ import pytest
 from httpx import AsyncClient
 
 from conftest import FakeObjectStorage
-from helpers import register_and_login
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -45,29 +45,19 @@ async def test_existing_tags_are_reused_and_duplicates_dropped(client: AsyncClie
     assert [t["name"] for t in tags] == ["AWS", "Python"]
 
 
-async def test_image_created_with_tags(client: AsyncClient):
+async def test_image_created_with_tags(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "our cat", "tags": ["Pets", "Home"]},
-        headers=_auth(token),
-    )
+    response = await upload_image(client, storage, token, _PNG_BYTES, text="our cat", tags=['Pets', 'Home'])
 
     assert response.status_code == 202
     assert await _tag_names(client, token) == [["Home", "Pets"]]
 
 
-async def test_file_created_with_tags(client: AsyncClient):
+async def test_file_created_with_tags(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
 
-    response = await client.post(
-        "/items/file",
-        files={"file": ("setup.exe", b"MZ\x90\x00", "application/octet-stream")},
-        data={"tags": ["Drivers"]},
-        headers=_auth(token),
-    )
+    response = await upload_file(client, storage, token, "setup.exe", b"MZ\x90\x00", tags=['Drivers'])
 
     assert response.status_code == 202
     assert await _tag_names(client, token) == [["Drivers"]]
@@ -88,12 +78,7 @@ async def test_invalid_tags_reject_the_item_before_anything_is_stored(
     _, token = await register_and_login(client)
 
     text_response = await client.post("/items/text", json={"text": "note", "tags": tags}, headers=_auth(token))
-    image_response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"tags": tags},
-        headers=_auth(token),
-    )
+    image_response = await upload_image(client, storage, token, _PNG_BYTES, tags=tags)
 
     assert text_response.status_code == 422
     assert image_response.status_code == 422

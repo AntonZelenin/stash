@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use api::{
     ApiClient, ApiError, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListedItem,
-    SearchResponse, Tag, TokenPair, TokenStore,
+    NewUpload, SearchResponse, Tag, TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -115,32 +115,12 @@ impl AuthSession {
         text: Option<String>,
         tags: Vec<String>,
     ) -> Result<ItemCreated, ApiError> {
-        let client = self.client.clone();
-        let file_name = file_name.to_string();
-        let content_type = content_type.to_string();
-        self.call_authenticated(move |access_token| {
-            let client = client.clone();
-            let file_name = file_name.clone();
-            let content_type = content_type.clone();
-            let data = data.clone();
-            let text = text.clone();
-            let tags = tags.clone();
-            async move {
-                client
-                    .create_image_item(
-                        &access_token,
-                        &file_name,
-                        &content_type,
-                        data,
-                        text.as_deref(),
-                        &tags,
-                    )
-                    .await
-            }
-        })
-        .await
+        self.upload_item(UploadType::Image, file_name, content_type, data, text, tags)
+            .await
     }
 
+    /// Uploads any file (PDF, e-book, archive, anything). The backend decides the
+    /// type from the file name's extension and checks the content matches.
     pub async fn create_file_item(
         &self,
         file_name: &str,
@@ -149,28 +129,47 @@ impl AuthSession {
         text: Option<String>,
         tags: Vec<String>,
     ) -> Result<ItemCreated, ApiError> {
+        self.upload_item(UploadType::File, file_name, content_type, data, text, tags)
+            .await
+    }
+
+    /// Saves an image or file: the API authorizes the upload, the bytes go
+    /// straight to storage, then the API creates the item. Only the two API
+    /// calls are retried after a token refresh; the bytes are sent once.
+    async fn upload_item(
+        &self,
+        upload_type: UploadType,
+        file_name: &str,
+        content_type: &str,
+        data: Vec<u8>,
+        caption: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<ItemCreated, ApiError> {
+        let upload = NewUpload {
+            upload_type,
+            file_name: file_name.to_string(),
+            content_type: content_type.to_string(),
+            size_bytes: data.len() as u64,
+            caption,
+            tags,
+        };
         let client = self.client.clone();
-        let file_name = file_name.to_string();
-        let content_type = content_type.to_string();
+        let started = self
+            .call_authenticated(move |access_token| {
+                let client = client.clone();
+                let upload = upload.clone();
+                async move { client.start_upload(&access_token, &upload).await }
+            })
+            .await?;
+
+        self.client.upload_to_storage(&started.upload, data).await?;
+
+        let client = self.client.clone();
+        let upload_id = started.upload_id;
         self.call_authenticated(move |access_token| {
             let client = client.clone();
-            let file_name = file_name.clone();
-            let content_type = content_type.clone();
-            let data = data.clone();
-            let text = text.clone();
-            let tags = tags.clone();
-            async move {
-                client
-                    .create_file_item(
-                        &access_token,
-                        &file_name,
-                        &content_type,
-                        data,
-                        text.as_deref(),
-                        &tags,
-                    )
-                    .await
-            }
+            let upload_id = upload_id.clone();
+            async move { client.finalize_upload(&access_token, &upload_id).await }
         })
         .await
     }

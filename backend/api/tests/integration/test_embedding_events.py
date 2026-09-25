@@ -3,8 +3,8 @@ from uuid import UUID
 from httpx import AsyncClient
 from stash_shared.queue.base import ItemType as QueueItemType
 
-from conftest import FakeJobQueue
-from helpers import register_and_login
+from conftest import FakeJobQueue, FakeObjectStorage
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -39,40 +39,30 @@ async def test_link_item_is_sent_for_embedding(client: AsyncClient, embedding_qu
     assert job.item_type == QueueItemType.link
 
 
-async def test_captioned_image_is_sent_for_embedding_right_away(client: AsyncClient, embedding_queue: FakeJobQueue):
+async def test_captioned_image_is_sent_for_embedding_right_away(client: AsyncClient, storage: FakeObjectStorage, embedding_queue: FakeJobQueue):
     _, token = await register_and_login(client)
 
-    await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        data={"text": "our cat"},
-        headers=_auth(token),
-    )
+    await upload_image(client, storage, token, _PNG_BYTES, text="our cat")
 
     [job] = embedding_queue.published
     assert job.item_type == QueueItemType.image
 
 
-async def test_uncaptioned_uploads_wait_for_analysis(client: AsyncClient, embedding_queue: FakeJobQueue):
+async def test_uncaptioned_uploads_wait_for_analysis(client: AsyncClient, storage: FakeObjectStorage, embedding_queue: FakeJobQueue):
     """No searchable text yet: the content analyzers publish once they've
     written the description."""
     _, token = await register_and_login(client)
 
-    await client.post("/items/image", files={"file": ("photo.png", _PNG_BYTES, "image/png")}, headers=_auth(token))
-    await client.post("/items/file", files={"file": ("notes.txt", b"hello", "text/plain")}, headers=_auth(token))
+    await upload_image(client, storage, token, _PNG_BYTES)
+    await upload_file(client, storage, token, "notes.txt", b"hello")
 
     assert embedding_queue.published == []
 
 
-async def test_captioned_unanalyzable_file_is_sent_for_embedding(client: AsyncClient, embedding_queue: FakeJobQueue):
+async def test_captioned_unanalyzable_file_is_sent_for_embedding(client: AsyncClient, storage: FakeObjectStorage, embedding_queue: FakeJobQueue):
     _, token = await register_and_login(client)
 
-    await client.post(
-        "/items/file",
-        files={"file": ("setup.exe", b"MZ\x90\x00", "application/octet-stream")},
-        data={"text": "printer driver"},
-        headers=_auth(token),
-    )
+    await upload_file(client, storage, token, "setup.exe", b"MZ\x90\x00", text="printer driver")
 
     [job] = embedding_queue.published
     assert job.item_type == QueueItemType.file

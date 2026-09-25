@@ -8,7 +8,6 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic[email]>=2.7",
     "pydantic-settings>=2.4",
-    "python-multipart>=0.0.9",
     # [asyncio]: greenlet, which the async engine needs (2.1 stopped
     # installing it by default). <2.1: what the app is tested on, and what
     # opentelemetry-instrumentation-sqlalchemy supports so far.

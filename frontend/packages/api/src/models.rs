@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +41,51 @@ pub(crate) struct CreateTextItemRequest {
     pub text: String,
     /// Tag names for the new item (existing tags reused, missing created).
     pub tags: Vec<String>,
+}
+
+/// What an upload becomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UploadType {
+    Image,
+    File,
+}
+
+/// An image or file about to be uploaded (`POST /uploads`). The bytes go
+/// straight to storage afterwards; this is only their description, which
+/// the backend validates before authorizing the upload.
+#[derive(Debug, Clone, Serialize)]
+pub struct NewUpload {
+    #[serde(rename = "type")]
+    pub upload_type: UploadType,
+    #[serde(rename = "filename")]
+    pub file_name: String,
+    /// Images: their type. Files: ignored, the backend decides.
+    pub content_type: String,
+    /// Exact size; the upload URL only accepts that many bytes.
+    pub size_bytes: u64,
+    /// Optional caption for the new item.
+    #[serde(rename = "text", skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    /// Tag names for the new item.
+    pub tags: Vec<String>,
+}
+
+/// Where and how to send an upload's bytes: a short-lived, pre-signed
+/// object storage request, not the API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PresignedUpload {
+    pub url: String,
+    pub method: String,
+    /// Sent exactly as given; they're part of the signature.
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadStarted {
+    /// Finalize with it; also the id of the item it becomes.
+    pub upload_id: String,
+    pub upload: PresignedUpload,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -15,6 +15,7 @@ from app.items.models import (
     Item,
     ItemStatus,
     ItemType,
+    PendingUpload,
     Tag,
     TextContent,
     Vector,
@@ -148,6 +149,29 @@ class ItemRepository:
         self._session.add(item)
         await self._session.flush()
         return item
+
+    async def add_pending_upload(self, upload: PendingUpload) -> None:
+        self._session.add(upload)
+        await self._session.flush()
+
+    async def get_pending_upload_for_update(
+        self, *, upload_id: uuid.UUID, user_id: uuid.UUID
+    ) -> PendingUpload | None:
+        """The user's unfinished upload, row-locked until the transaction
+        ends, so two finalizations of the same upload can't both create its
+        item: the second waits, then finds it gone. None if there's no such
+        upload *started by this user*."""
+        result = await self._session.execute(
+            select(PendingUpload)
+            .where(PendingUpload.id == upload_id, PendingUpload.user_id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_pending_upload(self, upload: PendingUpload) -> None:
+        await self._session.delete(upload)
+        await self._session.flush()
 
     async def get_for_update(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> Item | None:
         """The user's item with everything an edit touches, row-locked

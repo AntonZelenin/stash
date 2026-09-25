@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import Description, ImageMetadata, Item, TextContent
 from conftest import FakeObjectStorage
-from helpers import register_and_login
+from helpers import register_and_login, upload_file, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -33,12 +33,7 @@ async def test_delete_several_items(
     note = await _note(client, token, "a note")
     link = await _note(client, token, "https://example.com")
     image = (
-        await client.post(
-            "/items/image",
-            files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-            data={"text": "caption"},
-            headers=_auth(token),
-        )
+        await upload_image(client, storage, token, _PNG_BYTES, text="caption")
     ).json()["id"]
     kept = await _note(client, token, "keep me")
 

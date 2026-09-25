@@ -5,7 +5,8 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import Item
-from helpers import register_and_login
+from conftest import FakeObjectStorage
+from helpers import register_and_login, upload_file, upload_image
 
 _PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
@@ -146,13 +147,9 @@ async def test_list_items_text_item_has_no_download_url(client: AsyncClient):
     assert item["download_url"] is None
 
 
-async def test_list_items_image_item_has_presigned_download_url(client: AsyncClient):
+async def test_list_items_image_item_has_presigned_download_url(client: AsyncClient, storage: FakeObjectStorage):
     user_id, token = await register_and_login(client)
-    create_response = await client.post(
-        "/items/image",
-        files={"file": ("photo.png", _PNG_BYTES, "image/png")},
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    create_response = await upload_image(client, storage, token, _PNG_BYTES)
     assert create_response.status_code == 202
 
     response = await client.get("/items", headers={"Authorization": f"Bearer {token}"})

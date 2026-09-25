@@ -3,7 +3,8 @@
 Responsible for:
 - Authentication and user management.
 - Creating and retrieving items.
-- Image uploads.
+- Authorizing image/file uploads (clients upload straight to storage;
+  uploads never pass through the API) and finalizing them into items.
 - Search.
 - Sending content processing jobs to the queue, always through the
   transactional outbox (`stash_shared.outbox`): add the job in the same

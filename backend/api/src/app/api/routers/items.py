@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.outbox import OutboxPublisher
 
@@ -14,7 +14,10 @@ from app.api.schemas.items import (
     ListedItem,
     ListedTag,
     ListItemsResponse,
+    PresignedUpload,
+    StartUploadRequest,
     UpdateItemRequest,
+    UploadStarted,
 )
 from app.db import DbSession
 from app.items.models import ItemType as DomainItemType
@@ -30,6 +33,8 @@ from app.items.services import (
     ItemNotFoundError,
     ItemService,
     UnsupportedImageTypeError,
+    UploadNotCompletedError,
+    UploadNotFoundError,
 )
 from app.items.services import ListedItem as ListedItemResult
 from app.queue import get_outbox
@@ -71,65 +76,97 @@ async def create_text_item(
 
 
 @router.post(
-    "/items/image",
-    status_code=status.HTTP_202_ACCEPTED,
-    response_model=ItemCreated,
+    "/uploads",
+    status_code=status.HTTP_201_CREATED,
+    response_model=UploadStarted,
     responses=_RESPONSES,
 )
-async def create_image_item(
-    file: UploadFile = File(...),
-    text: str | None = Form(default=None),
-    tags: list[str] = Form(default=[]),
+async def start_upload(
+    payload: StartUploadRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-    outbox: OutboxPublisher = Depends(get_outbox),
-) -> ItemCreated:
-    data = await file.read()
+) -> UploadStarted:
+    """Step 1 of saving an image or file: authorizes an upload straight to
+    storage. The client then sends the bytes to `upload.url` and calls
+    `finalize_upload`; the file itself never goes through the API."""
     try:
-        item = await ItemService(session, storage, outbox).create_image_item(
-            user_id=current_user.id, data=data, text=text, tags=tags
+        started = await ItemService(session, storage).start_upload(
+            user_id=current_user.id,
+            item_type=DomainItemType(payload.type.value),
+            size_bytes=payload.size_bytes,
+            filename=payload.filename,
+            content_type=payload.content_type,
+            text=payload.text,
+            tags=payload.tags,
         )
-    except EmptyImageError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
-    except ImageTooLargeError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is too large") from None
-    except UnsupportedImageTypeError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unsupported image type") from None
-    except InvalidTagNameError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
-
-    return ItemCreated(id=item.id, status=ItemStatus(item.status))
+    except _UPLOAD_ERRORS as exc:
+        raise _invalid_upload(exc) from None
+    return UploadStarted(
+        upload_id=started.upload_id,
+        upload=PresignedUpload(
+            url=started.upload.url, method=started.upload.method, headers=started.upload.headers
+        ),
+        expires_at=started.expires_at,
+    )
 
 
 @router.post(
-    "/items/file",
+    "/uploads/{upload_id}/finalize",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=ItemCreated,
-    responses=_RESPONSES,
+    responses={
+        **_RESPONSES,
+        404: {"description": "Upload not found"},
+        409: {"description": "File not uploaded yet"},
+    },
 )
-async def create_file_item(
-    file: UploadFile = File(...),
-    text: str | None = Form(default=None),
-    tags: list[str] = Form(default=[]),
+async def finalize_upload(
+    upload_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
 ) -> ItemCreated:
-    data = await file.read()
+    """Step 2: creates the item once the upload is in storage, and starts
+    its processing."""
     try:
-        item = await ItemService(session, storage, outbox).create_file_item(
-            user_id=current_user.id, filename=file.filename, data=data, text=text, tags=tags
+        item = await ItemService(session, storage, outbox).finalize_upload(
+            user_id=current_user.id, upload_id=upload_id
         )
-    except EmptyFileError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is empty") from None
-    except FileTooLargeError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "File is too large (max 50 MB)") from None
-    except InvalidTagNameError:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
+    except UploadNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found") from None
+    except UploadNotCompletedError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "File has not been uploaded yet") from None
+    except _UPLOAD_ERRORS as exc:
+        raise _invalid_upload(exc) from None
 
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
+
+
+_UPLOAD_ERRORS = (
+    EmptyImageError,
+    ImageTooLargeError,
+    UnsupportedImageTypeError,
+    EmptyFileError,
+    FileTooLargeError,
+    InvalidTagNameError,
+)
+
+
+def _invalid_upload(exc: Exception) -> HTTPException:
+    match exc:
+        case EmptyImageError() | EmptyFileError():
+            detail = "File is empty"
+        case ImageTooLargeError():
+            detail = "File is too large"
+        case FileTooLargeError():
+            detail = "File is too large (max 50 MB)"
+        case UnsupportedImageTypeError():
+            detail = "Unsupported image type"
+        case _:
+            detail = _INVALID_TAGS
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
 
 
 @router.get(

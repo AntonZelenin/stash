@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # refreshes them shortly before they expire) that can be well before
     # this TTL, so keep it short there and let clients re-fetch the URL.
     image_download_url_ttl_seconds: int = 3600
+    # How long a pre-signed upload URL can be used to *start* an upload
+    # (S3 checks it when the request arrives, so a slow upload may finish
+    # later). Also stamped on the pending upload as `expires_at`.
+    upload_url_ttl_seconds: int = 900
     # Search queries are embedded with this; it must be the model the
     # embedding worker uses for item text.
     openai_api_key: str = ""
