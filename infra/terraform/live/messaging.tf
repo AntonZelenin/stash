@@ -28,12 +28,14 @@ locals {
     }
   }
 
-  # The visibility timeout is both the guard against a message being handed
-  # out twice while a worker still holds it and the delay before a retry.
+  # The worker's Lambda timeout covers its whole batch, processed one record
+  # after another. The visibility timeout is both the guard against a
+  # message being handed out twice while a worker still holds it and the
+  # delay before a retry, so it must exceed the Lambda timeout.
   queue_timeouts = {
     for name in keys(local.queues) : name => {
-      worker_timeout_seconds     = var.worker_timeout_seconds[name]
-      visibility_timeout_seconds = var.worker_timeout_seconds[name] * var.sqs_visibility_timeout_multiplier
+      worker_timeout_seconds     = var.worker_timeout_seconds[name] * var.worker_batch_size[name]
+      visibility_timeout_seconds = var.worker_timeout_seconds[name] * var.worker_batch_size[name] * var.sqs_visibility_timeout_multiplier
     }
   }
 
@@ -79,4 +81,37 @@ resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
     redrivePermission = "byQueue"
     sourceQueueArns   = [aws_sqs_queue.main[each.key].arn]
   })
+}
+
+# Each queue feeds its worker's Lambda. The handler returns a partial batch
+# response (stash_worker_core.aws_lambda): Lambda deletes the records it
+# doesn't report, and reported ones stay unacked, reappear after the
+# visibility timeout and are eventually moved to the DLQ by the redrive
+# policy. Nothing else deletes or re-sends messages.
+#
+# maximum_concurrency is the only throttle: the worker's reserved
+# concurrency defaults to it, and must not be lower, or throttled records
+# would come back and use up delivery attempts.
+resource "aws_lambda_event_source_mapping" "worker" {
+  for_each = local.queues
+
+  event_source_arn = aws_sqs_queue.main[each.key].arn
+  function_name    = aws_lambda_function.main[each.value.worker].arn
+
+  batch_size              = var.worker_batch_size[each.key]
+  function_response_types = ["ReportBatchItemFailures"]
+
+  scaling_config {
+    maximum_concurrency = var.worker_max_concurrency[each.key]
+  }
+
+  lifecycle {
+    precondition {
+      condition = (
+        local.lambdas[each.value.worker].reserved_concurrency == -1
+        || local.lambdas[each.value.worker].reserved_concurrency >= var.worker_max_concurrency[each.key]
+      )
+      error_message = "${each.value.worker}'s reserved concurrency is below worker_max_concurrency[\"${each.key}\"]: raise it, or set it to -1."
+    }
+  }
 }

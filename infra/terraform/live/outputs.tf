@@ -84,7 +84,7 @@ output "objects_bucket_arn" {
 }
 
 output "sqs_queues" {
-  description = "Per application queue name: main queue and DLQ URL/ARN, worker and timeouts."
+  description = "Per application queue name: main queue and DLQ URL/ARN, worker, its Lambda timeout and the visibility timeout."
   value = {
     for name, q in local.queues : name => {
       worker                     = q.worker
@@ -122,6 +122,28 @@ output "lambda_functions" {
       invoke_arn    = f.invoke_arn
       role_arn      = aws_iam_role.lambda[name].arn
       role_name     = aws_iam_role.lambda[name].name
+    }
+  }
+}
+
+output "api_url" {
+  description = "Public API base URL (API Gateway default endpoint, no trailing slash); the frontend's API URL."
+  value       = aws_apigatewayv2_api.main.api_endpoint
+}
+
+output "api_gateway_id" {
+  description = "HTTP API ID."
+  value       = aws_apigatewayv2_api.main.id
+}
+
+output "sqs_event_source_mappings" {
+  description = "Per application queue name: the event source mapping UUID (to pause a worker: aws lambda update-event-source-mapping --uuid ... --no-enabled), its function, batch size and maximum concurrency."
+  value = {
+    for name, m in aws_lambda_event_source_mapping.worker : name => {
+      uuid                = m.uuid
+      function_name       = aws_lambda_function.main[local.queues[name].worker].function_name
+      batch_size          = m.batch_size
+      maximum_concurrency = var.worker_max_concurrency[name]
     }
   }
 }

@@ -12,7 +12,8 @@
 # outbox (stash_shared.outbox), publishing every pending event whatever its
 # queue, so each publisher may send to every queue. The embedding worker
 # never flushes. "consume own": what the worker's SQS event source mapping
-# (next stage) needs on its queue.
+# (messaging.tf) needs on its queue. API Gateway invokes the API through a
+# resource-based permission (api_gateway.tf), not a role.
 
 locals {
   lambda_s3_access = {

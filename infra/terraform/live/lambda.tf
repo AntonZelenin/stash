@@ -26,30 +26,26 @@ locals {
       queue   = "thumbnail_jobs"
       # Pillow decodes the whole original (the API accepts images up to
       # 100 MB) before resizing.
-      memory_size          = 1024
-      reserved_concurrency = 2
-      openai               = false
+      memory_size = 1024
+      openai      = false
     }
     image_analyzer = {
-      handler              = "image_analyzer.aws_lambda.handler"
-      queue                = "content_analysis_jobs"
-      memory_size          = 256
-      reserved_concurrency = 2
-      openai               = true
+      handler     = "image_analyzer.aws_lambda.handler"
+      queue       = "content_analysis_jobs"
+      memory_size = 256
+      openai      = true
     }
     document_analyzer = {
-      handler              = "document_analyzer.aws_lambda.handler"
-      queue                = "document_analysis_jobs"
-      memory_size          = 512
-      reserved_concurrency = 2
-      openai               = true
+      handler     = "document_analyzer.aws_lambda.handler"
+      queue       = "document_analysis_jobs"
+      memory_size = 512
+      openai      = true
     }
     embedding_worker = {
-      handler              = "embedding_worker.aws_lambda.handler"
-      queue                = "embedding_jobs"
-      memory_size          = 256
-      reserved_concurrency = 2
-      openai               = true
+      handler     = "embedding_worker.aws_lambda.handler"
+      queue       = "embedding_jobs"
+      memory_size = 256
+      openai      = true
     }
   }
 
@@ -58,15 +54,21 @@ locals {
       function_name = "${local.name_prefix}-${replace(name, "_", "-")}"
       package_path  = coalesce(lookup(var.lambda_package_paths, name, null), "${var.lambda_package_dir}/${name}.zip")
       memory_size   = coalesce(try(var.lambda_config[name].memory_size, null), d.memory_size)
-      # A worker's timeout is its queue's worker timeout, which its queue's
-      # visibility timeout is derived from (messaging.tf).
+      # A worker's timeout is its queue's worker timeout (per-message bound
+      # x batch size), which its queue's visibility timeout is derived from
+      # (messaging.tf).
       timeout = (d.queue == null
         ? coalesce(try(var.lambda_config[name].timeout, null), d.timeout)
         : local.queue_timeouts[d.queue].worker_timeout_seconds
       )
-      reserved_concurrency = coalesce(try(var.lambda_config[name].reserved_concurrency, null), d.reserved_concurrency)
-      architecture         = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
-      runtime              = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
+      # A worker's reservation matches its event source mapping's maximum
+      # concurrency (messaging.tf), which is what actually limits it.
+      reserved_concurrency = coalesce(
+        try(var.lambda_config[name].reserved_concurrency, null),
+        d.queue == null ? d.reserved_concurrency : var.worker_max_concurrency[d.queue],
+      )
+      architecture = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
+      runtime      = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
     })
   }
 

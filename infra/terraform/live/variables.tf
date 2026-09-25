@@ -91,7 +91,7 @@ variable "db_name" {
 }
 
 variable "worker_timeout_seconds" {
-  description = "Expected upper bound on one worker invocation per queue, i.e. the future Lambda timeout (batch size 1). Each analyzer makes one OpenAI call with a 90 s client timeout."
+  description = "Upper bound on processing one message, per queue. The worker's Lambda timeout is this times its worker_batch_size. Each analyzer makes one OpenAI call with a 90 s client timeout."
   type = object({
     thumbnail_jobs         = optional(number, 60)
     content_analysis_jobs  = optional(number, 120)
@@ -103,6 +103,43 @@ variable "worker_timeout_seconds" {
   validation {
     condition     = alltrue([for t in values(var.worker_timeout_seconds) : t >= 1 && t <= 900])
     error_message = "Worker timeouts must be between 1 and 900 seconds (the Lambda maximum)."
+  }
+}
+
+variable "worker_batch_size" {
+  description = "SQS records per worker invocation, per queue. Records are processed one after another, so the Lambda timeout (and with it the visibility timeout, i.e. the retry delay) grows with the batch."
+  type = object({
+    thumbnail_jobs         = optional(number, 1)
+    content_analysis_jobs  = optional(number, 1)
+    document_analysis_jobs = optional(number, 1)
+    embedding_jobs         = optional(number, 1)
+  })
+  default = {}
+
+  validation {
+    condition     = alltrue([for b in values(var.worker_batch_size) : b >= 1 && b <= 10 && floor(b) == b])
+    error_message = "Worker batch sizes must be whole numbers from 1 to 10 (larger SQS batches need a batching window)."
+  }
+
+  validation {
+    condition     = alltrue([for q, b in var.worker_batch_size : b * var.worker_timeout_seconds[q] <= 900])
+    error_message = "worker_timeout_seconds x worker_batch_size must not exceed 900 seconds (the Lambda maximum)."
+  }
+}
+
+variable "worker_max_concurrency" {
+  description = "Most concurrent invocations each queue's event source mapping starts (scaling_config.maximum_concurrency), per queue. Caps RDS connections and OpenAI spend; the worker's reserved concurrency defaults to it."
+  type = object({
+    thumbnail_jobs         = optional(number, 5)
+    content_analysis_jobs  = optional(number, 3)
+    document_analysis_jobs = optional(number, 2)
+    embedding_jobs         = optional(number, 3)
+  })
+  default = {}
+
+  validation {
+    condition     = alltrue([for c in values(var.worker_max_concurrency) : c >= 2 && c <= 1000 && floor(c) == c])
+    error_message = "Worker maximum concurrency must be a whole number from 2 to 1000 (the SQS event source limits)."
   }
 }
 
@@ -171,8 +208,10 @@ variable "lambda_architecture" {
 variable "lambda_config" {
   description = <<-EOT
     Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, embedding_worker.
-    reserved_concurrency = -1 leaves a function unreserved. timeout applies to the API only: a worker's timeout
-    is its queue's worker_timeout_seconds, which its visibility timeout is derived from.
+    reserved_concurrency = -1 leaves a function unreserved; a worker's defaults to its queue's worker_max_concurrency
+    and must not be below it. timeout applies to the API only (at most 30, API Gateway's integration limit): a
+    worker's timeout is its queue's worker_timeout_seconds x worker_batch_size, which its visibility timeout is
+    derived from.
   EOT
   type = map(object({
     memory_size          = optional(number)
@@ -187,9 +226,9 @@ variable "lambda_config" {
     condition = alltrue([
       for name, c in var.lambda_config :
       contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker"], name)
-      && (name == "api" || c.timeout == null)
+      && (name == "api" ? coalesce(c.timeout, 30) <= 30 : c.timeout == null)
     ])
-    error_message = "Unknown function name, or a timeout set for a worker (use worker_timeout_seconds)."
+    error_message = "Unknown function name, an API timeout above 30 s, or a timeout set for a worker (use worker_timeout_seconds)."
   }
 }
 
@@ -218,7 +257,7 @@ variable "tracing_otlp_endpoint" {
 }
 
 variable "api_cors_allowed_origins" {
-  description = "Browser origins allowed to call the API (CORS_ALLOWED_ORIGINS), e.g. [\"https://stash.example.com\"]."
+  description = "Browser origins allowed to call the API (CORS_ALLOWED_ORIGINS; enforced by FastAPI, not API Gateway), e.g. [\"https://stash.example.com\"]."
   type        = list(string)
   default     = []
 }
