@@ -705,6 +705,16 @@ tagging (`app.tags.repos.TagRepository`):
 Each side therefore waits for the other to commit. A tag is never deleted
 while a link to it exists or is being made.
 
+`GET /tags/suggestions` offers existing tags when one is being added (6 by
+default): the most recently used first, filling at most half the list,
+then the most frequently used, each tag once; with `item_id`, tags already
+on that item are left out. Usage is computed on each request from
+`item_tags` — uses as `COUNT(*)`, recency as `MAX(item_tags.created_at)`
+(when each link was made), grouped by tag — so there's no usage counter to
+keep in sync. The user is resolved on `tags` (`user_id` leads its unique
+index), and `ix_item_tags_tag_id_created_at` covers the per-tag count and
+latest use; `item_tags` has no `user_id` of its own.
+
 ### Editing items
 
 `PATCH /items/{id}` edits an item in place (its id never changes):

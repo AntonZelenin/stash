@@ -371,6 +371,59 @@ paths:
         "401":
           description: Unauthorized
 
+  /tags/suggestions:
+    get:
+      summary: Suggest existing tags to add
+      description: >-
+        Up to `limit` of the current user's tags, for offering when a tag is
+        being added: the most recently used first (filling at most half the
+        list, rounded up), then the most frequently used (by how many items
+        carry them), without duplicates. Recently used tags fill any
+        remaining places. Empty if the user has no tags.
+      operationId: suggestTags
+      tags: [tags]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: query
+          required: false
+          description: Leave out the tags already on this item.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 6
+
+      responses:
+        "200":
+          description: Suggested tags, best first
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - tags
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tag"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: Item not found
+
   /items/{item_id}/tags:
     post:
       summary: Assign a tag to an item

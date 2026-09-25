@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from sqlalchemy import case, delete, func, insert, select
 from sqlalchemy.exc import IntegrityError
@@ -109,6 +110,30 @@ class TagRepository:
             starts_with = func.lower(Tag.name).like(f"{needle}%", escape="\\")
             order.insert(0, case((starts_with, 0), else_=1))
         result = await self._session.execute(stmt.order_by(*order).limit(limit))
+        return list(result.scalars().all())
+
+    async def used_tags(
+        self, *, user_id: uuid.UUID, by: Literal["recent", "frequent"], exclude_item_id: uuid.UUID | None, limit: int
+    ) -> list[Tag]:
+        """The user's tags ranked by usage, computed from the links: `recent`
+        orders by each tag's latest link (newest first), `frequent` by how
+        many items carry it (most first, then newest). Tags on
+        `exclude_item_id` are left out."""
+        last_used = func.max(item_tags.c.created_at)
+        uses = func.count()
+        order = [last_used.desc()] if by == "recent" else [uses.desc(), last_used.desc()]
+        stmt = (
+            select(Tag)
+            .join(item_tags, item_tags.c.tag_id == Tag.id)
+            .where(Tag.user_id == user_id)
+            .group_by(Tag.id)
+            .order_by(*order, Tag.id)
+            .limit(limit)
+        )
+        if exclude_item_id is not None:
+            on_item = select(item_tags.c.tag_id).where(item_tags.c.item_id == exclude_item_id)
+            stmt = stmt.where(Tag.id.not_in(on_item))
+        result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
     async def item_belongs_to_user(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> bool:

@@ -25,22 +25,6 @@ pub fn item_counts() -> ItemCounts {
     }
 }
 
-/// Tags suggested for what's being captured.
-/// TODO: replace with a tag-suggestion endpoint (which would look at the
-/// text and staged files).
-pub fn suggested_tags() -> Vec<String> {
-    [
-        "hpmor",
-        "cyberpunk",
-        "illustration",
-        "ui-design",
-        "audio-log",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
 /// Initials for the account avatar in the top bar.
 /// TODO: replace with the signed-in user's profile (no `/users/me` yet).
 pub fn user_initials() -> &'static str {

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
@@ -166,8 +166,19 @@ item_tags = Table(
     Base.metadata,
     Column("item_id", Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", Uuid, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
-    # The primary key covers lookups by item; this covers filtering by tag.
-    Index("ix_item_tags_tag_id", "tag_id"),
+    # When the tag was put on the item: tag suggestions rank by it. Also set
+    # in Python, so links made within the same second still order correctly.
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    ),
+    # The primary key covers lookups by item; this covers filtering by tag
+    # and, with `created_at`, counting a tag's uses and finding its latest
+    # one (see `TagRepository.used_tags`).
+    Index("ix_item_tags_tag_id_created_at", "tag_id", "created_at"),
 )
 
 

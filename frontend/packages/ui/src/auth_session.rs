@@ -239,6 +239,25 @@ impl AuthSession {
         .await
     }
 
+    pub async fn suggest_tags(
+        &self,
+        item_id: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<Tag>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            async move {
+                client
+                    .suggest_tags(&access_token, item_id.as_deref(), limit)
+                    .await
+                    .map(|response| response.tags)
+            }
+        })
+        .await
+    }
+
     pub async fn assign_tag(&self, item_id: String, name: String) -> Result<Tag, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {

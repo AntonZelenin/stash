@@ -689,6 +689,7 @@ fn ItemTags(item_id: String, tags: Vec<Tag>, on_changed: EventHandler<()>) -> El
             }
             if adding() {
                 TagPicker {
+                    item_id: item_id.clone(),
                     exclude: assigned_names,
                     busy: busy(),
                     on_pick: assign,
@@ -718,14 +719,40 @@ fn clean_tag_name(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Input for choosing a tag to add: existing tags containing the typed text
-/// are listed below it (minus `exclude`: names already chosen, compared
-/// case-insensitively); picking one, or "Create …" when nothing matches
-/// exactly, calls `on_pick` with the name. Enter picks the exact match or
-/// creates (and never submits a surrounding form); Escape or a click
-/// outside closes it. Used on item cards and in the capture box.
+/// How many suggested tags to show: in the tag picker before anything is
+/// typed, and on the capture box's "Suggested" line.
+pub(crate) const TAG_SUGGESTION_LIMIT: u32 = 6;
+
+/// The user's suggested tags (recently, then frequently used) minus
+/// `exclude` (names, compared case-insensitively), at most
+/// `TAG_SUGGESTION_LIMIT`. With `item_id`, the server also leaves out that
+/// item's tags. Asks for extra so excluded ones don't shorten the list.
+pub(crate) async fn suggested_tags(
+    session: &AuthSession,
+    item_id: Option<String>,
+    exclude: &[String],
+) -> Result<Vec<Tag>, api::ApiError> {
+    let excluded: Vec<String> = exclude.iter().map(|name| name.to_lowercase()).collect();
+    let limit = (TAG_SUGGESTION_LIMIT + excluded.len() as u32).min(20);
+    let tags = session.suggest_tags(item_id, limit).await?;
+    Ok(tags
+        .into_iter()
+        .filter(|tag| !excluded.contains(&tag.name.to_lowercase()))
+        .take(TAG_SUGGESTION_LIMIT as usize)
+        .collect())
+}
+
+/// Input for choosing a tag to add. Until something is typed, suggested
+/// tags (recently, then frequently used; see `suggested_tags`) are listed
+/// below it; after, existing tags containing the typed text. Either list
+/// leaves out `exclude` (names already chosen, compared case-insensitively)
+/// and, with `item_id`, that item's tags. Picking one, or "Create …" when
+/// nothing matches exactly, calls `on_pick` with the name. Enter picks the
+/// exact match or creates (and never submits a surrounding form); Escape
+/// or a click outside closes it. Used on item cards and in the capture box.
 #[component]
 pub(crate) fn TagPicker(
+    #[props(default)] item_id: Option<String>,
     exclude: Vec<String>,
     busy: bool,
     on_pick: EventHandler<String>,
@@ -734,20 +761,24 @@ pub(crate) fn TagPicker(
     let session = use_context::<AuthSession>();
     let mut query = use_signal(String::new);
 
-    let suggestions = use_resource(move || {
+    let exclude_for_fetch = exclude.clone();
+    let matches = use_resource(move || {
         let session = session.clone();
+        let item_id = item_id.clone();
+        let exclude = exclude_for_fetch.clone();
         let query = clean_tag_name(&query());
         async move {
-            if !query.is_empty() {
-                Delay::new(TAG_SEARCH_DEBOUNCE).await;
+            if query.is_empty() {
+                return suggested_tags(&session, item_id, &exclude).await;
             }
+            Delay::new(TAG_SEARCH_DEBOUNCE).await;
             session.list_tags(query, TAG_LIST_LIMIT).await
         }
     });
 
     let typed = clean_tag_name(&query());
     let excluded: Vec<String> = exclude.iter().map(|name| name.to_lowercase()).collect();
-    let (found, exact_exists) = match &*suggestions.read() {
+    let (found, exact_exists) = match &*matches.read() {
         Some(Ok(tags)) => (
             tags.iter()
                 .filter(|tag| !excluded.contains(&tag.name.to_lowercase()))
@@ -758,6 +789,7 @@ pub(crate) fn TagPicker(
         ),
         _ => (Vec::new(), false),
     };
+    let suggesting = typed.is_empty() && !found.is_empty();
     let can_create = !typed.is_empty() && !exact_exists;
     let show_menu = !found.is_empty() || can_create;
     // Cloned up front: `rsx!` doesn't evaluate in source order, and the
@@ -808,6 +840,9 @@ pub(crate) fn TagPicker(
             }
             if show_menu {
                 div { class: "tag-picker-menu",
+                    if suggesting {
+                        p { class: "tag-picker-heading", "Suggested" }
+                    }
                     for tag in found {
                         button {
                             class: "tag-picker-option",

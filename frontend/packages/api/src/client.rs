@@ -178,6 +178,33 @@ impl ApiClient {
         }
     }
 
+    /// Up to `limit` of the user's tags to offer when adding one: recently
+    /// used first, then frequently used. With `item_id`, tags already on
+    /// that item are left out. Empty if the user has no tags.
+    pub async fn suggest_tags(
+        &self,
+        access_token: &str,
+        item_id: Option<&str>,
+        limit: u32,
+    ) -> Result<ListTagsResponse, ApiError> {
+        let mut params = vec![("limit", limit.to_string())];
+        if let Some(item_id) = item_id {
+            params.push(("item_id", item_id.to_string()));
+        }
+        let response = self
+            .authenticated(Method::GET, "/tags/suggestions", access_token)
+            .query(&params)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
     /// Tags the item with `name`, reusing the user's existing tag of that
     /// name (ignoring case) or creating it. Returns the tag.
     pub async fn assign_tag(

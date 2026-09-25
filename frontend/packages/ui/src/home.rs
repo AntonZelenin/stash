@@ -11,7 +11,7 @@ use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
-use crate::items::{ItemGrid, TagPicker};
+use crate::items::{ItemGrid, TagPicker, suggested_tags};
 use crate::mock;
 use crate::routes::Route;
 use crate::settings::AccountSettings;
@@ -192,6 +192,18 @@ pub fn Home() -> Element {
     // file), and whether the tag picker is open.
     let mut pending_tags = use_signal(Vec::<String>::new);
     let mut picking_tag = use_signal(|| false);
+    // The user's suggested tags (recently, then frequently used), minus any
+    // already added. Refetched as pending tags change (including being
+    // cleared once something is saved with them) and when a card's tags
+    // change. Empty — so the line isn't shown — until the user has tags.
+    let mut suggested = use_resource({
+        let session = session.clone();
+        move || {
+            let session = session.clone();
+            let exclude = pending_tags();
+            async move { suggested_tags(&session, None, &exclude).await }
+        }
+    });
 
     // Deletes from a card's menu, then refetches whichever view is showing
     // (list and search), so the card disappears from both.
@@ -217,6 +229,7 @@ pub fn Home() -> Element {
     let refresh_items = use_callback(move |()| {
         saved_items.restart();
         search_results.restart();
+        suggested.restart();
     });
 
     // A card's favorite state changed. The card already shows it, so only
@@ -361,16 +374,10 @@ pub fn Home() -> Element {
         });
     };
 
-    // Suggested tags for the capture box (mocked until the backend can
-    // suggest them), minus any already added.
-    let suggestions: Vec<String> = mock::suggested_tags()
-        .into_iter()
-        .filter(|name| {
-            !pending_tags()
-                .iter()
-                .any(|tag| tag.to_lowercase() == name.to_lowercase())
-        })
-        .collect();
+    let suggestions: Vec<String> = match &*suggested.read() {
+        Some(Ok(tags)) => tags.iter().map(|tag| tag.name.clone()).collect(),
+        _ => Vec::new(),
+    };
     let counts = mock::item_counts();
 
     // Ctrl+F / ⌘F focuses the search box. One document-level listener,
@@ -580,7 +587,8 @@ pub fn Home() -> Element {
                             }
                         }
                         // One click adds a suggestion to the pending tags;
-                        // ones already added are left out.
+                        // ones already added are left out. Hidden while the
+                        // user has no tags to suggest.
                         if !suggestions.is_empty() {
                             div { class: "home-suggested",
                                 span { class: "home-suggested-label", "Suggested:" }

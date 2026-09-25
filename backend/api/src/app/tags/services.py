@@ -22,6 +22,22 @@ class TagService:
     async def search_tags(self, *, user_id: uuid.UUID, query: str, limit: int) -> list[Tag]:
         return await self._repo.search(user_id=user_id, query=" ".join(query.split()), limit=limit)
 
+    async def suggest_tags(self, *, user_id: uuid.UUID, item_id: uuid.UUID | None, limit: int) -> list[Tag]:
+        """Up to `limit` of the user's tags to offer when adding one: the
+        most recently used first, then the most frequently used, without
+        duplicates. Recent ones fill at most half the list (rounded up) so
+        frequent ones always get a place, unless there aren't enough of
+        them. With `item_id`, tags already on that item are left out."""
+        if item_id is not None and not await self._repo.item_belongs_to_user(item_id=item_id, user_id=user_id):
+            raise ItemNotFoundError()
+        recent = await self._repo.used_tags(user_id=user_id, by="recent", exclude_item_id=item_id, limit=limit)
+        frequent = await self._repo.used_tags(user_id=user_id, by="frequent", exclude_item_id=item_id, limit=limit)
+        recent_share = (limit + 1) // 2
+        suggestions: dict[uuid.UUID, Tag] = {}
+        for tag in [*recent[:recent_share], *frequent, *recent[recent_share:]]:
+            suggestions.setdefault(tag.id, tag)
+        return list(suggestions.values())[:limit]
+
     async def assign_tag(self, *, user_id: uuid.UUID, item_id: uuid.UUID, name: str) -> Tag:
         """Assigns the tag called `name` to the user's item, reusing the
         user's existing tag of that name (ignoring case) or creating it.

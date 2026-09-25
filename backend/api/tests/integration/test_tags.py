@@ -183,6 +183,7 @@ async def test_deleting_an_item_deletes_tags_only_it_used(client: AsyncClient):
 async def test_requires_token(client: AsyncClient):
     item_id = uuid.uuid4()
     assert (await client.get("/tags")).status_code == 401
+    assert (await client.get("/tags/suggestions")).status_code == 401
     assert (await client.post(f"/items/{item_id}/tags", json={"name": "x"})).status_code == 401
     assert (await client.delete(f"/items/{item_id}/tags/{uuid.uuid4()}")).status_code == 401
 
@@ -241,6 +242,81 @@ async def test_tag_search_treats_wildcards_literally(client: AsyncClient):
 
     assert await names("%") == ["100% done"]
     assert await names("_") == ["snake_case"]
+
+
+# ---- suggestions ----
+
+
+async def _suggested(client: AsyncClient, token: str, **params) -> list[str]:
+    response = await client.get("/tags/suggestions", params=params, headers=_auth(token))
+    assert response.status_code == 200, response.text
+    return [t["name"] for t in response.json()["tags"]]
+
+
+async def _tag_all(client: AsyncClient, token: str, links: list[tuple[str, str]]) -> None:
+    """Tags each (item id, name) in order, so later ones are more recent."""
+    for item_id, name in links:
+        assert (await _tag(client, token, item_id, name)).status_code == 200
+
+
+async def test_no_tags_no_suggestions(client: AsyncClient):
+    _, token = await register_and_login(client)
+    await _note(client, token, "untagged")
+
+    assert await _suggested(client, token) == []
+
+
+async def test_suggestions_put_recent_tags_first_then_frequent_ones(client: AsyncClient):
+    _, token = await register_and_login(client)
+    one, two, three = [await _note(client, token, text) for text in ["one", "two", "three"]]
+    # "a" is the most used, "e" the most recently used.
+    await _tag_all(
+        client,
+        token,
+        [(one, "a"), (two, "a"), (three, "a"), (one, "b"), (two, "b"), (one, "c"), (one, "d"), (one, "e")],
+    )
+
+    # Recent ones take half the places, frequent ones the rest, each tag once.
+    assert await _suggested(client, token, limit=4) == ["e", "d", "a", "b"]
+    # With room for everything, the remaining recent ones come last.
+    assert await _suggested(client, token) == ["e", "d", "c", "a", "b"]
+
+
+async def test_reusing_a_tag_makes_it_recent(client: AsyncClient):
+    _, token = await register_and_login(client)
+    one, two = await _note(client, token, "one"), await _note(client, token, "two")
+    await _tag_all(client, token, [(one, "old"), (one, "x"), (one, "y"), (two, "old")])
+
+    assert (await _suggested(client, token, limit=2))[0] == "old"
+
+
+async def test_suggestions_leave_out_the_items_own_tags(client: AsyncClient):
+    _, token = await register_and_login(client)
+    one, two = await _note(client, token, "one"), await _note(client, token, "two")
+    await _tag_all(client, token, [(one, "a"), (two, "a"), (one, "b"), (two, "c")])
+
+    assert await _suggested(client, token, item_id=one) == ["c"]
+    assert await _suggested(client, token, item_id=two) == ["b"]
+
+
+async def test_suggestions_are_per_user(client: AsyncClient):
+    _, alice = await register_and_login(client, email="alice@example.com")
+    _, bob = await register_and_login(client, email="bob@example.com")
+    alice_item = await _note(client, alice, "a")
+    await _tag(client, alice, alice_item, "Secret")
+    await _tag(client, bob, await _note(client, bob, "b"), "Mine")
+
+    assert await _suggested(client, bob) == ["Mine"]
+    response = await client.get("/tags/suggestions", params={"item_id": alice_item}, headers=_auth(bob))
+    assert response.status_code == 404
+
+
+async def test_suggestion_limit_is_bounded(client: AsyncClient):
+    _, token = await register_and_login(client)
+
+    for limit in [0, 21]:
+        response = await client.get("/tags/suggestions", params={"limit": limit}, headers=_auth(token))
+        assert response.status_code == 422
 
 
 # ---- filtering items ----

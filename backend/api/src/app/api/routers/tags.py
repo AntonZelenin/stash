@@ -29,6 +29,25 @@ async def list_tags(
     return ListTagsResponse(tags=[TagResponse(id=tag.id, name=tag.name) for tag in tags])
 
 
+@router.get(
+    "/tags/suggestions",
+    status_code=status.HTTP_200_OK,
+    response_model=ListTagsResponse,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
+)
+async def suggest_tags(
+    item_id: UUID | None = None,
+    limit: int = Query(default=6, ge=1, le=20),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+) -> ListTagsResponse:
+    try:
+        tags = await TagService(session).suggest_tags(user_id=current_user.id, item_id=item_id, limit=limit)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    return ListTagsResponse(tags=[TagResponse(id=tag.id, name=tag.name) for tag in tags])
+
+
 @router.post(
     "/items/{item_id}/tags",
     status_code=status.HTTP_200_OK,
