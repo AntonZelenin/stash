@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and adjust. No secrets belong here.
+
+project     = "stash"
+environment = "prod" # must match ../live's
+aws_region  = "eu-central-1"
+
+# aws_profile = "stash"
+
+github_repository  = "AntonZelenin/stash"
+github_environment = "production"
+
+# Where ../live keeps its state: the deploy role may read and write only
+# this key (and its lock), the plan role only read it.
+state_bucket_name = "stash-tfstate-123456789012-eu-central-1"
+# state_key       = "stash/prod/terraform.tfstate" # default: stash/<environment>/terraform.tfstate
+
+# An account has one GitHub OIDC provider. If it already exists (another
+# environment's github_oidc, or created by hand), reuse it:
+# create_oidc_provider = false

@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     # embedding worker uses for item text.
     openai_api_key: str = ""
     # AWS: the Secrets Manager secret holding the OpenAI API key; when set,
-    # it replaces `openai_api_key`.
+    # it replaces `openai_api_key`. Read only when search first needs it
+    # (`get_openai_api_key`), never at startup.
     openai_api_key_secret_arn: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     # Search queries are first rewritten into English with this model (see
@@ -84,10 +85,20 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Self:
-        secrets.resolve_secret_settings(self)
+        # Only the database secret, which every route needs. The OpenAI key
+        # is search's alone: see `get_openai_api_key`.
+        secrets.resolve_database_url(self)
         return self
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_openai_api_key() -> str:
+    """The OpenAI key, from its secret on AWS (`openai_api_key_secret_arn`),
+    fetched on first use: the API starts, and serves everything but search,
+    without it. Raises if the secret can't be read (e.g. no value set yet);
+    only a successful read is cached, so a later search tries again."""
+    return secrets.openai_api_key(get_settings())

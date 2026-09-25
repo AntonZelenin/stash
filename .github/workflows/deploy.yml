@@ -1,0 +1,295 @@
+# Production deployment. Only ever started by hand (Actions > Deploy
+# production > Run workflow, on main); see docs/deployment.md.
+#
+#   tests
+#   → Lambda packages (one job each)
+#   → terraform plan (read-only role; review it here)
+#   → [environment "production": approval, if required]
+#   → terraform plan + apply (the plan applied is printed first)
+#   → migrations (the migration Lambda, in the VPC, synchronously)
+#   → frontend build with the Terraform API URL
+#   → frontend upload: hashed /assets first, index.html last
+#   → smoke tests
+#
+# Every step is idempotent, so a failed run is fixed by re-running it.
+name: Deploy production
+run-name: Deploy production (${{ inputs.plan_only && 'plan only' || 'apply' }}) by @${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_only:
+        description: Only show the Terraform plan; change nothing
+        type: boolean
+        default: false
+
+# One production deployment at a time; a second one waits, never cancels
+# the one running (that could stop Terraform mid-apply).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.16.4"
+  DIOXUS_CLI_VERSION: "0.7.10" # must match the dioxus crate in frontend/Cargo.lock
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+  STASH_ENVIRONMENT: ${{ vars.STASH_ENVIRONMENT }}
+  LAMBDA_PERMISSIONS_BOUNDARY_ARN: ${{ vars.LAMBDA_PERMISSIONS_BOUNDARY_ARN }}
+  TF_VARS: ${{ vars.TF_VARS }}
+  TF_VAR_environment: ${{ vars.STASH_ENVIRONMENT }}
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  TF_VAR_lambda_permissions_boundary_arn: ${{ vars.LAMBDA_PERMISSIONS_BOUNDARY_ARN }}
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  main-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy only main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Production is deployed from main only (this run is on ${GITHUB_REF})."
+          exit 1
+
+  tests:
+    needs: main-only
+    uses: ./.github/workflows/tests.yml
+
+  lambdas:
+    needs: tests
+    uses: ./.github/workflows/build-lambdas.yml
+
+  plan:
+    needs: lambdas
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lambda-*
+          path: build/lambda
+          merge-multiple: true
+
+      - name: Lambda packages
+        run: sha256sum build/lambda/*.zip
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/terraform-live
+
+      - name: Terraform plan
+        working-directory: infra/terraform/live
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock=false | tee plan.txt
+          {
+            echo "### Terraform plan"
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    if: ${{ !inputs.plan_only }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Only jobs in this environment can assume the deploy role. Give it
+    # required reviewers to approve each deployment after the plan above.
+    environment:
+      name: production
+      url: ${{ steps.tf.outputs.frontend_url }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      api_url: ${{ steps.tf.outputs.api_url }}
+      frontend_url: ${{ steps.tf.outputs.frontend_url }}
+      wasm_path: ${{ steps.upload.outputs.wasm_path }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lambda-*
+          path: build/lambda
+          merge-multiple: true
+
+      - name: Lambda packages
+        run: sha256sum build/lambda/*.zip
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # A first apply creates RDS and CloudFront, which take a while.
+          role-duration-seconds: 7200
+
+      - uses: ./.github/actions/terraform-live
+
+      # Planned again under the state lock: this plan, printed in full, is
+      # exactly what the next step applies.
+      - name: Terraform plan
+        working-directory: infra/terraform/live
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+          {
+            echo "### Terraform plan (applied)"
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply
+        working-directory: infra/terraform/live
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Terraform outputs
+        id: tf
+        working-directory: infra/terraform/live
+        run: |
+          set -euo pipefail
+          {
+            echo "api_url=$(terraform output -raw api_url)"
+            echo "frontend_url=$(terraform output -raw frontend_url)"
+            echo "frontend_bucket=$(terraform output -raw frontend_bucket_name)"
+            echo "frontend_distribution_id=$(terraform output -raw frontend_distribution_id)"
+            echo "migrations_function=$(terraform output -raw migrations_function_name)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # RDS is private: `alembic upgrade head` runs in the VPC, in the
+      # migration Lambda, invoked synchronously. Exactly one attempt
+      # (AWS_MAX_ATTEMPTS=1): the CLI must not retry an invocation on its own.
+      - name: Database migrations
+        env:
+          FUNCTION: ${{ steps.tf.outputs.migrations_function }}
+          AWS_MAX_ATTEMPTS: "1"
+        run: |
+          set -euo pipefail
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+          aws lambda invoke \
+            --function-name "$FUNCTION" \
+            --payload '{}' --cli-binary-format raw-in-base64-out \
+            --log-type Tail \
+            --cli-read-timeout 900 \
+            migration-result.json > invocation.json
+          echo "::group::Migration log (last 4 KB; full log: CloudWatch /aws/lambda/$FUNCTION)"
+          jq -r '.LogResult // empty' invocation.json | base64 -d || true
+          echo "::endgroup::"
+          cat migration-result.json; echo
+          if jq -e '.FunctionError' invocation.json > /dev/null; then
+            echo "::error::Migrations failed; nothing after them was deployed."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend
+          # A release wasm build; the tests' debug cache doesn't cover it.
+          key: web-release
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Install the Dioxus CLI
+        run: cargo binstall -y --locked "dioxus-cli@${DIOXUS_CLI_VERSION}"
+
+      # The API URL is compiled into the wasm (frontend/packages/web/src/config.rs).
+      - name: Build the frontend
+        working-directory: frontend/packages/web
+        env:
+          STASH_API_BASE_URL: ${{ steps.tf.outputs.api_url }}
+        run: dx build --platform web --release
+
+      # Hashed /assets first, cached for good, so the new index.html never
+      # references a file that isn't there yet; index.html last, never
+      # cached. Old assets stay for clients still running the previous
+      # version. .wasm gets its type explicitly: CloudFront sends nosniff
+      # and browsers only stream-compile application/wasm.
+      - name: Upload the frontend
+        id: upload
+        working-directory: frontend/target/dx/web/release/web/public
+        env:
+          BUCKET: ${{ steps.tf.outputs.frontend_bucket }}
+        run: |
+          set -euo pipefail
+          immutable="public, max-age=31536000, immutable"
+          test -f index.html && test -d assets
+
+          aws s3 sync assets "s3://$BUCKET/assets" --no-progress \
+            --exclude "*.wasm" --cache-control "$immutable"
+          aws s3 cp assets "s3://$BUCKET/assets" --recursive --no-progress \
+            --exclude "*" --include "*.wasm" \
+            --content-type application/wasm --cache-control "$immutable"
+          # Anything else dx put outside assets/ (not expected), uncached.
+          aws s3 sync . "s3://$BUCKET" --no-progress \
+            --exclude "assets/*" --exclude "index.html" --cache-control "no-cache"
+          aws s3 cp index.html "s3://$BUCKET/index.html" --no-progress \
+            --content-type "text/html; charset=utf-8" --cache-control "no-cache"
+
+          wasm="$(cd assets && ls *.wasm | head -n 1)"
+          echo "wasm_path=/assets/$wasm" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      API_URL: ${{ needs.deploy.outputs.api_url }}
+      FRONTEND_URL: ${{ needs.deploy.outputs.frontend_url }}
+      WASM_PATH: ${{ needs.deploy.outputs.wasm_path }}
+    steps:
+      # Read-only requests; nothing is created.
+      - name: Smoke tests
+        run: |
+          set -euo pipefail
+          curl_() { curl -sS --retry 5 --retry-delay 5 --retry-all-errors --max-time 30 "$@"; }
+          header() { tr -d '\r' | awk -v h="$1" -F': ' 'tolower($1) == h { print $2 }'; }
+          fail() { echo "::error::$1"; exit 1; }
+
+          echo "API health"
+          body="$(curl_ -f "$API_URL/health")"
+          grep -q '"ok"' <<< "$body" || fail "GET /health returned: $body"
+
+          # An unknown user is looked up in the database: 401 means the API
+          # reaches RDS and the migrated schema.
+          echo "API database"
+          code="$(curl_ -o /dev/null -w '%{http_code}' -X POST "$API_URL/login" \
+            -H 'Content-Type: application/json' \
+            -d '{"email": "ci-smoke-test@example.com", "password": "not-a-password"}')"
+          [ "$code" = 401 ] || fail "POST /login for an unknown user returned $code, expected 401"
+
+          echo "API CORS for the frontend"
+          origin="$(curl_ -o /dev/null -D - -X OPTIONS "$API_URL/items" \
+            -H "Origin: $FRONTEND_URL" -H 'Access-Control-Request-Method: GET' \
+            | header access-control-allow-origin)"
+          [ "$origin" = "$FRONTEND_URL" ] || fail "CORS preflight allowed '$origin', expected $FRONTEND_URL"
+
+          echo "Frontend index.html"
+          body="$(curl_ -f "$FRONTEND_URL/")"
+          grep -q 'id="main"' <<< "$body" || fail "/ doesn't serve the app's index.html"
+
+          echo "Frontend SPA route"
+          body="$(curl_ -f "$FRONTEND_URL/login")"
+          grep -q 'id="main"' <<< "$body" || fail "/login doesn't serve the app's index.html"
+
+          echo "Frontend wasm type"
+          type="$(curl_ -f -o /dev/null -D - "$FRONTEND_URL$WASM_PATH" | header content-type)"
+          [ "$type" = application/wasm ] || fail "$WASM_PATH is served as '$type'"
+
+          echo "All smoke tests passed: $FRONTEND_URL"

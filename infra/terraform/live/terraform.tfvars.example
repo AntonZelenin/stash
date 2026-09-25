@@ -27,17 +27,24 @@ aws_region  = "eu-central-1"
 # worker_batch_size = {
 #   embedding_jobs = 1
 # }
-# worker_max_concurrency = { # reserved concurrency follows it
+# worker_max_concurrency = { # the cap on each worker's instances
 #   thumbnail_jobs = 5
 #   content_analysis_jobs = 3
 # }
 # sqs_visibility_timeout_multiplier = 3
 # max_delivery_attempts             = 5 # keep equal to MAX_DELIVERY_ATTEMPTS
 
+# Permissions boundary of every Lambda execution role, from ../github_oidc
+# (output lambda_permissions_boundary_arn). CI always sets it; set it here too
+# so a local apply doesn't remove it.
+# lambda_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/stash-prod-lambda-boundary"
+
 # Lambda packages: python scripts/build_lambda_packages.py (build/lambda/*.zip).
+# No function reserves concurrency by default; a reservation needs an account
+# concurrency quota of at least 100 + all reservations.
 # lambda_config = {
-#   api         = { memory_size = 1024, reserved_concurrency = 20 }
-#   thumbnailer = { reserved_concurrency = -1 } # unreserved
+#   api        = { memory_size = 1024, reserved_concurrency = 20 }
+#   migrations = { timeout = 600 }
 # }
 # api_cors_allowed_origins = ["http://localhost:8080"] # extra; CloudFront is always allowed
 

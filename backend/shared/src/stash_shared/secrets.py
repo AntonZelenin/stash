@@ -28,12 +28,29 @@ def resolve_secret_settings(settings: Any) -> None:
     `settings` is untyped, like in `stash_shared.queue.factory`: the API and
     each worker have their own settings class, and not every one has an
     OpenAI key."""
+    resolve_database_url(settings)
+    if getattr(settings, "openai_api_key_secret_arn", None):
+        settings.openai_api_key = openai_api_key(settings)
+
+
+def resolve_database_url(settings: Any) -> None:
+    """Fills `database_url` from `database_secret_arn`, if `settings` sets
+    it. For services that resolve the OpenAI key only when they need it
+    (`openai_api_key`), rather than with everything else."""
     database_secret_arn = getattr(settings, "database_secret_arn", None)
     if database_secret_arn:
         settings.database_url = database_url_from_secret(database_secret_arn)
-    openai_api_key_secret_arn = getattr(settings, "openai_api_key_secret_arn", None)
-    if openai_api_key_secret_arn:
-        settings.openai_api_key = get_secret_string(openai_api_key_secret_arn)
+
+
+def openai_api_key(settings: Any) -> str:
+    """The OpenAI key: the value of `openai_api_key_secret_arn` if set,
+    else the plain `openai_api_key`. Raises if the secret can't be read
+    (missing, no value yet, no access); only successful reads are cached,
+    so a later call tries again."""
+    secret_arn = getattr(settings, "openai_api_key_secret_arn", None)
+    if secret_arn:
+        return get_secret_string(secret_arn)
+    return settings.openai_api_key
 
 
 def database_url_from_secret(secret_arn: str) -> str:

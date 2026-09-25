@@ -14,12 +14,11 @@ locals {
   # compose services); `queue` is the queue a worker consumes.
   lambda_defaults = {
     api = {
-      handler              = "app.aws_lambda.handler"
-      queue                = null
-      memory_size          = 512
-      timeout              = 30
-      reserved_concurrency = 10
-      openai               = true
+      handler     = "app.aws_lambda.handler"
+      queue       = null
+      memory_size = 512
+      timeout     = 30
+      openai      = true
     }
     thumbnailer = {
       handler = "thumbnailer.aws_lambda.handler"
@@ -47,6 +46,17 @@ locals {
       memory_size = 256
       openai      = true
     }
+    # `alembic upgrade head`, invoked only by the deployment, synchronously
+    # (app.aws_lambda_migrations): nothing triggers it. In the VPC because
+    # RDS is private. The deployment workflow runs one at a time, so two
+    # migrations never overlap.
+    migrations = {
+      handler     = "app.aws_lambda_migrations.handler"
+      queue       = null
+      memory_size = 512
+      timeout     = 300
+      openai      = false
+    }
   }
 
   lambdas = {
@@ -61,14 +71,14 @@ locals {
         ? coalesce(try(var.lambda_config[name].timeout, null), d.timeout)
         : local.queue_timeouts[d.queue].worker_timeout_seconds
       )
-      # A worker's reservation matches its event source mapping's maximum
-      # concurrency (messaging.tf), which is what actually limits it.
-      reserved_concurrency = coalesce(
-        try(var.lambda_config[name].reserved_concurrency, null),
-        d.queue == null ? d.reserved_concurrency : var.worker_max_concurrency[d.queue],
-      )
-      architecture = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
-      runtime      = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
+      # No reservation (-1) unless lambda_config sets one: a reservation
+      # takes its share of the account's concurrency whether used or not,
+      # and AWS always keeps 100 unreserved, so any reservation needs a
+      # large account quota. A worker's scale is capped by its event source
+      # mapping's maximum concurrency (messaging.tf) instead.
+      reserved_concurrency = coalesce(try(var.lambda_config[name].reserved_concurrency, null), -1)
+      architecture         = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
+      runtime              = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
     })
   }
 

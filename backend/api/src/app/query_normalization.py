@@ -8,12 +8,13 @@ unchanged. Failures are the caller's to handle (`ItemService.search_items`
 falls back to embedding the original query)."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from functools import lru_cache
 
 from openai import AsyncOpenAI
 from stash_shared.log import DEBUG, get_logger, logged_call
 
-from app.config import get_settings
+from app.config import get_openai_api_key, get_settings
 
 logger = get_logger(__name__)
 
@@ -63,18 +64,31 @@ class OpenAIQueryNormalizer(QueryNormalizer):
     def __init__(
         self,
         *,
-        api_key: str = "",
+        api_key: str | Callable[[], str] = "",
         model: str,
         timeout_seconds: float,
         client: AsyncOpenAI | None = None,
     ):
-        # max_retries=0: it's on the search request's critical path, and a
-        # failure only costs quality (the original query is searched), so
-        # never retry.
-        self._client = client or AsyncOpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+        """`api_key` may be a callable, called when the client is first
+        needed (the first `normalize`), not here: the API fetches its key
+        only then. If it raises, that `normalize` fails (the original query
+        is searched) and the next one tries again."""
+        self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
+        self._client = client
         self._model = model
 
+    def _get_client(self) -> AsyncOpenAI:
+        if self._client is None:
+            api_key = self._api_key() if callable(self._api_key) else self._api_key
+            # max_retries=0: it's on the search request's critical path, and
+            # a failure only costs quality (the original query is searched),
+            # so never retry.
+            self._client = AsyncOpenAI(api_key=api_key, timeout=self._timeout_seconds, max_retries=0)
+        return self._client
+
     async def normalize(self, query: str) -> str:
+        client = self._get_client()
         # The query is user content: only its length is logged.
         with logged_call(
             logger,
@@ -84,7 +98,7 @@ class OpenAIQueryNormalizer(QueryNormalizer):
             model=self._model,
             input_chars=len(query),
         ) as call:
-            response = await self._client.responses.create(
+            response = await client.responses.create(
                 model=self._model,
                 instructions=INSTRUCTIONS,
                 input=query,
@@ -115,7 +129,7 @@ def _clean(output: str, *, original: str) -> str:
 def get_query_normalizer() -> QueryNormalizer:
     settings = get_settings()
     return OpenAIQueryNormalizer(
-        api_key=settings.openai_api_key,
+        api_key=get_openai_api_key,
         model=settings.search_query_normalization_model,
         timeout_seconds=settings.search_query_normalization_timeout_seconds,
     )

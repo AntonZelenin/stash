@@ -153,6 +153,13 @@ database user has DML rights only; migrations then run as a separate
 one-off task from the same image (`alembic upgrade head`), as the schema
 owner, before the API rolls out.
 
+On AWS, RDS is private, so migrations run in the VPC, in a dedicated
+Lambda (`app.aws_lambda_migrations.handler`, packaged with the API's code
+and `alembic/`). Nothing triggers it. The deployment invokes it
+synchronously after `terraform apply` and before the frontend, and fails
+if it fails (see [deployment.md](deployment.md#migrations)). The API
+Lambda never migrates.
+
 ### Object Storage
 
 Stores uploaded images.
@@ -583,7 +590,8 @@ Infrastructure (Terraform, `infra/terraform/live/`):
   app through Mangum, behind API Gateway) and one per worker
   (`<worker>.aws_lambda.handler`, SQS-triggered), each with its own
   least-privilege execution role, in a private subnet (IPv4 to RDS, IPv6
-  out through an egress-only internet gateway, no NAT)
+  out through an egress-only internet gateway, no NAT). Plus the migration
+  function (see PostgreSQL), invoked only by the deployment
 - RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
 - SQS queues with DLQs
@@ -596,12 +604,24 @@ The Lambdas run the same code as the local services, packaged as one zip
 per function (`scripts/build_lambda_packages.py`), with environment-specific
 configuration.
 
+CI/CD is GitHub Actions ([deployment.md](deployment.md)). Pull requests and
+`main` are validated (tests, Terraform fmt/validate, plus a read-only plan
+on pull requests). Production is deployed only when someone starts the
+deployment workflow by hand: tests → Lambda packages → Terraform apply →
+migrations → frontend build and upload → smoke tests. AWS access is through
+GitHub OIDC roles scoped to Stash's resources
+(`infra/terraform/github_oidc`), never stored keys.
+
 Secrets are plain settings locally (`DATABASE_URL`, `OPENAI_API_KEY`). On
 AWS the functions get Secrets Manager ARNs instead (`DATABASE_SECRET_ARN`,
 `OPENAI_API_KEY_SECRET_ARN`), which the settings classes resolve into those
 same fields when they're built (`stash_shared.secrets`): once per execution
 environment, at cold start, never per request or message. Application code
-only ever sees the settings.
+only ever sees the settings. The exception is the API's OpenAI key, which
+only search uses: it's fetched when search first needs it
+(`app.config.get_openai_api_key`), then kept. So the API starts, and
+everything but search works, while that secret is unset or unreadable.
+Search then answers 503, and tries again on the next request.
 
 ## High-level Flow
 
@@ -795,8 +815,13 @@ stash/
     ├── docker-compose.yml
     ├── .env.example
     │
+    ├── .github/
+    │   ├── workflows/         (ci.yml, deploy.yml, reusable tests/build-lambdas)
+    │   └── actions/           (terraform-live: init against the remote state)
+    │
     ├── docs/
-    │   └── architecture.md
+    │   ├── architecture.md
+    │   └── deployment.md
     │
     ├── frontend/
     │   ├── CLAUDE.md
@@ -826,6 +851,7 @@ stash/
     │   ├── CLAUDE.md
     │   └── terraform/
     │       ├── bootstrap/     (remote-state S3 bucket, local state)
+    │       ├── github_oidc/   (GitHub Actions roles, applied by hand)
     │       └── live/          (Stash infrastructure, S3 backend)
     │
     └── scripts/

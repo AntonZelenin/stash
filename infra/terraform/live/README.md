@@ -15,6 +15,10 @@ alarms and a dashboard (`observability.tf`).
 
 ## First-time setup
 
+Production is normally deployed by GitHub Actions, started by hand
+([docs/deployment.md](../../../docs/deployment.md)). To work on it from
+your machine:
+
 Requires the state bucket from [../bootstrap](../bootstrap/README.md) and AWS
 credentials (see [../README.md](../README.md#aws-authentication)).
 
@@ -120,9 +124,11 @@ queue name (`stash_shared.queue.base`), each with its own DLQ:
   retry. Batches are 1: every job is slow (OpenAI calls, large images), so
   bigger batches would only stretch timeouts and retry delays.
 - `worker_max_concurrency` (the mapping's `maximum_concurrency`) is the
-  throttle protecting RDS and OpenAI. Each worker's reserved concurrency
-  defaults to it and must not be lower (a plan-time check): Lambda
-  throttling would return records to the queue and burn delivery attempts.
+  throttle protecting RDS, OpenAI and cost: the most instances of the
+  worker its queue starts. It reserves nothing. Workers reserve no
+  concurrency. If one is given a reservation (`lambda_config`), it must
+  not be below this (a plan-time check): Lambda throttling would return
+  records to the queue and burn delivery attempts.
 - Main queues keep messages 4 days, DLQs 14 (a moved message keeps its
   original enqueue time). Long polling is 20 s. Encryption is SSE-SQS.
 - `SQS_QUEUE_URLS` for the API and workers: `jsonencode(local.sqs_queue_urls)`
@@ -132,32 +138,53 @@ queue name (`stash_shared.queue.base`), each with its own DLQ:
 
 One function per service, all in the app subnet (VPC, dual-stack):
 
-| Function            | Handler                               | Memory  | Timeout | Reserved |
-|---------------------|---------------------------------------|---------|---------|----------|
-| `api`               | `app.aws_lambda.handler`              | 512 MB  | 30 s    | 10       |
-| `thumbnailer`       | `thumbnailer.aws_lambda.handler`      | 1024 MB | 60 s    | 5        |
-| `image_analyzer`    | `image_analyzer.aws_lambda.handler`   | 256 MB  | 120 s   | 3        |
-| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB  | 180 s   | 2        |
-| `embedding_worker`  | `embedding_worker.aws_lambda.handler` | 256 MB  | 120 s   | 3        |
+| Function            | Handler                               | Memory  | Timeout | Concurrency capped by |
+|---------------------|---------------------------------------|---------|---------|-----------------------|
+| `api`               | `app.aws_lambda.handler`              | 512 MB  | 30 s    | the account's quota   |
+| `thumbnailer`       | `thumbnailer.aws_lambda.handler`      | 1024 MB | 60 s    | its SQS mapping: 5    |
+| `image_analyzer`    | `image_analyzer.aws_lambda.handler`   | 256 MB  | 120 s   | its SQS mapping: 3    |
+| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB  | 180 s   | its SQS mapping: 2    |
+| `embedding_worker`  | `embedding_worker.aws_lambda.handler` | 256 MB  | 120 s   | its SQS mapping: 3    |
+| `migrations`        | `app.aws_lambda_migrations.handler`   | 512 MB  | 300 s   | one deployment at a time |
 
-- Override per function with `lambda_config`. A worker's timeout and
-  reserved concurrency come from its queue (see Messaging).
-- Reserved concurrency caps RDS connections (about one per concurrent
-  execution, 23 in total by default; a `db.t4g.micro` allows roughly 80)
-  and OpenAI spend. AWS refuses reservations that leave the account less
-  than 10 unreserved, so the defaults need an account concurrency quota of
-  at least 33; new accounts may have only 10, so request an increase or set
-  `reserved_concurrency = -1` (a worker then stays capped by its mapping's
-  maximum concurrency).
-- Build the packages before `plan` (Terraform hashes them):
+- Override per function with `lambda_config`. A worker's timeout comes
+  from its queue (see Messaging).
+- No function reserves concurrency, so deploying needs no particular
+  account concurrency quota. A reservation would take its share of the
+  account's regional concurrency whether used or not, and AWS only allows
+  one while 100 stay unreserved. The workers are capped by their SQS
+  mappings' `maximum_concurrency` (13 in total), which bounds their RDS
+  connections (about one per instance; a `db.t4g.micro` allows roughly 80)
+  and their OpenAI spend. The API is bounded only by the account's
+  regional quota. `lambda_config.<function>.reserved_concurrency` still
+  sets a reservation where one is wanted, e.g. a hard cap on the API.
+  An account with a very small quota (new accounts can have 10) still
+  works, but every function shares it: under load, worker invocations can
+  be throttled, and their messages come back for another delivery
+  attempt. Asking AWS for the usual 1000 avoids that.
+- `migrations` runs `alembic upgrade head` in the VPC (RDS is private). It
+  has no trigger: the deployment invokes it synchronously after `apply`
+  (output `migrations_function_name`; see
+  [docs/deployment.md](../../../docs/deployment.md#migrations)). Its package
+  is the API's plus `migrations/alembic.ini` and `migrations/alembic/`.
+  It reads only the database secret.
+- `lambda_permissions_boundary_arn`: the permissions boundary of every
+  execution role, from [../github_oidc](../github_oidc/README.md). CI sets it
+  (the deploy role may only manage roles that carry it). Set the same value
+  locally, or a local apply removes it.
+- Build the packages before `plan` (Terraform hashes them; CI builds each in
+  its own job):
 
       python scripts/build_lambda_packages.py      # from the repo root, Python 3.14
 
   Each function's zip holds only its own packages, so a change to one
   worker redeploys only that worker.
 - Secrets: the functions get `DATABASE_SECRET_ARN` and (API and OpenAI
-  workers) `OPENAI_API_KEY_SECRET_ARN`, read once per cold start. Put the
-  OpenAI key into its secret once:
+  workers) `OPENAI_API_KEY_SECRET_ARN`. The database secret and the
+  workers' OpenAI key are read at cold start. The API reads its OpenAI key
+  only when a search first needs it: without it, only search fails (503).
+  Put the OpenAI key into its secret once, after the first apply creates
+  it:
 
       aws secretsmanager put-secret-value --secret-id "$(terraform output -raw openai_api_key_secret_arn)" --secret-string 'sk-...'
 
@@ -211,7 +238,9 @@ access blocked, SSE-S3, TLS only) through a CloudFront distribution
 - Security headers: the managed `SecurityHeadersPolicy` (HSTS, `nosniff`,
   ...).
 
-Terraform doesn't build or upload the site. A deployment:
+Terraform doesn't build or upload the site. The deployment workflow
+(`.github/workflows/deploy.yml`) does, after `apply` and the migrations,
+and sets `.wasm` files' type explicitly. By hand:
 
     cd frontend/packages/web
     rm -rf ../../target/dx/web/release/web/public

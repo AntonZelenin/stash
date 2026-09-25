@@ -89,9 +89,11 @@ resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
 # visibility timeout and are eventually moved to the DLQ by the redrive
 # policy. Nothing else deletes or re-sends messages.
 #
-# maximum_concurrency is the only throttle: the worker's reserved
-# concurrency defaults to it, and must not be lower, or throttled records
-# would come back and use up delivery attempts.
+# maximum_concurrency is the throttle protecting RDS, OpenAI and cost: the
+# most instances of the worker this queue starts. Workers reserve no
+# concurrency by default; one given a reservation (lambda_config) must not
+# get less than this, or throttled records would come back and use up
+# delivery attempts.
 resource "aws_lambda_event_source_mapping" "worker" {
   for_each = local.queues
 

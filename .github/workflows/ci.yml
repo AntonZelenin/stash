@@ -1,0 +1,105 @@
+# Validation only; nothing is ever applied or deployed from here (that's
+# deploy.yml, started by hand).
+#
+#   pull request   tests, Terraform fmt/validate, Lambda packages, terraform plan
+#   push to main   tests, Terraform fmt/validate
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.16.4"
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -check -recursive -diff infra/terraform
+
+      # Without a backend or credentials; the Lambda zips aren't needed.
+      - name: Init and validate
+        run: |
+          for dir in bootstrap live github_oidc; do
+            echo "::group::$dir"
+            terraform -chdir="infra/terraform/$dir" init -backend=false -input=false -no-color
+            terraform -chdir="infra/terraform/$dir" validate -no-color
+            echo "::endgroup::"
+          done
+
+  # Terraform hashes the zips, so the plan needs them.
+  lambdas:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/build-lambdas.yml
+
+  terraform-plan:
+    # Read-only (the plan role, no state lock). Pull requests from forks get
+    # no OIDC token; until the one-time AWS setup is done the job is skipped.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && vars.AWS_PLAN_ROLE_ARN != ''
+    needs: [lambdas, terraform-validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+      STASH_ENVIRONMENT: ${{ vars.STASH_ENVIRONMENT }}
+      LAMBDA_PERMISSIONS_BOUNDARY_ARN: ${{ vars.LAMBDA_PERMISSIONS_BOUNDARY_ARN }}
+      TF_VARS: ${{ vars.TF_VARS }}
+      TF_VAR_environment: ${{ vars.STASH_ENVIRONMENT }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_lambda_permissions_boundary_arn: ${{ vars.LAMBDA_PERMISSIONS_BOUNDARY_ARN }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lambda-*
+          path: build/lambda
+          merge-multiple: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/terraform-live
+
+      - name: Terraform plan
+        working-directory: infra/terraform/live
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock=false | tee plan.txt
+          {
+            echo "### Terraform plan"
+            echo '```'
+            # The step summary is limited to 1 MiB.
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

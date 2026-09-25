@@ -128,7 +128,7 @@ variable "worker_batch_size" {
 }
 
 variable "worker_max_concurrency" {
-  description = "Most concurrent invocations each queue's event source mapping starts (scaling_config.maximum_concurrency), per queue. Caps RDS connections and OpenAI spend; the worker's reserved concurrency defaults to it."
+  description = "Most concurrent invocations each queue's event source mapping starts (scaling_config.maximum_concurrency), per queue. This is what caps each worker's RDS connections and OpenAI spend (workers reserve no concurrency)."
   type = object({
     thumbnail_jobs         = optional(number, 5)
     content_analysis_jobs  = optional(number, 3)
@@ -207,9 +207,10 @@ variable "lambda_architecture" {
 
 variable "lambda_config" {
   description = <<-EOT
-    Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, embedding_worker.
-    reserved_concurrency = -1 leaves a function unreserved; a worker's defaults to its queue's worker_max_concurrency
-    and must not be below it. timeout applies to the API only (at most 30, API Gateway's integration limit): a
+    Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, embedding_worker, migrations.
+    reserved_concurrency: none (-1) by default. A reservation takes that much of the account's concurrency, which
+    AWS only allows while 100 stay unreserved; a worker's must not be below its queue's worker_max_concurrency.
+    timeout applies to the API (at most 30, API Gateway's integration limit) and migrations (at most 900) only: a
     worker's timeout is its queue's worker_timeout_seconds x worker_batch_size, which its visibility timeout is
     derived from.
   EOT
@@ -225,11 +226,21 @@ variable "lambda_config" {
   validation {
     condition = alltrue([
       for name, c in var.lambda_config :
-      contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker"], name)
-      && (name == "api" ? coalesce(c.timeout, 30) <= 30 : c.timeout == null)
+      contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker", "migrations"], name)
+      && (
+        name == "api" ? coalesce(c.timeout, 30) <= 30
+        : name == "migrations" ? coalesce(c.timeout, 300) <= 900
+        : c.timeout == null
+      )
     ])
-    error_message = "Unknown function name, an API timeout above 30 s, or a timeout set for a worker (use worker_timeout_seconds)."
+    error_message = "Unknown function name, an API timeout above 30 s, a migrations timeout above 900 s, or a timeout set for a worker (use worker_timeout_seconds)."
   }
+}
+
+variable "lambda_permissions_boundary_arn" {
+  description = "Permissions boundary for every function's execution role: the github_oidc configuration's lambda_permissions_boundary_arn output. It must be set when the GitHub deploy role applies this configuration, which may only create and change roles carrying it; null (no boundary) otherwise."
+  type        = string
+  default     = null
 }
 
 variable "lambda_log_retention_days" {

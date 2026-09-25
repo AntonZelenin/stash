@@ -7,6 +7,7 @@
 #   image_analyzer     get thumbnails                  send: all, consume own  db, openai
 #   document_analyzer  get files                       send: all, consume own  db, openai
 #   embedding_worker   -                               consume own             db, openai
+#   migrations         -                               -                       db
 #
 # "send: all": after its commit, a process flushes the whole transactional
 # outbox (stash_shared.outbox), publishing every pending event whatever its
@@ -49,6 +50,12 @@ locals {
       delete = []
       list   = false
     }
+    migrations = {
+      put    = []
+      get    = []
+      delete = []
+      list   = false
+    }
   }
 
   lambda_publishes = {
@@ -57,6 +64,7 @@ locals {
     image_analyzer    = true
     document_analyzer = true
     embedding_worker  = false
+    migrations        = false
   }
 }
 
@@ -76,6 +84,9 @@ resource "aws_iam_role" "lambda" {
 
   name               = each.value.function_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  # The ceiling on what any function role may be granted, set when CI
+  # (the GitHub deploy role, ../github_oidc) manages these roles.
+  permissions_boundary = var.lambda_permissions_boundary_arn
 }
 
 # Creating and deleting the function's ENIs in the VPC; AWS-maintained and

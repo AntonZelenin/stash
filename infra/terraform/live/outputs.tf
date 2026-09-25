@@ -126,6 +126,11 @@ output "lambda_functions" {
   }
 }
 
+output "migrations_function_name" {
+  description = "The migration function: invoke it synchronously to run `alembic upgrade head` in the VPC (aws lambda invoke --function-name ...)."
+  value       = aws_lambda_function.main["migrations"].function_name
+}
+
 output "api_url" {
   description = "Public API base URL (API Gateway default endpoint, no trailing slash); pass it to the frontend build as STASH_API_BASE_URL."
   value       = aws_apigatewayv2_api.main.api_endpoint

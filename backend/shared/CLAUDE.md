@@ -53,7 +53,10 @@ Also holds `stash_shared.secrets`: resolves Secrets Manager ARN settings
 (`database_secret_arn`, `openai_api_key_secret_arn`) into the plain ones
 (`database_url`, `openai_api_key`) when a settings class is built, cached
 per process. Only the settings classes call it; application code never
-fetches secrets.
+fetches secrets. The API resolves only the database secret up front
+(`resolve_database_url`) and its OpenAI key when search first needs it
+(`openai_api_key`, through `app.config.get_openai_api_key`), so it starts
+and serves everything but search without that secret.
 
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:

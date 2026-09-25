@@ -2,8 +2,9 @@
 
 AWS infrastructure for Stash.
 
-    bootstrap/   S3 bucket for remote state (local state, applied once per account)
-    live/        Stash infrastructure (remote state in the bootstrap bucket)
+    bootstrap/     S3 bucket for remote state (local state, applied once per account)
+    github_oidc/   GitHub Actions OIDC roles for CI/CD (remote state, applied by hand)
+    live/          Stash infrastructure (remote state in the bootstrap bucket)
 
 Requires Terraform >= 1.10 (S3-native state locking).
 
@@ -26,7 +27,11 @@ or set `aws_profile` in `terraform.tfvars` (and `profile` in `live/backend.hcl`)
 ## Order of operations
 
 1. [bootstrap/](bootstrap/README.md): create the state bucket (once per account).
-2. [live/](live/README.md): point the backend at that bucket and work as usual.
+2. [github_oidc/](github_oidc/README.md): the roles GitHub Actions deploys with
+   (once per environment, and whenever it changes).
+3. [live/](live/README.md): deployed by the manual GitHub Actions workflow
+   (see [docs/deployment.md](../../docs/deployment.md)), or by hand as
+   described there.
 
 ## Everyday checks
 
@@ -35,8 +40,11 @@ or set `aws_profile` in `terraform.tfvars` (and `profile` in `live/backend.hcl`)
     terraform plan
 
 `validate` works without AWS credentials after `terraform init -backend=false`.
-Nothing here is applied automatically; `apply` is always a manual step after
-reviewing the plan.
+CI runs `fmt -check` and `validate` on every pull request and push to main,
+and `plan` of `live/` on pull requests. Nothing here is applied
+automatically. `live/` is applied only by a deployment someone starts by
+hand (`.github/workflows/deploy.yml`, which prints the plan first) or by
+hand locally. `bootstrap/` and `github_oidc/` are only ever applied by hand.
 
 ## Committed vs. local files
 

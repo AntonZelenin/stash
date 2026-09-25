@@ -1,0 +1,9 @@
+# Copy to backend.hcl (gitignored). Same bucket as ../live/backend.hcl, its
+# own key per environment (next to live's stash/<environment>/terraform.tfstate):
+
+bucket = "stash-tfstate-123456789012-eu-central-1"
+key    = "stash/prod/github-oidc.tfstate"
+region = "eu-central-1"
+
+# Only needed if you use a named profile rather than AWS_PROFILE:
+# profile = "stash"

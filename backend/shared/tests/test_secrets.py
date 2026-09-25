@@ -73,6 +73,48 @@ def test_resolve_leaves_plain_values_alone_without_arns(client):
     assert (settings.database_url, settings.openai_api_key) == ("postgresql+asyncpg://local", "sk-local")
 
 
+def test_resolve_database_url_leaves_the_openai_key_alone(client):
+    _expect(client, DB_SECRET_ARN, json.dumps(DB_SECRET))
+    settings = SimpleNamespace(
+        database_url="postgresql+asyncpg://local",
+        database_secret_arn=DB_SECRET_ARN,
+        openai_api_key="",
+        openai_api_key_secret_arn=OPENAI_SECRET_ARN,
+    )
+
+    # Only the database secret is stubbed: fetching the OpenAI one would raise.
+    secrets.resolve_database_url(settings)
+
+    assert settings.database_url.startswith("postgresql+asyncpg://stash:")
+    assert settings.openai_api_key == ""
+
+
+def test_openai_api_key_is_the_secret_value(client):
+    _expect(client, OPENAI_SECRET_ARN, "sk-test")
+    settings = SimpleNamespace(openai_api_key="", openai_api_key_secret_arn=OPENAI_SECRET_ARN)
+
+    assert secrets.openai_api_key(settings) == "sk-test"
+
+
+def test_openai_api_key_is_the_plain_value_without_an_arn():
+    settings = SimpleNamespace(openai_api_key="sk-local", openai_api_key_secret_arn="")
+
+    assert secrets.openai_api_key(settings) == "sk-local"
+
+
+def test_an_unreadable_openai_secret_is_retried_later(client):
+    # A secret created without a value yet.
+    client.stubber.add_client_error(
+        "get_secret_value", "ResourceNotFoundException", expected_params={"SecretId": OPENAI_SECRET_ARN}
+    )
+    _expect(client, OPENAI_SECRET_ARN, "sk-test")
+    settings = SimpleNamespace(openai_api_key="", openai_api_key_secret_arn=OPENAI_SECRET_ARN)
+
+    with pytest.raises(client.exceptions.ResourceNotFoundException):
+        secrets.openai_api_key(settings)
+    assert secrets.openai_api_key(settings) == "sk-test"
+
+
 def test_each_secret_is_fetched_once(client):
     _expect(client, OPENAI_SECRET_ARN, "sk-test")
 

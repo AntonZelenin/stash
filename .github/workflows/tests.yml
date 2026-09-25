@@ -1,0 +1,82 @@
+# Every test suite, as a reusable workflow: ci.yml runs it on pull requests
+# and main, deploy.yml before anything is deployed. No AWS access, no
+# services: the backend tests use SQLite and in-memory fakes.
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each package in its own environment with only what it depends on
+        # (backend/workers/CLAUDE.md), so a test run also proves it needs
+        # nothing else.
+        include:
+          - package: shared
+            # [aws]: Powertools, so the CloudWatch EMF metric tests run too.
+            install: -e "backend/shared[aws,test]"
+          - package: api
+            install: -e backend/shared -e "backend/api[test]"
+          - package: workers/core
+            install: -e backend/shared -e "backend/workers/core[test]"
+          - package: workers/thumbnailer
+            install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/thumbnailer[test]"
+          - package: workers/image_analyzer
+            install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/image_analyzer[test]"
+          - package: workers/document_analyzer
+            install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/document_analyzer[test]"
+          - package: workers/embedding_worker
+            install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/embedding_worker[test]"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: backend/**/pyproject.toml
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check ${{ matrix.install }}
+
+      # The API's tests/live (real OpenAI calls) skip themselves unless
+      # STASH_LIVE_OPENAI_TESTS=1.
+      - name: Test
+        working-directory: backend/${{ matrix.package }}
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # The web app and what it's built from; desktop and mobile need native
+      # GUI libraries and aren't shipped.
+      - name: Test
+        run: cargo test --locked -p api -p ui -p web
+
+      - name: Check the web build (wasm32)
+        run: cargo check --locked -p web --target wasm32-unknown-unknown
