@@ -1,4 +1,8 @@
+from typing import Self
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+from stash_shared import secrets
 
 
 class WorkerSettings(BaseSettings):
@@ -24,6 +28,10 @@ class WorkerSettings(BaseSettings):
     # this namespace, only when `platform` is "aws"; a no-op elsewhere.
     metrics_namespace: str = "Stash"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
+    # AWS: the Secrets Manager secret with the database credentials; when
+    # set, `database_url` is built from it. Workers with an OpenAI key
+    # likewise take `openai_api_key_secret_arn` (see `stash_shared.secrets`).
+    database_secret_arn: str = ""
     # Unset: picked from `platform` (SQS on "aws", Valkey elsewhere); see
     # `stash_shared.queue.factory`.
     queue_provider: str | None = None
@@ -52,3 +60,8 @@ class WorkerSettings(BaseSettings):
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "stash"
+
+    @model_validator(mode="after")
+    def _resolve_secrets(self) -> Self:
+        secrets.resolve_secret_settings(self)
+        return self

@@ -138,3 +138,87 @@ variable "s3_cors_allowed_origins" {
     error_message = "Each origin must be scheme://host[:port], without a path or trailing slash."
   }
 }
+
+variable "lambda_package_dir" {
+  description = "Directory with the Lambda packages (<function>.zip), as built by scripts/build_lambda_packages.py. Relative to this directory."
+  type        = string
+  default     = "../../../build/lambda"
+}
+
+variable "lambda_package_paths" {
+  description = "Per-function package path overrides, e.g. { api = \"/tmp/api.zip\" }."
+  type        = map(string)
+  default     = {}
+}
+
+variable "lambda_runtime" {
+  description = "Lambda runtime; must match the Python the packages were built for."
+  type        = string
+  default     = "python3.14"
+}
+
+variable "lambda_architecture" {
+  description = "Lambda architecture; must match the packages (build script --architecture)."
+  type        = string
+  default     = "arm64"
+
+  validation {
+    condition     = contains(["arm64", "x86_64"], var.lambda_architecture)
+    error_message = "lambda_architecture must be arm64 or x86_64."
+  }
+}
+
+variable "lambda_config" {
+  description = <<-EOT
+    Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, embedding_worker.
+    reserved_concurrency = -1 leaves a function unreserved. timeout applies to the API only: a worker's timeout
+    is its queue's worker_timeout_seconds, which its visibility timeout is derived from.
+  EOT
+  type = map(object({
+    memory_size          = optional(number)
+    timeout              = optional(number)
+    reserved_concurrency = optional(number)
+    architecture         = optional(string)
+    runtime              = optional(string)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for name, c in var.lambda_config :
+      contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker"], name)
+      && (name == "api" || c.timeout == null)
+    ])
+    error_message = "Unknown function name, or a timeout set for a worker (use worker_timeout_seconds)."
+  }
+}
+
+variable "lambda_log_retention_days" {
+  description = "CloudWatch Logs retention for the Lambda log groups."
+  type        = number
+  default     = 14
+}
+
+variable "log_level" {
+  description = "LOG_LEVEL for every service."
+  type        = string
+  default     = "INFO"
+}
+
+variable "metrics_namespace" {
+  description = "CloudWatch metrics namespace (METRICS_NAMESPACE)."
+  type        = string
+  default     = "Stash"
+}
+
+variable "tracing_otlp_endpoint" {
+  description = "OTLP/HTTP collector for traces. Null disables tracing (TRACING_ENABLED=false); there is no collector on AWS yet."
+  type        = string
+  default     = null
+}
+
+variable "api_cors_allowed_origins" {
+  description = "Browser origins allowed to call the API (CORS_ALLOWED_ORIGINS), e.g. [\"https://stash.example.com\"]."
+  type        = list(string)
+  default     = []
+}

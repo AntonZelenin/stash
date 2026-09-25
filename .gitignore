@@ -23,3 +23,6 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 infra/terraform/**/backend.hcl
+
+# Lambda packages (scripts/build_lambda_packages.py)
+/build/

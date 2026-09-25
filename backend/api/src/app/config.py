@@ -1,6 +1,9 @@
 from functools import lru_cache
+from typing import Self
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+from stash_shared import secrets
 from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
@@ -22,6 +25,9 @@ class Settings(BaseSettings):
     # this namespace, only when `platform` is "aws"; a no-op elsewhere.
     metrics_namespace: str = "Stash"
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
+    # AWS: the Secrets Manager secret with the database credentials; when
+    # set, `database_url` is built from it (see `stash_shared.secrets`).
+    database_secret_arn: str = ""
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 14
     cors_allowed_origins: list[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
@@ -53,6 +59,9 @@ class Settings(BaseSettings):
     # Search queries are embedded with this; it must be the model the
     # embedding worker uses for item text.
     openai_api_key: str = ""
+    # AWS: the Secrets Manager secret holding the OpenAI API key; when set,
+    # it replaces `openai_api_key`.
+    openai_api_key_secret_arn: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     # Results further than this cosine distance from the query (0 = same
     # direction, 1 = unrelated, 2 = opposite) are left out, so a search
@@ -61,6 +70,11 @@ class Settings(BaseSettings):
     # scored ~0.55-0.66, loosely related items ~0.72-0.8, unrelated ones
     # mostly 0.83+. Retune if the model changes.
     search_max_cosine_distance: float | None = 0.8
+
+    @model_validator(mode="after")
+    def _resolve_secrets(self) -> Self:
+        secrets.resolve_secret_settings(self)
+        return self
 
 
 @lru_cache

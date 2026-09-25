@@ -49,6 +49,12 @@ user/item/request/trace ids or storage keys). Add a metric only if it says
 whether something is healthy, slow, failing or falling behind, and AWS
 doesn't already publish it. See "Metrics" in the architecture doc.
 
+Also holds `stash_shared.secrets`: resolves Secrets Manager ARN settings
+(`database_secret_arn`, `openai_api_key_secret_arn`) into the plain ones
+(`database_url`, `openai_api_key`) when a settings class is built, cached
+per process. Only the settings classes call it; application code never
+fetches secrets.
+
 Not installed via a declared path dependency (no lockfile/workspace tooling
 in this repo yet) — each consuming service installs it explicitly:
 - Locally: `pip install -e backend/shared` into that service's venv before

@@ -2,7 +2,8 @@
 
 Root configuration for Stash on AWS: provider, backend, naming, tags and
 the network (`network.tf`), the database (`database.tf`), object storage
-(`storage.tf`) and queues (`messaging.tf`).
+(`storage.tf`), queues (`messaging.tf`) and the Lambdas (`lambda.tf`,
+`iam.tf`, `secrets.tf`).
 
 - `local.name_prefix`: `{project}-{environment}`, e.g. `stash-prod`; prefix
   every resource name with it.
@@ -111,3 +112,38 @@ queue name (`stash_shared.queue.base`), each with its own DLQ:
   original enqueue time). Long polling is 20 s. Encryption is SSE-SQS.
 - `SQS_QUEUE_URLS` for the API and workers: `jsonencode(local.sqs_queue_urls)`
   inside this configuration, or the `sqs_queue_urls_json` output.
+
+## Lambdas
+
+One function per service, all in the app subnet (VPC, dual-stack):
+
+| Function            | Handler                               | Memory  | Timeout | Reserved |
+|---------------------|---------------------------------------|---------|---------|----------|
+| `api`               | `app.aws_lambda.handler`              | 512 MB  | 30 s    | 10       |
+| `thumbnailer`       | `thumbnailer.aws_lambda.handler`      | 1024 MB | 60 s    | 2        |
+| `image_analyzer`    | `image_analyzer.aws_lambda.handler`   | 256 MB  | 120 s   | 2        |
+| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB  | 180 s   | 2        |
+| `embedding_worker`  | `embedding_worker.aws_lambda.handler` | 256 MB  | 120 s   | 2        |
+
+- Override per function with `lambda_config`. A worker's timeout is its
+  queue's `worker_timeout_seconds` (the visibility timeout derives from it).
+- Reserved concurrency caps RDS connections (about one per concurrent
+  execution; a `db.t4g.micro` allows roughly 80) and OpenAI spend. AWS
+  refuses reservations that leave the account less than 10 unreserved; new
+  accounts may have a total quota of only 10, so request an increase or set
+  `reserved_concurrency = -1`.
+- Build the packages before `plan` (Terraform hashes them):
+
+      python scripts/build_lambda_packages.py      # from the repo root, Python 3.14
+
+  Each function's zip holds only its own packages, so a change to one
+  worker redeploys only that worker.
+- Secrets: the functions get `DATABASE_SECRET_ARN` and (API and OpenAI
+  workers) `OPENAI_API_KEY_SECRET_ARN`, read once per cold start. Put the
+  OpenAI key into its secret once:
+
+      aws secretsmanager put-secret-value --secret-id "$(terraform output -raw openai_api_key_secret_arn)" --secret-string 'sk-...'
+
+- IAM per function: see the matrix at the top of `iam.tf`.
+- `AWS_USE_DUALSTACK_ENDPOINT=true` makes boto3 reach S3 and SQS over IPv6;
+  presigned URLs therefore use S3's dual-stack hostname.

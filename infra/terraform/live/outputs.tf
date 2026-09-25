@@ -107,3 +107,21 @@ output "max_delivery_attempts" {
   description = "Value for the workers' MAX_DELIVERY_ATTEMPTS setting (equals the redrive maxReceiveCount)."
   value       = var.max_delivery_attempts
 }
+
+output "openai_api_key_secret_arn" {
+  description = "Secret to put the OpenAI API key into (its value is not managed by Terraform)."
+  value       = aws_secretsmanager_secret.openai_api_key.arn
+}
+
+output "lambda_functions" {
+  description = "Per service: function name and ARNs, and its execution role."
+  value = {
+    for name, f in aws_lambda_function.main : name => {
+      function_name = f.function_name
+      arn           = f.arn
+      invoke_arn    = f.invoke_arn
+      role_arn      = aws_iam_role.lambda[name].arn
+      role_name     = aws_iam_role.lambda[name].name
+    }
+  }
+}

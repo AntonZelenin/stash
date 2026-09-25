@@ -24,3 +24,10 @@ aws_region  = "eu-central-1"
 # }
 # sqs_visibility_timeout_multiplier = 3
 # max_delivery_attempts             = 5 # keep equal to MAX_DELIVERY_ATTEMPTS
+
+# Lambda packages: python scripts/build_lambda_packages.py (build/lambda/*.zip).
+# lambda_config = {
+#   api         = { memory_size = 1024, reserved_concurrency = 20 }
+#   thumbnailer = { reserved_concurrency = -1 } # unreserved
+# }
+# api_cors_allowed_origins = ["https://stash.example.com"]

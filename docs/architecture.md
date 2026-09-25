@@ -505,16 +505,26 @@ Configuration is provided through local environment variables / `.env`.
 
 Production runs on AWS.
 
-Expected infrastructure:
-- API container
-- Worker container
-- Managed PostgreSQL (with pgvector)
+Infrastructure (Terraform, `infra/terraform/live/`):
+- One Lambda per service: the API (`app.aws_lambda.handler`, the FastAPI
+  app through Mangum, behind API Gateway) and one per worker
+  (`<worker>.aws_lambda.handler`, SQS-triggered), each with its own
+  least-privilege execution role, in a private subnet (IPv4 to RDS, IPv6
+  out through an egress-only internet gateway, no NAT)
+- RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
-- Queue
+- SQS queues with DLQs
 
-The API and Worker use the same Docker images/code as in the local environment, with environment-specific configuration.
+The Lambdas run the same code as the local services, packaged as one zip
+per function (`scripts/build_lambda_packages.py`), with environment-specific
+configuration.
 
-Production infrastructure and deployment are managed using Terraform.
+Secrets are plain settings locally (`DATABASE_URL`, `OPENAI_API_KEY`). On
+AWS the functions get Secrets Manager ARNs instead (`DATABASE_SECRET_ARN`,
+`OPENAI_API_KEY_SECRET_ARN`), which the settings classes resolve into those
+same fields when they're built (`stash_shared.secrets`): once per execution
+environment, at cold start, never per request or message. Application code
+only ever sees the settings.
 
 ## High-level Flow
 
