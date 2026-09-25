@@ -3,13 +3,15 @@ import uuid
 
 import pytest
 from PIL import Image
+from stash_shared import storage_keys
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
 
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.errors import PermanentProcessingError
-from content_analyzer.thumbnails import ThumbnailHandler, make_thumbnail, thumbnail_key
+from content_analyzer.thumbnails import ThumbnailHandler, make_thumbnail
 from content_analyzer.worker import Worker
 from conftest import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -20,7 +22,11 @@ from conftest import (
     outbox_for,
 )
 
-_ORIGINAL_KEY = "images/original.png"
+_ORIGINAL_KEY = f"users/{OWNER_ID}/images/original.png"
+
+
+def thumbnail_key(item_id: uuid.UUID) -> str:
+    return storage_keys.thumbnail_key(OWNER_ID, item_id)
 
 
 def _encode(image: Image.Image, format: str = "PNG", **params) -> bytes:
@@ -91,12 +97,12 @@ def test_undecodable_input_is_permanent(data):
 # ---- ThumbnailHandler ----
 
 
-def _job(item_id: uuid.UUID) -> ProcessingJob:
+def _job(item_id: uuid.UUID, *, user_id: uuid.UUID = OWNER_ID, original_key: str = _ORIGINAL_KEY) -> ProcessingJob:
     return ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=user_id,
         item_type=ItemType.image,
-        image=ImageRef(storage_key=_ORIGINAL_KEY, content_type="image/png"),
+        image=ImageRef(storage_key=original_key, content_type="image/png"),
     )
 
 
@@ -135,6 +141,45 @@ async def test_stores_thumbnail_records_it_then_hands_off_to_analysis(engine, st
     [job] = analysis_queue.published
     assert job.item_id == item_id
     assert job.image == ImageRef(storage_key=key, content_type="image/webp")
+
+
+async def test_thumbnail_is_stored_under_its_owners_prefix(engine, storage, handler):
+    """Next to the owner's original, in the same `users/{user_id}/`
+    hierarchy — whatever layout the original itself was stored under."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+
+    await handler.handle(_job(item_id))
+
+    assert await fetch_thumbnail_key(engine, item_id) == f"users/{OWNER_ID}/thumbnails/{item_id}.webp"
+
+
+async def test_legacy_original_key_gets_a_user_scoped_thumbnail(engine, storage, handler):
+    item_id = uuid.uuid4()
+    legacy_key = f"images/{item_id}.png"
+    storage.objects[legacy_key] = storage.objects[_ORIGINAL_KEY]
+    await insert_item(engine, item_id, status="processing", storage_key=legacy_key)
+
+    await handler.handle(_job(item_id, original_key=legacy_key))
+
+    assert await fetch_thumbnail_key(engine, item_id) == thumbnail_key(item_id)
+    assert thumbnail_key(item_id) in storage.objects
+
+
+async def test_job_for_another_users_item_records_nothing(engine, storage, analysis_queue, handler):
+    """The job's user id picks the thumbnail's prefix, so it's checked
+    against the item's owner in the database: a mismatched job (a bug, or a
+    forged message) neither records a thumbnail under another user's prefix
+    nor leaves one behind."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+    other_user = uuid.uuid4()
+
+    await handler.handle(_job(item_id, user_id=other_user))
+
+    assert await fetch_thumbnail_key(engine, item_id) is None
+    assert storage_keys.thumbnail_key(other_user, item_id) not in storage.objects
+    assert analysis_queue.published == []
 
 
 async def test_rerun_is_idempotent(engine, storage, analysis_queue, handler):

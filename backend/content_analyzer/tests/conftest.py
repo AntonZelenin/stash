@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import hashlib
 
@@ -74,10 +74,16 @@ async def create_schema(engine: AsyncEngine) -> None:
         )
 
 
+# Owner of items `insert_item` creates, unless given another: jobs for them
+# must carry it wherever the worker checks ownership (recording thumbnails).
+OWNER_ID = UUID("00000000-0000-4000-8000-00000000a11c")
+
+
 async def insert_item(
     engine: AsyncEngine,
     item_id: UUID,
     *,
+    user_id: UUID = OWNER_ID,
     status: str = "pending",
     item_type: str = "image",
     storage_key: str | None = "images/cat.png",
@@ -98,7 +104,7 @@ async def insert_item(
             ).bindparams(bindparam("updated_at", type_=DateTime(timezone=True))),
             {
                 "id": str(item_id),
-                "user_id": str(uuid4()),
+                "user_id": str(user_id),
                 "type": item_type,
                 "status": status,
                 "updated_at": updated_at,

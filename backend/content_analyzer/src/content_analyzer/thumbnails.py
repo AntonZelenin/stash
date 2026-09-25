@@ -1,11 +1,10 @@
 import asyncio
 import io
-from uuid import UUID
 
 from opentelemetry import trace
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared import tracing
+from stash_shared import storage_keys, tracing
 from stash_shared.log import get_logger
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, ProcessingJob
@@ -18,12 +17,6 @@ logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 THUMBNAIL_CONTENT_TYPE = "image/webp"
-
-
-def thumbnail_key(item_id: UUID) -> str:
-    # Deterministic, so re-running a job overwrites the same object instead
-    # of leaving extra copies behind.
-    return f"thumbnails/{item_id}.webp"
 
 
 def make_thumbnail(data: bytes, *, max_size: int, quality: int) -> bytes:
@@ -97,7 +90,7 @@ class ThumbnailHandler:
             )
             tracing.set_attributes(span, original_bytes=len(original), thumbnail_bytes=len(thumbnail))
 
-        key = thumbnail_key(job.item_id)
+        key = storage_keys.thumbnail_key(job.user_id, job.item_id)
         await self._storage.upload(key, thumbnail, content_type=THUMBNAIL_CONTENT_TYPE)
         analysis_job = ProcessingJob(
             item_id=job.item_id,
@@ -105,10 +98,12 @@ class ThumbnailHandler:
             item_type=job.item_type,
             image=ImageRef(storage_key=key, content_type=THUMBNAIL_CONTENT_TYPE),
         )
-        if not await record_thumbnail(self._engine, job.item_id, thumbnail_key=key, analysis_job=analysis_job):
-            # The item was deleted while we worked. Its delete couldn't have
-            # known about this thumbnail yet, so clean it up here, and don't
-            # hand a deleted item on.
+        if not await record_thumbnail(
+            self._engine, job.item_id, user_id=job.user_id, thumbnail_key=key, analysis_job=analysis_job
+        ):
+            # The item was deleted while we worked (or doesn't belong to the
+            # job's user). Its delete couldn't have known about this
+            # thumbnail yet, so clean it up here, and don't hand it on.
             logger.info("Item was deleted during thumbnailing; discarding thumbnail", storage_key=key)
             await self._storage.delete(key)
             return

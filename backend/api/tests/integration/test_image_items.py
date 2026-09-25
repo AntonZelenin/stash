@@ -2,6 +2,7 @@ from uuid import UUID
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from stash_shared import storage_keys
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import Description, ImageMetadata, Item, ItemType, TextContent
@@ -41,7 +42,9 @@ async def test_create_image_item_persists_and_associates_with_user(
     assert image is not None
     assert image.content_type == "image/png"
     assert image.size_bytes == len(_PNG_BYTES)
-    assert image.storage_key.endswith(".png")
+    # Under the owner's prefix, named by item id only (never the upload's
+    # own filename).
+    assert image.storage_key == f"users/{user_id}/images/{item.id}.png"
 
     uploaded_data, uploaded_content_type = storage.uploads[image.storage_key]
     assert uploaded_data == _PNG_BYTES
@@ -125,7 +128,7 @@ async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_lat
     """The job is in the outbox with the item: the next request that
     flushes it publishes it, and the item goes on to processing."""
     queue.fail_publish = True
-    _, token = await register_and_login(client)
+    user_id, token = await register_and_login(client)
 
     response = await client.post(
         "/items/image",
@@ -145,7 +148,8 @@ async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_lat
 
     [job] = queue.published
     assert job.item_id == item_id
-    assert job.image.storage_key == f"images/{item_id}.png"
+    assert job.image.storage_key == f"users/{user_id}/images/{item_id}.png"
+    assert str(job.user_id) == user_id
 
 
 async def test_create_image_item_with_caption_stores_it_on_the_same_item(
@@ -189,7 +193,7 @@ async def test_create_image_item_ignores_blank_caption(client: AsyncClient, sess
 
 
 async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(client: AsyncClient, session: AsyncSession):
-    _, token = await register_and_login(client)
+    user_id, token = await register_and_login(client)
     created = await client.post(
         "/items/image",
         files={"file": ("photo.png", _PNG_BYTES, "image/png")},
@@ -203,8 +207,11 @@ async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(client: Asyn
     assert listed[0]["download_url"] is not None
 
     image = await session.get(ImageMetadata, item_id)
-    image.thumbnail_key = f"thumbnails/{item_id}.webp"
+    # As the thumbnail worker records it.
+    image.thumbnail_key = storage_keys.thumbnail_key(UUID(user_id), item_id)
     await session.commit()
 
     listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
-    assert listed[0]["thumbnail_url"] == f"https://fake-storage.test/thumbnails/{item_id}.webp?expires_in=3600"
+    assert listed[0]["thumbnail_url"] == (
+        f"https://fake-storage.test/users/{user_id}/thumbnails/{item_id}.webp?expires_in=3600"
+    )

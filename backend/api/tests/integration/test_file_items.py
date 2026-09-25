@@ -50,7 +50,9 @@ async def test_upload_pdf_stores_file_and_metadata(
     assert job.item_type == QueueItemType.file
     assert job.image is None
     assert job.file == FileRef(
-        storage_key=f"files/{job.item_id}.pdf", content_type="application/pdf", filename="Quarterly Report.pdf"
+        storage_key=f"users/{user_id}/files/{job.item_id}.pdf",
+        content_type="application/pdf",
+        filename="Quarterly Report.pdf",
     )
 
     item = await session.get(Item, UUID(response.json()["id"]))
@@ -60,12 +62,12 @@ async def test_upload_pdf_stores_file_and_metadata(
     assert stored.filename == "Quarterly Report.pdf"
     assert stored.content_type == "application/pdf"
     assert stored.size_bytes == len(_PDF_BYTES)
-    assert stored.storage_key == f"files/{item.id}.pdf"
+    assert stored.storage_key == f"users/{user_id}/files/{item.id}.pdf"
     assert storage.uploads[stored.storage_key] == (_PDF_BYTES, "application/pdf")
 
 
 async def test_listed_file_has_metadata_and_download_url(client: AsyncClient):
-    _, token = await register_and_login(client)
+    user_id, token = await register_and_login(client)
     created = await _upload(client, token, "Quarterly Report.pdf", _PDF_BYTES, text="for the board")
 
     [listed] = (await client.get("/items", headers=_auth(token))).json()["items"]
@@ -80,7 +82,7 @@ async def test_listed_file_has_metadata_and_download_url(client: AsyncClient):
     }
     # Signed with the original filename, so it opens/saves under that name.
     assert listed["download_url"] == (
-        f"https://fake-storage.test/files/{listed['id']}.pdf"
+        f"https://fake-storage.test/users/{user_id}/files/{listed['id']}.pdf"
         "?expires_in=3600&filename=Quarterly Report.pdf&disposition=inline"
     )
     assert listed["thumbnail_url"] is None
@@ -132,7 +134,7 @@ async def test_other_files_are_stored_as_generic_downloads(
 ):
     """Anything is accepted; what isn't a recognized format is kept as an
     opaque binary that can only be downloaded, never displayed inline."""
-    _, token = await register_and_login(client)
+    user_id, token = await register_and_login(client)
 
     response = await _upload(client, token, filename, data)
 
@@ -141,7 +143,7 @@ async def test_other_files_are_stored_as_generic_downloads(
     stored = await session.get(FileMetadata, item_id)
     assert stored.filename == filename
     assert stored.content_type == "application/octet-stream"
-    assert stored.storage_key == f"files/{item_id}"
+    assert stored.storage_key == f"users/{user_id}/files/{item_id}"
     assert storage.uploads[stored.storage_key] == (data, "application/octet-stream")
 
     [listed] = (await client.get("/items", headers=_auth(token))).json()["items"]

@@ -9,6 +9,7 @@ import uuid
 import pytest
 from PIL import Image
 from sqlalchemy import text
+from stash_shared import storage_keys
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS
 from stash_shared.queue import codec
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
@@ -16,9 +17,10 @@ from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, EMBEDDING_JOBS, Deliv
 from content_analyzer import items
 from content_analyzer.analysis import ContentAnalysisHandler
 from content_analyzer.embeddings import EmbeddingHandler
-from content_analyzer.thumbnails import ThumbnailHandler, thumbnail_key
+from content_analyzer.thumbnails import ThumbnailHandler
 from content_analyzer.worker import Worker
 from conftest import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -30,7 +32,11 @@ from conftest import (
     outbox_for,
 )
 
-_ORIGINAL_KEY = "images/original.png"
+_ORIGINAL_KEY = f"users/{OWNER_ID}/images/original.png"
+
+
+def thumbnail_key(item_id: uuid.UUID) -> str:
+    return storage_keys.thumbnail_key(OWNER_ID, item_id)
 
 
 class _Describer:
@@ -60,7 +66,7 @@ def _png() -> bytes:
 def _image_job(item_id: uuid.UUID, key: str = _ORIGINAL_KEY) -> ProcessingJob:
     return ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
         image=ImageRef(storage_key=key, content_type="image/png"),
     )

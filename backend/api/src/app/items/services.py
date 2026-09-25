@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
-from stash_shared import descriptions
+from stash_shared import descriptions, storage_keys
 from stash_shared.log import bind_context, get_logger
 from stash_shared.queue.base import ItemType as QueueItemType
 from stash_shared.embeddings import Embedder
@@ -378,6 +378,11 @@ class ItemService:
                 logger.exception("Failed to delete stored object of deleted item; object orphaned", storage_key=key)
 
     async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
+        """Pre-signs the objects of `rows`, which must be items the current
+        user owns (every caller loads them filtered by `user_id`). This is
+        the only place the API issues access to stored objects, and only
+        ever for keys read from those rows: never for a key a client sent
+        or one rebuilt from ids."""
         return [
             ListedItem(
                 item=row,
@@ -444,7 +449,7 @@ class ItemService:
         tag_names = normalize_tag_names(list(tags))
 
         item_id = uuid.uuid4()
-        storage_key = f"images/{item_id}{_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type]}"
+        storage_key = storage_keys.image_key(user_id, item_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
         bind_context(item_id=item_id)
 
         await self._storage.upload(key=storage_key, data=data, content_type=content_type)
@@ -512,7 +517,7 @@ class ItemService:
         classified = files.classify(filename, data)
 
         item_id = uuid.uuid4()
-        storage_key = f"files/{item_id}{classified.extension}"
+        storage_key = storage_keys.file_key(user_id, item_id, classified.extension)
         bind_context(item_id=item_id)
         await self._storage.upload(key=storage_key, data=data, content_type=classified.content_type)
 

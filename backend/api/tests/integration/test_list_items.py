@@ -147,7 +147,7 @@ async def test_list_items_text_item_has_no_download_url(client: AsyncClient):
 
 
 async def test_list_items_image_item_has_presigned_download_url(client: AsyncClient):
-    _, token = await register_and_login(client)
+    user_id, token = await register_and_login(client)
     create_response = await client.post(
         "/items/image",
         files={"file": ("photo.png", _PNG_BYTES, "image/png")},
@@ -162,4 +162,4 @@ async def test_list_items_image_item_has_presigned_download_url(client: AsyncCli
     assert item["type"] == "image"
     assert item["text"] is None
     assert item["download_url"] is not None
-    assert item["download_url"].startswith("https://fake-storage.test/images/")
+    assert item["download_url"].startswith(f"https://fake-storage.test/users/{user_id}/images/")

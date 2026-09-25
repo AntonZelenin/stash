@@ -48,7 +48,8 @@ stage a separate worker service built from this same package:
 1. Thumbnail worker (`thumbnailer` service, consumes `thumbnail_jobs`):
    downloads the original, makes a WebP thumbnail with Pillow (max 1024px
    on the longest side, EXIF orientation applied), stores it at
-   `thumbnails/{item_id}.webp`, records it in `item_images.thumbnail_key`,
+   `users/{user_id}/thumbnails/{item_id}.webp`, records it in
+   `item_images.thumbnail_key` (only if the item is still that user's),
    and only then publishes to `content_analysis_jobs`, pointing that job at
    the thumbnail. Undecodable uploads fail here.
 2. Content-analyzer worker (`content_analyzer` service, consumes
@@ -147,6 +148,32 @@ The same storage integration should work in both environments; endpoint, credent
 An empty endpoint means AWS S3 itself, and empty access keys mean boto3's
 default credential chain (e.g. an ECS task role), so the same code also runs
 on AWS without static keys.
+
+Key layout (`stash_shared.storage_keys`, used by the API and the thumbnail
+worker):
+
+- `users/{user_id}/images/{item_id}{ext}`: uploaded image.
+- `users/{user_id}/files/{item_id}[{ext}]`: uploaded file.
+- `users/{user_id}/thumbnails/{item_id}.webp`: image thumbnail.
+
+Keys are made from ids and a validated extension only, never from the
+uploaded filename. That name is kept in `item_files.filename`, and downloads
+are served under it. An item's key is stored on its row
+(`item_images.storage_key` / `thumbnail_key`, `item_files.storage_key`) and
+always read back from there, never rebuilt. So items stored under the older
+unscoped layout (`images/…`, `files/…`, `thumbnails/…`) keep working.
+
+Access: the bucket is private, and clients never get credentials or
+direct bucket access. The only way to an object is a short-lived pre-signed
+GET URL (`IMAGE_DOWNLOAD_URL_TTL_SECONDS`). The API issues it only for keys
+of items it loaded filtered by the authenticated user's id, so someone
+else's item is indistinguishable from a missing one (404). Deletes likewise
+take their keys from the owned item's row. Clients can never send a key: the
+edit request rejects unknown fields. The user id in a key is for organizing
+the bucket (per-user cleanup, lifecycle rules, usage), not authorization.
+Ownership in PostgreSQL is the only source of truth. The thumbnail worker
+builds its key from the job's `user_id` and records it only if that user
+still owns the item.
 
 ### Queue
 
@@ -479,7 +506,7 @@ Client → API → PostgreSQL → Queue → Worker → PostgreSQL
 
 ### Save File
 
-Client → API → Object Storage (`files/{item_id}[.{ext}]`)
+Client → API → Object Storage (`users/{user_id}/files/{item_id}[.{ext}]`)
              → PostgreSQL (`item_files`)
              → document_analysis_jobs → Document Analyzer → OpenAI
                                                           → PostgreSQL
