@@ -94,6 +94,29 @@ pub struct ItemCreated {
     pub status: String,
 }
 
+/// How many items the user has: of each type (every type present), and
+/// favorites. Not narrowed by any filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct ItemCounts {
+    pub types: ItemTypeCounts,
+    pub favorites: u32,
+}
+
+/// Item counts per API item type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct ItemTypeCounts {
+    pub text: u32,
+    pub link: u32,
+    pub image: u32,
+    pub file: u32,
+}
+
+impl ItemTypeCounts {
+    pub fn total(&self) -> u32 {
+        self.text + self.link + self.image + self.file
+    }
+}
+
 /// A user's tag.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Tag {

@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use api::{
-    ApiClient, ApiError, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListedItem,
-    NewUpload, SearchResponse, Tag, TokenPair, TokenStore, UploadType,
+    ApiClient, ApiError, ItemCounts, ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse,
+    ListedItem, NewUpload, SearchResponse, Tag, TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -170,6 +170,15 @@ impl AuthSession {
             let client = client.clone();
             let upload_id = upload_id.clone();
             async move { client.finalize_upload(&access_token, &upload_id).await }
+        })
+        .await
+    }
+
+    pub async fn count_items(&self) -> Result<ItemCounts, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            async move { client.count_items(&access_token).await }
         })
         .await
     }

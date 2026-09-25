@@ -141,6 +141,13 @@ class ListedItem:
 
 
 @dataclass(frozen=True)
+class ItemCounts:
+    # Every item type, zero where the user has none.
+    by_type: dict[ItemType, int]
+    favorites: int
+
+
+@dataclass(frozen=True)
 class StartedUpload:
     # Also the id of the item the upload becomes.
     upload_id: uuid.UUID
@@ -215,6 +222,12 @@ class ItemService:
         self._repo = ItemRepository(session)
         self._storage = storage
         self._outbox = outbox
+
+    async def count_items(self, *, user_id: uuid.UUID) -> ItemCounts:
+        """The user's items per type and favorites, counted on each call
+        (no stored counters), over the same items listing returns."""
+        by_type, favorites = await self._repo.count_by_type(user_id=user_id)
+        return ItemCounts(by_type={item_type: by_type.get(item_type, 0) for item_type in ItemType}, favorites=favorites)
 
     async def list_items(
         self, *, user_id: uuid.UUID, limit: int, cursor: str | None, filters: ItemFilters = ItemFilters()

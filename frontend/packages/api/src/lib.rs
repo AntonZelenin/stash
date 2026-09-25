@@ -9,8 +9,8 @@ mod token_store;
 pub use client::ApiClient;
 pub use error::{ApiError, FieldError};
 pub use models::{
-    ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedFile,
-    ListedItem, NewUpload, PresignedUpload, RegisterResponse, SearchResponse, Tag, TokenPair,
-    UploadStarted, UploadType,
+    ItemCounts, ItemCreated, ItemQuery, ItemTypeCounts, ItemUpdate, ListItemsResponse,
+    ListTagsResponse, ListedFile, ListedItem, NewUpload, PresignedUpload, RegisterResponse,
+    SearchResponse, Tag, TokenPair, UploadStarted, UploadType,
 };
 pub use token_store::TokenStore;

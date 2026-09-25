@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use api::Tag;
+use api::{ItemCounts, Tag};
 use dioxus::prelude::*;
 use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::icons::{IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconTag};
-use crate::mock::ItemCounts;
 
 const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -25,7 +24,7 @@ pub(crate) const TAG_LIST_LIMIT: u32 = 50;
 #[derive(Clone, Copy, PartialEq)]
 pub enum TypeFilter {
     All,
-    Notes,
+    Text,
     Images,
     Links,
     Files,
@@ -34,7 +33,7 @@ pub enum TypeFilter {
 impl TypeFilter {
     pub const OPTIONS: [TypeFilter; 5] = [
         TypeFilter::All,
-        TypeFilter::Notes,
+        TypeFilter::Text,
         TypeFilter::Images,
         TypeFilter::Links,
         TypeFilter::Files,
@@ -42,8 +41,8 @@ impl TypeFilter {
 
     fn label(self) -> &'static str {
         match self {
-            TypeFilter::All => "All Stashes",
-            TypeFilter::Notes => "Notes",
+            TypeFilter::All => "All Items",
+            TypeFilter::Text => "Text & Notes",
             TypeFilter::Images => "Images & Media",
             TypeFilter::Links => "Links",
             TypeFilter::Files => "Files",
@@ -54,7 +53,7 @@ impl TypeFilter {
     fn color_class(self) -> &'static str {
         match self {
             TypeFilter::All => "type-tab-all",
-            TypeFilter::Notes => "type-tab-notes",
+            TypeFilter::Text => "type-tab-notes",
             TypeFilter::Images => "type-tab-images",
             TypeFilter::Links => "type-tab-links",
             TypeFilter::Files => "type-tab-files",
@@ -62,12 +61,13 @@ impl TypeFilter {
     }
 
     fn count(self, counts: &ItemCounts) -> u32 {
+        let types = &counts.types;
         match self {
-            TypeFilter::All => counts.all,
-            TypeFilter::Notes => counts.notes,
-            TypeFilter::Images => counts.images,
-            TypeFilter::Links => counts.links,
-            TypeFilter::Files => counts.files,
+            TypeFilter::All => types.total(),
+            TypeFilter::Text => types.text,
+            TypeFilter::Images => types.image,
+            TypeFilter::Links => types.link,
+            TypeFilter::Files => types.file,
         }
     }
 
@@ -76,7 +76,7 @@ impl TypeFilter {
     pub fn api_value(self) -> Option<&'static str> {
         match self {
             TypeFilter::All => None,
-            TypeFilter::Notes => Some("text"),
+            TypeFilter::Text => Some("text"),
             TypeFilter::Images => Some("image"),
             TypeFilter::Links => Some("link"),
             TypeFilter::Files => Some("file"),
@@ -85,9 +85,10 @@ impl TypeFilter {
 }
 
 /// `[ All Stashes 84 ] • Notes 28  • Images & Media 34 …`: one segment per
-/// item type, each with its count; the selected one is filled.
+/// item type, each with its count (left out until `counts` has loaded); the
+/// selected one is filled.
 #[component]
-pub fn TypeTabs(value: Signal<TypeFilter>, counts: ItemCounts) -> Element {
+pub fn TypeTabs(value: Signal<TypeFilter>, counts: Option<ItemCounts>) -> Element {
     let mut value = value;
 
     rsx! {
@@ -103,15 +104,18 @@ pub fn TypeTabs(value: Signal<TypeFilter>, counts: ItemCounts) -> Element {
                     span { class: "type-tab-dot" }
                 }
                 span { "{option.label()}" }
-                span { class: "filter-count", "{option.count(&counts)}" }
+                if let Some(counts) = &counts {
+                    span { class: "filter-count", "{option.count(counts)}" }
+                }
             }
         }
     }
 }
 
-/// `[ ♥ Favorites 12 ]`: on/off toggle for showing only favorites.
+/// `[ ♥ Favorites 12 ]`: on/off toggle for showing only favorites. The
+/// count is left out until it has loaded.
 #[component]
-pub fn FavoritesToggle(value: Signal<bool>, count: u32) -> Element {
+pub fn FavoritesToggle(value: Signal<bool>, count: Option<u32>) -> Element {
     let mut value = value;
 
     rsx! {
@@ -129,7 +133,9 @@ pub fn FavoritesToggle(value: Signal<bool>, count: u32) -> Element {
                 IconHeart {}
             }
             span { "Favorites" }
-            span { class: "favorites-count", "{count}" }
+            if let Some(count) = count {
+                span { class: "favorites-count", "{count}" }
+            }
         }
     }
 }

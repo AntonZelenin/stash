@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use api::{ItemQuery, ListedItem, Tag};
+use api::{ItemCounts, ItemQuery, ListedItem, Tag};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
@@ -153,6 +153,17 @@ pub fn Home() -> Element {
         }
     });
 
+    // Item counts for the type tabs and favorites toggle. Unfiltered, so
+    // they don't depend on the filters; restarted wherever items are
+    // added, deleted, edited (a note can become a link) or (un)favorited.
+    let mut item_counts = use_resource({
+        let session = session.clone();
+        move || {
+            let session = session.clone();
+            async move { session.count_items().await }
+        }
+    });
+
     // Search-as-you-type. `use_resource` re-runs whenever `search_query`
     // changes and drops the previous, still-running future — so the delay
     // below doubles as a debounce: only a pause in typing reaches the
@@ -216,6 +227,7 @@ pub fn Home() -> Element {
                     Ok(()) => {
                         saved_items.restart();
                         search_results.restart();
+                        item_counts.restart();
                     }
                     Err(err) => status.set(Some(format!("Could not delete the item: {err}"))),
                 }
@@ -229,12 +241,15 @@ pub fn Home() -> Element {
     let refresh_items = use_callback(move |()| {
         saved_items.restart();
         search_results.restart();
+        item_counts.restart();
         suggested.restart();
     });
 
     // A card's favorite state changed. The card already shows it, so only
-    // refetch when showing favorites only, where it may need to drop out.
+    // refetch items when showing favorites only, where it may need to drop
+    // out; the favorites count always changes.
     let favorite_changed = use_callback(move |()| {
+        item_counts.restart();
         if favorites_only() {
             saved_items.restart();
             search_results.restart();
@@ -300,6 +315,7 @@ pub fn Home() -> Element {
                     status.set(last_error);
                     saved_items.restart();
                     search_results.restart();
+                    item_counts.restart();
 
                     is_submitting.set(false);
                 });
@@ -324,6 +340,7 @@ pub fn Home() -> Element {
                         pending_tags.set(Vec::new());
                         saved_items.restart();
                         search_results.restart();
+                        item_counts.restart();
                     }
                     Err(err) => status.set(Some(err.to_string())),
                 }
@@ -378,7 +395,11 @@ pub fn Home() -> Element {
         Some(Ok(tags)) => tags.iter().map(|tag| tag.name.clone()).collect(),
         _ => Vec::new(),
     };
-    let counts = mock::item_counts();
+    // Counts that failed to load are left out, like while loading.
+    let counts: Option<ItemCounts> = match &*item_counts.read() {
+        Some(Ok(counts)) => Some(*counts),
+        _ => None,
+    };
 
     // Ctrl+F / ⌘F focuses the search box. One document-level listener,
     // registered once per page load.
@@ -631,7 +652,7 @@ pub fn Home() -> Element {
                         div { class: "stash-controls-group",
                             TypeTabs { value: active_type, counts }
                             div { class: "stash-controls-divider" }
-                            FavoritesToggle { value: favorites_only, count: counts.favorites }
+                            FavoritesToggle { value: favorites_only, count: counts.map(|c| c.favorites) }
                         }
                         div { class: "stash-controls-query",
                             div { class: "stash-search-wrap",

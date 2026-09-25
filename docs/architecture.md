@@ -689,6 +689,13 @@ semantic search (`POST /search`) share the same server-side filters: an
 item type, any number of tags (an item must carry all of them), and
 favorites only (`items.is_favorite`, toggled per item).
 
+`GET /items/counts` returns how many items the user has of each type
+(every type present, zero if none) and how many are favorites, for the
+filter controls. It's one `COUNT(*) ... GROUP BY type` over `items`,
+scoped to the user and served by `ix_items_user_id_type`; there are no
+stored counters to keep in sync. Deletes are hard deletes, so there's
+nothing to exclude.
+
 A tag exists only while some item uses it. Removing a tag from an item, or
 deleting an item, also deletes each affected tag that no item uses any more,
 in the same transaction. Row locks keep this safe against concurrent

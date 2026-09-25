@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, or_, select, text, update
+from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -285,6 +285,21 @@ class ItemRepository:
         stmt = filters.apply(stmt)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_by_type(self, *, user_id: uuid.UUID) -> tuple[dict[ItemType, int], int]:
+        """How many items the user has of each type (types with none are
+        left out), and how many are favorites."""
+        result = await self._session.execute(
+            select(Item.type, func.count(), func.count().filter(Item.is_favorite.is_(True)))
+            .where(Item.user_id == user_id)
+            .group_by(Item.type)
+        )
+        by_type: dict[ItemType, int] = {}
+        favorites = 0
+        for item_type, count, favorite_count in result:
+            by_type[item_type] = count
+            favorites += favorite_count
+        return by_type, favorites
 
     async def list_items(
         self,

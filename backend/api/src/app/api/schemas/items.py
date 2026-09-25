@@ -21,6 +21,19 @@ class ItemStatus(str, Enum):
     failed = "failed"
 
 
+class ItemTypeCounts(BaseModel):
+    text: int
+    link: int
+    image: int
+    file: int
+
+
+class ItemCountsResponse(BaseModel):
+    # Items of each type; every type is present, zero if there are none.
+    types: ItemTypeCounts
+    favorites: int
+
+
 class CreateTextItemRequest(BaseModel):
     text: str = Field(min_length=1)
     # Tag names to put on the new item (existing tags reused, missing ones

@@ -8,9 +8,11 @@ from app.dependencies import get_current_user
 from app.api.schemas.items import (
     CreateTextItemRequest,
     DeleteItemsRequest,
+    ItemCountsResponse,
     ItemCreated,
     ItemStatus,
     ItemType,
+    ItemTypeCounts,
     ListedFile,
     ListedItem,
     ListedTag,
@@ -168,6 +170,24 @@ def _invalid_upload(exc: Exception) -> HTTPException:
         case _:
             detail = _INVALID_TAGS
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
+
+
+@router.get(
+    "/items/counts",
+    status_code=status.HTTP_200_OK,
+    response_model=ItemCountsResponse,
+    responses={401: {"description": "Unauthorized"}},
+)
+async def count_items(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> ItemCountsResponse:
+    counts = await ItemService(session, storage).count_items(user_id=current_user.id)
+    return ItemCountsResponse(
+        types=ItemTypeCounts(**{item_type.value: count for item_type, count in counts.by_type.items()}),
+        favorites=counts.favorites,
+    )
 
 
 @router.get(

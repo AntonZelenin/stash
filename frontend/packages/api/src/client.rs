@@ -3,9 +3,9 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, ItemCreated, ItemQuery,
-    ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, NewUpload,
-    PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SearchRequest,
+    AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, ItemCounts, ItemCreated,
+    ItemQuery, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
+    NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SearchRequest,
     SearchResponse, Tag, TokenPair, UploadStarted,
 };
 
@@ -430,6 +430,22 @@ impl ApiClient {
             404 | 409 | 422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
+            _ => Err(ApiError::Server),
+        }
+    }
+
+    /// How many items the user has of each type, and how many are
+    /// favorites.
+    pub async fn count_items(&self, access_token: &str) -> Result<ItemCounts, ApiError> {
+        let response = self
+            .authenticated(Method::GET, "/items/counts", access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
             _ => Err(ApiError::Server),
         }
     }

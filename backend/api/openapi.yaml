@@ -681,6 +681,30 @@ paths:
             an empty note or link, an empty filename, a filename for
             anything but a file, or an unknown field.
 
+  /items/counts:
+    get:
+      summary: Count the current user's items
+      description: >-
+        How many items the user has of each type (every type is present,
+        zero if there are none) and how many are favorites. Covers the
+        same items as listing without filters; computed on each request.
+      operationId: countItems
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      responses:
+        "200":
+          description: Item counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemCounts"
+
+        "401":
+          description: Unauthorized
+
   /items:
     get:
       summary: List saved items
@@ -934,6 +958,36 @@ components:
         - link
         - image
         - file
+
+    ItemCounts:
+      type: object
+      required:
+        - types
+        - favorites
+      properties:
+        types:
+          type: object
+          required:
+            - text
+            - link
+            - image
+            - file
+          properties:
+            text:
+              type: integer
+              minimum: 0
+            link:
+              type: integer
+              minimum: 0
+            image:
+              type: integer
+              minimum: 0
+            file:
+              type: integer
+              minimum: 0
+        favorites:
+          type: integer
+          minimum: 0
 
     Tag:
       type: object
