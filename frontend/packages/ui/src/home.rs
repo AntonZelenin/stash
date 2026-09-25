@@ -223,7 +223,8 @@ pub fn Home() -> Element {
     });
 
     // Deletes from a card's menu, then refetches whichever view is showing
-    // (list and search), so the card disappears from both.
+    // (list and search), so the card disappears from both, and the
+    // suggested tags, since the item may have been a tag's only use.
     let delete_item = use_callback({
         let session = session.clone();
         move |item_id: String| {
@@ -234,6 +235,7 @@ pub fn Home() -> Element {
                         saved_items.restart();
                         search_results.restart();
                         item_counts.restart();
+                        suggested.restart();
                     }
                     Err(err) => status.set(Some(t!(
                         "home-delete-failed",
