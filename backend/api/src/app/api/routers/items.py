@@ -7,6 +7,7 @@ from stash_shared.outbox import OutboxPublisher
 from app.dependencies import get_current_user
 from app.api.schemas.items import (
     CreateTextItemRequest,
+    DeleteItemsRequest,
     ItemCreated,
     ItemStatus,
     ItemType,
@@ -277,6 +278,23 @@ async def delete_item(
         await ItemService(session, storage).delete_item(user_id=current_user.id, item_id=item_id)
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# POST, not DELETE with a body: request bodies on DELETE aren't reliably
+# passed on by clients and proxies.
+@router.post(
+    "/items/delete",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={401: {"description": "Unauthorized"}, 422: {"description": "No ids, too many, or invalid ones"}},
+)
+async def delete_items(
+    body: DeleteItemsRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> Response:
+    await ItemService(session, storage).delete_items(user_id=current_user.id, item_ids=body.ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

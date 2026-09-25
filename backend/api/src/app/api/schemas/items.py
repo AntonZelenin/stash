@@ -49,6 +49,15 @@ class UpdateItemRequest(BaseModel):
     filename: str | None = Field(default=None, max_length=1_000)
 
 
+MAX_ITEMS_PER_DELETE = 100
+
+
+class DeleteItemsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[UUID] = Field(min_length=1, max_length=MAX_ITEMS_PER_DELETE)
+
+
 class UploadType(str, Enum):
     image = "image"
     file = "file"

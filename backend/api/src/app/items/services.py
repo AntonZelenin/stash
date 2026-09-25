@@ -410,8 +410,38 @@ class ItemService:
         await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=deleted.tag_ids)
         await self._session.commit()
         logger.info("Item deleted", storage_object_count=len(deleted.storage_keys), tag_count=len(deleted.tag_ids))
+        await self._delete_stored_objects(deleted.storage_keys)
 
-        for key in deleted.storage_keys:
+    async def delete_items(self, *, user_id: uuid.UUID, item_ids: list[uuid.UUID]) -> None:
+        """Deletes several of the user's items at once, like `delete_item`,
+        in one transaction. Ids that aren't the user's items (someone else's,
+        missing, already deleted) are skipped, and repeats are fine. Items
+        and then tags are locked in id order, so two overlapping calls
+        can't deadlock."""
+        storage_keys: list[str] = []
+        tag_ids: set[uuid.UUID] = set()
+        deleted_count = 0
+        for item_id in sorted(set(item_ids)):
+            deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
+            if deleted is None:
+                continue
+            deleted_count += 1
+            storage_keys.extend(deleted.storage_keys)
+            tag_ids.update(deleted.tag_ids)
+        await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=sorted(tag_ids))
+        await self._session.commit()
+        logger.info(
+            "Items deleted",
+            requested_count=len(item_ids),
+            deleted_count=deleted_count,
+            storage_object_count=len(storage_keys),
+            tag_count=len(tag_ids),
+        )
+        await self._delete_stored_objects(storage_keys)
+
+    async def _delete_stored_objects(self, storage_keys: list[str]) -> None:
+        """Best-effort, after the delete is committed (see `delete_item`)."""
+        for key in storage_keys:
             try:
                 await self._storage.delete(key=key)
             except Exception:
