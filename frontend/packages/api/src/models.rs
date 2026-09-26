@@ -172,14 +172,32 @@ pub(crate) struct AssignTagRequest {
     pub name: String,
 }
 
+/// A calendar year the user saved things in: the first and last time they
+/// did (RFC 3339). Times rather than a year number, since the server
+/// doesn't know the user's time zone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SavedYear {
+    pub first_saved_at: String,
+    pub last_saved_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SavedYearsResponse {
+    pub years: Vec<SavedYear>,
+}
+
 /// Narrows listing and search: only items of `item_type` (the API's
 /// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`, and
-/// with `favorites_only`, only favorites.
+/// with `favorites_only`, only favorites; `created_from` (inclusive) and
+/// `created_before` (exclusive) bound when it was saved, as RFC 3339
+/// timestamps with an offset.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemQuery {
     pub item_type: Option<String>,
     pub tag_ids: Vec<String>,
     pub favorites_only: bool,
+    pub created_from: Option<String>,
+    pub created_before: Option<String>,
 }
 
 /// Metadata of a `"file"` item's stored file.
@@ -242,6 +260,10 @@ pub(crate) struct SearchRequest {
     pub item_type: Option<String>,
     pub tag_ids: Vec<String>,
     pub favorite: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_before: Option<String>,
 }
 
 /// Same item shape as `ListItemsResponse`, best match first; no paging.

@@ -8,6 +8,7 @@ use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::date_filter::{DateFilter, DateSelection};
 use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
 use crate::i18n::api_error_message;
 use crate::icons::{
@@ -131,15 +132,21 @@ pub fn Home() -> Element {
         });
     }
 
-    // Type and tag filters. Applied by the server, to the list and to
-    // search alike; changing either refetches whichever is showing.
+    // Type, favorites, date and tag filters. Applied by the server, to the
+    // list and to search alike; changing any refetches whichever is showing.
     let active_type = use_signal(|| TypeFilter::All);
     let mut selected_tags = use_signal(Vec::<Tag>::new);
     let favorites_only = use_signal(|| false);
-    let current_filters = move || ItemQuery {
-        item_type: active_type().api_value().map(str::to_string),
-        tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
-        favorites_only: favorites_only(),
+    let saved_on = use_signal(|| None::<DateSelection>);
+    let current_filters = move || {
+        let (created_from, created_before) = saved_on().map(DateSelection::api_range).unzip();
+        ItemQuery {
+            item_type: active_type().api_value().map(str::to_string),
+            tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
+            favorites_only: favorites_only(),
+            created_from,
+            created_before,
+        }
     };
 
     // Re-runs whenever the filters change (they're read below, outside the
@@ -709,10 +716,10 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Search ] [ Tags ▾ ]
+                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ]
                     // — typing in the search swaps the list below for
-                    // semantic search results; the type, favorites and tag
-                    // filters apply to either.
+                    // semantic search results; the type, favorites, date
+                    // and tag filters apply to either.
                     div { class: "stash-controls",
                         div { class: "stash-controls-group",
                             TypeTabs { value: active_type, counts }
@@ -720,6 +727,7 @@ pub fn Home() -> Element {
                             FavoritesToggle { value: favorites_only, count: counts.map(|c| c.favorites) }
                         }
                         div { class: "stash-controls-query",
+                            DateFilter { value: saved_on }
                             div { class: "stash-search-wrap",
                                 IconSearch {}
                                 input {

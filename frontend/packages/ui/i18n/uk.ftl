@@ -93,6 +93,32 @@ search-searching = Пошук...
 search-failed = Помилка пошуку: { $error }
 search-no-results = Нічого не знайдено за запитом «{ $query }».
 
+## Date filter
+
+date-label = Дата
+date-clear = Скинути фільтр за датою
+date-pick-year = Оберіть рік
+date-no-items = Ще нічого не збережено.
+date-years-failed = Не вдалося завантажити дати: { $error }
+date-apply = Фільтрувати
+date-previous = Назад
+date-next = Далі
+# Називний відмінок ($month — 1-12), як у «березень 2025».
+date-month = { $month ->
+    [1] січень
+    [2] лютий
+    [3] березень
+    [4] квітень
+    [5] травень
+    [6] червень
+    [7] липень
+    [8] серпень
+    [9] вересень
+    [10] жовтень
+    [11] листопад
+   *[12] грудень
+}
+
 ## Tags
 
 tags-label = Теги

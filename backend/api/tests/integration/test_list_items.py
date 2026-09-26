@@ -160,3 +160,94 @@ async def test_list_items_image_item_has_presigned_download_url(client: AsyncCli
     assert item["text"] is None
     assert item["download_url"] is not None
     assert item["download_url"].startswith(f"https://fake-storage.test/users/{user_id}/images/")
+
+
+async def test_list_items_filters_by_created_at_range(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    before = await _create_text_item(client, token, "2024")
+    first = await _create_text_item(client, token, "start of 2025")
+    last = await _create_text_item(client, token, "end of 2025")
+    after = await _create_text_item(client, token, "2026")
+    await _set_created_at(session, before, datetime(2024, 12, 31, 23, 59, tzinfo=timezone.utc))
+    await _set_created_at(session, first, datetime(2025, 1, 1, tzinfo=timezone.utc))
+    await _set_created_at(session, last, datetime(2025, 12, 31, 23, 59, tzinfo=timezone.utc))
+    await _set_created_at(session, after, datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    response = await client.get(
+        "/items",
+        params={"created_from": "2025-01-01T00:00:00Z", "created_before": "2026-01-01T00:00:00Z"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [last, first]
+
+
+async def test_list_items_date_range_combines_with_favorites(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    auth = {"Authorization": f"Bearer {token}"}
+    favorite_2025 = await _create_text_item(client, token, "favorite 2025")
+    plain_2025 = await _create_text_item(client, token, "plain 2025")
+    favorite_2024 = await _create_text_item(client, token, "favorite 2024")
+    await _set_created_at(session, favorite_2025, datetime(2025, 6, 1, tzinfo=timezone.utc))
+    await _set_created_at(session, plain_2025, datetime(2025, 6, 2, tzinfo=timezone.utc))
+    await _set_created_at(session, favorite_2024, datetime(2024, 6, 1, tzinfo=timezone.utc))
+    for item_id in (favorite_2025, favorite_2024):
+        await client.put(f"/items/{item_id}/favorite", headers=auth)
+
+    response = await client.get(
+        "/items",
+        params={"favorite": "true", "created_from": "2025-01-01T00:00:00Z", "created_before": "2026-01-01T00:00:00Z"},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [favorite_2025]
+
+
+async def test_list_items_rejects_dates_without_time_zone(client: AsyncClient):
+    _, token = await register_and_login(client)
+
+    response = await client.get(
+        "/items", params={"created_from": "2025-01-01T00:00:00"}, headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_saved_years_gives_first_and_last_save_of_each_year(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    saved = {
+        "early 2023": datetime(2023, 2, 1, tzinfo=timezone.utc),
+        "late 2023": datetime(2023, 11, 5, tzinfo=timezone.utc),
+        "mid 2023": datetime(2023, 6, 1, tzinfo=timezone.utc),
+        "2025": datetime(2025, 3, 3, 12, 30, tzinfo=timezone.utc),
+    }
+    for text, created_at in saved.items():
+        await _set_created_at(session, await _create_text_item(client, token, text), created_at)
+
+    response = await client.get("/items/years", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    years = [
+        (datetime.fromisoformat(year["first_saved_at"]), datetime.fromisoformat(year["last_saved_at"]))
+        for year in response.json()["years"]
+    ]
+    # SQLite hands timestamps back without their offset.
+    naive = lambda time: time.replace(tzinfo=None)  # noqa: E731
+    assert [(naive(first), naive(last)) for first, last in years] == [
+        (datetime(2023, 2, 1), datetime(2023, 11, 5)),
+        (datetime(2025, 3, 3, 12, 30), datetime(2025, 3, 3, 12, 30)),
+    ]
+
+
+async def test_saved_years_only_covers_the_users_own_items(client: AsyncClient):
+    _, alice = await register_and_login(client)
+    _, bob = await register_and_login(client, email="bob@example.com")
+    await _create_text_item(client, alice, "alice's note")
+
+    response = await client.get("/items/years", headers={"Authorization": f"Bearer {bob}"})
+
+    assert response.status_code == 200
+    assert response.json() == {"years": []}
+    assert (await client.get("/items/years")).status_code == 401

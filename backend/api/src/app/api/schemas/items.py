@@ -42,6 +42,16 @@ class ItemCountsResponse(BaseModel):
     favorites: int
 
 
+class SavedYear(BaseModel):
+    first_saved_at: datetime
+    last_saved_at: datetime
+
+
+class SavedYearsResponse(BaseModel):
+    # One per calendar year with items, oldest first.
+    years: list[SavedYear]
+
+
 class CreateTextItemRequest(BaseModel):
     text: str = Field(min_length=1)
     # Tag names to put on the new item (existing tags reused, missing ones

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use api::{
     ApiClient, ApiError, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemUpdate,
-    ListItemsResponse, ListedItem, NewUpload, SearchResponse, Tag, TextItemType, TokenPair,
-    TokenStore, UploadType,
+    ListItemsResponse, ListedItem, NewUpload, SavedYear, SearchResponse, Tag, TextItemType,
+    TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -194,6 +194,15 @@ impl AuthSession {
         self.call_authenticated(move |access_token| {
             let client = client.clone();
             async move { client.count_items(&access_token).await }
+        })
+        .await
+    }
+
+    pub async fn saved_years(&self) -> Result<Vec<SavedYear>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            async move { client.saved_years(&access_token).await }
         })
         .await
     }

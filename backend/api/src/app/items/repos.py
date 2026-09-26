@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, func, or_, select, text, update
+from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, extract, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -37,17 +37,25 @@ _LISTED_ITEM_LOADS = (
 class ItemFilters:
     """Narrows listing and search. `tag_ids`: the item must carry *all* of
     them (each selected tag narrows the results further). `favorites_only`:
-    just the user's favorites."""
+    just the user's favorites. `created_from`/`created_before`: saved in
+    that half-open range (clients send the bounds of a local year, month
+    or day, so "2025" means 2025 in the user's time zone)."""
 
     item_type: ItemType | None = None
     tag_ids: tuple[uuid.UUID, ...] = ()
     favorites_only: bool = False
+    created_from: datetime | None = None
+    created_before: datetime | None = None
 
     def apply(self, stmt):
         if self.item_type is not None:
             stmt = stmt.where(Item.type == self.item_type)
         if self.favorites_only:
             stmt = stmt.where(Item.is_favorite.is_(True))
+        if self.created_from is not None:
+            stmt = stmt.where(Item.created_at >= self.created_from)
+        if self.created_before is not None:
+            stmt = stmt.where(Item.created_at < self.created_before)
         for tag_id in self.tag_ids:
             stmt = stmt.where(
                 exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
@@ -309,6 +317,19 @@ class ItemRepository:
             by_type[item_type] = count
             favorites += favorite_count
         return by_type, favorites
+
+    async def saved_years(self, *, user_id: uuid.UUID) -> list[tuple[datetime, datetime]]:
+        """For each calendar year the user saved something in (the
+        database session's calendar), the first and last `created_at` in
+        it, oldest year first."""
+        year = extract("year", Item.created_at)
+        result = await self._session.execute(
+            select(func.min(Item.created_at), func.max(Item.created_at))
+            .where(Item.user_id == user_id)
+            .group_by(year)
+            .order_by(year)
+        )
+        return [(first, last) for first, last in result]
 
     async def list_items(
         self,

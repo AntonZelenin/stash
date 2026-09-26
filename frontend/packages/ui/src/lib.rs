@@ -17,6 +17,7 @@ pub use auth::Auth;
 mod auth_session;
 pub use auth_session::AuthSession;
 
+mod date_filter;
 mod filters;
 mod items;
 mod text_kind;

@@ -6,7 +6,8 @@ use crate::models::{
     AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, CurrentUser, ItemCounts,
     ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
     LoginRequest, NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
-    SearchRequest, SearchResponse, Tag, TextItemType, TokenPair, UploadStarted,
+    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
+    UploadStarted,
 };
 
 #[derive(Clone)]
@@ -380,6 +381,8 @@ impl ApiClient {
                 item_type: filters.item_type.clone(),
                 tag_ids: filters.tag_ids.clone(),
                 favorite: filters.favorites_only,
+                created_from: filters.created_from.clone(),
+                created_before: filters.created_before.clone(),
             })
             .send()
             .await
@@ -504,6 +507,25 @@ impl ApiClient {
         }
     }
 
+    /// One entry per calendar year the user saved things in, oldest first.
+    pub async fn saved_years(&self, access_token: &str) -> Result<Vec<SavedYear>, ApiError> {
+        let response = self
+            .authenticated(Method::GET, "/items/years", access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response
+                .json::<SavedYearsResponse>()
+                .await
+                .map(|body| body.years)
+                .map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
+    }
+
     pub async fn list_items(
         &self,
         access_token: &str,
@@ -523,6 +545,12 @@ impl ApiClient {
         }
         if filters.favorites_only {
             params.push(("favorite", "true".to_string()));
+        }
+        if let Some(created_from) = &filters.created_from {
+            params.push(("created_from", created_from.clone()));
+        }
+        if let Some(created_before) = &filters.created_before {
+            params.push(("created_before", created_before.clone()));
         }
 
         let response = self

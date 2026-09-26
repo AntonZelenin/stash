@@ -94,6 +94,32 @@ search-searching = Searching...
 search-failed = Search failed: { $error }
 search-no-results = Nothing matches “{ $query }”.
 
+## Date filter
+
+date-label = Date
+date-clear = Clear date filter
+date-pick-year = Pick a year
+date-no-items = Nothing saved yet.
+date-years-failed = Could not load dates: { $error }
+date-apply = Filter
+date-previous = Previous
+date-next = Next
+# Standalone month name ($month is 1-12), as in "March 2025".
+date-month = { $month ->
+    [1] January
+    [2] February
+    [3] March
+    [4] April
+    [5] May
+    [6] June
+    [7] July
+    [8] August
+    [9] September
+    [10] October
+    [11] November
+   *[12] December
+}
+
 ## Tags
 
 tags-label = Tags

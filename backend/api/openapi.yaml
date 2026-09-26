@@ -802,6 +802,50 @@ paths:
         "401":
           description: Unauthorized
 
+  /items/years:
+    get:
+      summary: When the current user saved items, by year
+      description: >-
+        For each calendar year the user saved something in, the first and
+        last time they did, oldest year first. Used by the date filter to
+        offer only years with items. Times rather than year numbers because
+        the server doesn't know the user's time zone: a client converts
+        both times of each entry to its own time zone, and every year from
+        the first's to the last's has items.
+      operationId: savedYears
+      tags: [items]
+
+      security:
+        - bearerAuth: []
+
+      responses:
+        "200":
+          description: One entry per year with items
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - years
+                properties:
+                  years:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - first_saved_at
+                        - last_saved_at
+                      properties:
+                        first_saved_at:
+                          type: string
+                          format: date-time
+                        last_saved_at:
+                          type: string
+                          format: date-time
+
+        "401":
+          description: Unauthorized
+
   /items:
     get:
       summary: List saved items
@@ -852,6 +896,23 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: created_from
+          in: query
+          required: false
+          description: >-
+            Only items saved at or after this time. With `created_before`,
+            clients send the bounds of a year, month or day in the user's
+            time zone. Must include a time zone offset.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          description: Only items saved before this time. Must include a time zone offset.
+          schema:
+            type: string
+            format: date-time
 
       responses:
         "200":
@@ -906,6 +967,14 @@ paths:
                   description: If true, only favorite items (same as `GET /items`).
                   type: boolean
                   default: false
+                created_from:
+                  description: Only items saved at or after this time (same as `GET /items`).
+                  type: string
+                  format: date-time
+                created_before:
+                  description: Only items saved before this time (same as `GET /items`).
+                  type: string
+                  format: date-time
 
       responses:
         "200":

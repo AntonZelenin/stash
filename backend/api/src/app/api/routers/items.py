@@ -1,6 +1,8 @@
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.outbox import OutboxPublisher
 
@@ -18,6 +20,8 @@ from app.api.schemas.items import (
     ListedTag,
     ListItemsResponse,
     PresignedUpload,
+    SavedYear,
+    SavedYearsResponse,
     StartUploadRequest,
     TextItemType,
     UpdateItemRequest,
@@ -195,6 +199,28 @@ async def count_items(
     )
 
 
+# Before `/items/{item_id}`, which would otherwise match "years".
+@router.get(
+    "/items/years",
+    status_code=status.HTTP_200_OK,
+    response_model=SavedYearsResponse,
+    responses={401: {"description": "Unauthorized"}},
+)
+async def saved_years(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> SavedYearsResponse:
+    """When the user saved things, for the date filter's year picker. The
+    first and last save of each year rather than year numbers: the server
+    doesn't know the user's time zone, and from these the client can tell
+    exactly which of its own years have items."""
+    spans = await ItemService(session, storage).saved_years(user_id=current_user.id)
+    return SavedYearsResponse(
+        years=[SavedYear(first_saved_at=first, last_saved_at=last) for first, last in spans]
+    )
+
+
 # Before `/items/{item_id}`, which would otherwise match "random".
 @router.get(
     "/items/random",
@@ -245,13 +271,16 @@ async def list_items(
     type: ItemType | None = None,
     tag_id: list[UUID] = Query(default=[], max_length=20),
     favorite: bool = False,
+    created_from: AwareDatetime | None = None,
+    created_before: AwareDatetime | None = None,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ListItemsResponse:
+    filters = item_filters(type, tag_id, favorite, created_from, created_before)
     try:
         listed_items, next_cursor = await ItemService(session, storage).list_items(
-            user_id=current_user.id, limit=limit, cursor=cursor, filters=item_filters(type, tag_id, favorite)
+            user_id=current_user.id, limit=limit, cursor=cursor, filters=filters
         )
     except InvalidCursorError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
@@ -361,12 +390,20 @@ async def delete_items(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def item_filters(item_type: ItemType | None, tag_ids: list[UUID], favorites_only: bool) -> ItemFilters:
+def item_filters(
+    item_type: ItemType | None,
+    tag_ids: list[UUID],
+    favorites_only: bool,
+    created_from: datetime | None,
+    created_before: datetime | None,
+) -> ItemFilters:
     """API filter parameters -> repository filters (shared with search)."""
     return ItemFilters(
         item_type=DomainItemType(item_type.value) if item_type is not None else None,
         tag_ids=tuple(dict.fromkeys(tag_ids)),
         favorites_only=favorites_only,
+        created_from=created_from,
+        created_before=created_before,
     )
 
 

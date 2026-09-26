@@ -278,6 +278,11 @@ class ItemService:
         by_type, favorites = await self._repo.count_by_type(user_id=user_id)
         return ItemCounts(by_type={item_type: by_type.get(item_type, 0) for item_type in ItemType}, favorites=favorites)
 
+    async def saved_years(self, *, user_id: uuid.UUID) -> list[tuple[datetime, datetime]]:
+        """(first, last) save time per calendar year with items, oldest
+        first. See `GET /items/years` for why not just the years."""
+        return await self._repo.saved_years(user_id=user_id)
+
     async def list_items(
         self, *, user_id: uuid.UUID, limit: int, cursor: str | None, filters: ItemFilters = ItemFilters()
     ) -> tuple[list[ListedItem], str | None]:

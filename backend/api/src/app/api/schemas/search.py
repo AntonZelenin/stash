@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from app.api.schemas.items import ItemType, ListedItem
 
@@ -14,6 +14,9 @@ class SearchRequest(BaseModel):
     tag_ids: list[UUID] = Field(default_factory=list, max_length=20)
     # True: only the user's favorites.
     favorite: bool = False
+    # Only items saved at or after `created_from` and before `created_before`.
+    created_from: AwareDatetime | None = None
+    created_before: AwareDatetime | None = None
 
 
 class SearchResponse(BaseModel):

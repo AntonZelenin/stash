@@ -720,8 +720,18 @@ unique per user case-insensitively; `item_tags`: the many-to-many link).
 Tags are private to their owner. Assigning by name reuses the user's
 existing tag of that name or creates it. Listing (`GET /items`) and
 semantic search (`POST /search`) share the same server-side filters: an
-item type, any number of tags (an item must carry all of them), and
-favorites only (`items.is_favorite`, toggled per item).
+item type, any number of tags (an item must carry all of them),
+favorites only (`items.is_favorite`, toggled per item), and a saved-date
+range (`created_from` inclusive, `created_before` exclusive, both with a
+time zone offset). The server has no notion of the user's time zone:
+clients pick a year, month or day on their own calendar and send its
+bounds, so "2025" means 2025 where the user is.
+
+`GET /items/years` tells the date picker which years have items, for the
+same reason without year numbers: per calendar year it returns the first
+and last `created_at` (one `GROUP BY` over the user's items). A client
+converts both to its own time zone; every year between the two has items,
+since a calendar year in one zone overlaps at most two in another.
 
 `GET /items/counts` returns how many items the user has of each type
 (every type present, zero if none) and how many are favorites, for the

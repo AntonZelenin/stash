@@ -336,3 +336,239 @@
         width: min(260px, calc(100vw - 48px));
     }
 }
+
+/* ---- Date ---- */
+
+/* Sized to its label ("Date", "2025" … "28 September 2025"). First in
+   the search row, so the panel drops from its left edge and stays on
+   screen on narrow layouts too. */
+.date-filter {
+    max-width: 220px;
+}
+
+.filter-button > .icon-calendar {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: #64748b;
+}
+
+.date-filter-clear {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: #94a3b8;
+    cursor: pointer;
+}
+
+.date-filter-clear:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+.date-filter-clear .icon {
+    width: 12px;
+    height: 12px;
+}
+
+.date-filter-panel {
+    left: 0;
+    width: 272px;
+    padding: 10px;
+}
+
+/* ‹  2025  › */
+.date-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.date-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: #475569;
+    cursor: pointer;
+}
+
+.date-nav:hover:not(:disabled) {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+.date-nav:disabled {
+    color: #cbd5e1;
+    cursor: default;
+}
+
+.date-nav .icon {
+    width: 16px;
+    height: 16px;
+}
+
+.date-title {
+    padding: 4px 10px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: #0f172a;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+/* Clicking the title goes back up: days → months → years. */
+.date-title-button {
+    cursor: pointer;
+}
+
+.date-title-button:hover {
+    background: #f5f3ff;
+    color: #7c3aed;
+}
+
+/* Years and months: 3 across. Days: a week per row. */
+.date-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+}
+
+.date-grid-days {
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.date-weekday {
+    padding: 4px 0;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.date-cell {
+    height: 36px;
+    padding: 0 4px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: none;
+    color: #334155;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.date-grid-days .date-cell {
+    height: 32px;
+    font-size: 12px;
+}
+
+.date-cell:hover:not(:disabled) {
+    background: #f5f3ff;
+    color: #7c3aed;
+}
+
+/* This year, this month, today. */
+.date-cell-today {
+    border-color: #ddd6fe;
+    font-weight: 700;
+}
+
+/* Filled dark, like the selected type tab. */
+.date-cell-selected,
+.date-cell-selected:hover:not(:disabled) {
+    background: #0f172a;
+    border-color: #0f172a;
+    color: #fff;
+    font-weight: 700;
+}
+
+.date-cell:disabled {
+    color: #cbd5e1;
+    cursor: default;
+}
+
+/* What Filter will apply, and the button. */
+.date-filter-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #f1f5f9;
+}
+
+.date-filter-summary {
+    min-width: 0;
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.date-filter-apply {
+    flex-shrink: 0;
+    height: 30px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 10px;
+    background: #0f172a;
+    color: #fff;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+
+.date-filter-apply:hover:not(:disabled) {
+    opacity: 0.88;
+}
+
+.date-filter-apply:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+/* Loading, failed, or no years yet. */
+.date-filter-message {
+    margin: 0;
+    padding: 10px 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+@media (max-width: 639px) {
+    .date-filter {
+        max-width: 150px;
+    }
+
+    .date-filter-panel {
+        width: min(272px, calc(100vw - 48px));
+    }
+}
