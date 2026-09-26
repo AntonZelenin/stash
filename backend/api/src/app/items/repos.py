@@ -114,6 +114,7 @@ class ItemRepository:
         storage_key: str,
         content_type: str,
         size_bytes: int,
+        filename: str | None = None,
         text: str | None = None,
         tags: list[Tag] = (),
     ) -> Item:
@@ -121,7 +122,9 @@ class ItemRepository:
             id=item_id,
             user_id=user_id,
             type=ItemType.image,
-            image=ImageMetadata(storage_key=storage_key, content_type=content_type, size_bytes=size_bytes),
+            image=ImageMetadata(
+                storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
+            ),
             tags=list(tags),
         )
         if text is not None:

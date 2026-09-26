@@ -38,6 +38,7 @@ async def test_create_image_item_persists_and_associates_with_user(
     assert image is not None
     assert image.content_type == "image/png"
     assert image.size_bytes == len(_PNG_BYTES)
+    assert image.filename == "photo.png"
     # Under the owner's prefix, named by item id only (never the upload's
     # own filename).
     assert image.storage_key == f"users/{user_id}/images/{item.id}.png"
@@ -244,3 +245,28 @@ async def test_listed_image_has_thumbnail_url_once_thumbnail_exists(
     assert listed[0]["thumbnail_url"] == (
         f"https://fake-storage.test/users/{user_id}/thumbnails/{item_id}.webp?expires_in=3600"
     )
+
+
+async def test_listed_image_downloads_under_its_original_filename(client: AsyncClient, storage: FakeObjectStorage):
+    user_id, token = await register_and_login(client)
+    created = await upload_image(client, storage, token, _PNG_BYTES, filename="Photos/Cat on the sofa.png")
+    item_id = created.json()["id"]
+
+    listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
+    # Path dropped; inline, so it still displays in the browser.
+    assert listed[0]["download_url"] == (
+        f"https://fake-storage.test/users/{user_id}/images/{item_id}.png"
+        "?expires_in=3600&filename=Cat on the sofa.png&disposition=inline"
+    )
+
+
+async def test_image_uploaded_without_a_filename_downloads_unnamed(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    user_id, token = await register_and_login(client)
+    created = await upload_image(client, storage, token, _PNG_BYTES, filename="  ")
+    item_id = created.json()["id"]
+
+    assert (await session.get(ImageMetadata, UUID(item_id))).filename is None
+    listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
+    assert listed[0]["download_url"] == f"https://fake-storage.test/users/{user_id}/images/{item_id}.png?expires_in=3600"

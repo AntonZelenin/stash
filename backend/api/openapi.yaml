@@ -1066,9 +1066,9 @@ components:
           minimum: 1
         filename:
           description: >-
-            Files: the name shown and used for downloads (any path is
-            dropped). Its extension picks the expected format. Never part of
-            the storage key. Ignored for images.
+            The name downloads are saved under (any path is dropped); for
+            files, also the name shown. Files: its extension picks the
+            expected format. Never part of the storage key.
           type: string
           maxLength: 1000
         content_type:
@@ -1233,9 +1233,10 @@ components:
         download_url:
           description: >-
             Temporary, pre-signed download URL. Set only for `type == image`
-            or `file`, and only valid for a limited time. For files:
-            PDFs, plain text and JSON open in the browser, everything else
-            is downloaded, either way under the original filename.
+            or `file`, and only valid for a limited time. Served under the
+            original filename (for images, if one was uploaded). Images open
+            in the browser; for files, PDFs, plain text and JSON do and
+            everything else is downloaded.
           type:
             - string
             - "null"

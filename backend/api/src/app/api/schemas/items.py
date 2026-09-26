@@ -115,8 +115,8 @@ class StartUploadRequest(BaseModel):
     type: UploadType
     # Exact size of the content; the upload URL is signed for it.
     size_bytes: int = Field(ge=0)
-    # Files: kept for display and downloads; its extension picks the
-    # expected format. Never part of the storage key. Ignored for images.
+    # Kept for display and downloads. Files: its extension picks the
+    # expected format. Never part of the storage key.
     filename: str | None = Field(default=None, max_length=1_000)
     # Images: png, jpeg, gif or webp; must match the content. Ignored for
     # files, whose type the backend decides.
@@ -165,9 +165,9 @@ class ListedItem(BaseModel):
     created_at: datetime
     text: str | None = None
     # Temporary, pre-signed — set only for `type == image`/`file`, and
-    # only while the underlying object storage URL remains valid. For
-    # files it opens inline where the browser can, under the original
-    # filename.
+    # only while the underlying object storage URL remains valid. Served
+    # under the original filename; images open inline, files only where
+    # the browser can.
     download_url: str | None = None
     # Set only for `type == file`.
     file: ListedFile | None = None

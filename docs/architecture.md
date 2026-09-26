@@ -183,8 +183,9 @@ worker):
 - `users/{user_id}/thumbnails/{item_id}.webp`: image thumbnail.
 
 Keys are made from ids and a validated extension only, never from the
-uploaded filename. That name is kept in `item_files.filename`, and downloads
-are served under it. An item's key is stored on its row
+uploaded filename. That name is kept in `item_files.filename` /
+`item_images.filename`, and downloads are served under it (images uploaded
+before their name was kept have none, and are served unnamed). An item's key is stored on its row
 (`item_images.storage_key` / `thumbnail_key`, `item_files.storage_key`) and
 always read back from there, never rebuilt. So items stored under the older
 unscoped layout (`images/…`, `files/…`, `thumbnails/…`) keep working.

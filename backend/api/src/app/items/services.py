@@ -584,7 +584,9 @@ class ItemService:
 
     async def _download_url_for(self, row: Item) -> str | None:
         if row.image is not None:
-            return await self._presign(row.image.storage_key)
+            # Under its original filename, if it has one; always inline, so
+            # it still displays in the browser.
+            return await self._presign(row.image.storage_key, filename=row.image.filename)
         if row.file is not None:
             # With the original filename, so it opens/saves under its name;
             # displayed inline only if its format is safe to render. Served
@@ -659,7 +661,8 @@ class ItemService:
         `content_type` is an image's declared type (it picks the key's
         extension, and must match the content on finalize); ignored for
         files, whose type comes from `filename`'s extension and, on
-        finalize, their content. `text` is an optional caption (blank is
+        finalize, their content. `filename` names downloads (for images
+        that's all it does). `text` is an optional caption (blank is
         none), `tags` are tag names to put on the item."""
         caption = _clean_caption(text)
         tag_names = normalize_tag_names(list(tags))
@@ -671,7 +674,8 @@ class ItemService:
             if content_type not in _IMAGE_EXTENSIONS_BY_CONTENT_TYPE:
                 raise UnsupportedImageTypeError()
             storage_key = storage_keys.image_key(user_id, upload_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
-            filename = None
+            # Kept only to name downloads; without one, they're unnamed.
+            filename = files.clean_filename(filename) if filename and filename.strip() else None
         elif item_type == ItemType.file:
             _check_size(size_bytes, _MAX_FILE_SIZE_BYTES, empty=EmptyFileError, too_large=FileTooLargeError)
             filename = files.clean_filename(filename)
@@ -761,6 +765,7 @@ class ItemService:
             storage_key=upload.storage_key,
             content_type=upload.content_type,
             size_bytes=stored.size_bytes,
+            filename=upload.filename,
             text=upload.caption,
             tags=resolved_tags,
         )

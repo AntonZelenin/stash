@@ -97,6 +97,9 @@ class ImageMetadata(Base):
     storage_key: Mapped[str] = mapped_column(String)
     content_type: Mapped[str] = mapped_column(String)
     size_bytes: Mapped[int] = mapped_column(Integer)
+    # As uploaded (path components stripped), used as the download's
+    # filename. None for images uploaded before it was kept.
+    filename: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Small WebP version for display, written by the thumbnail worker; None
     # until it has run (clients fall back to the original).
     thumbnail_key: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -143,7 +146,8 @@ class PendingUpload(Base):
     # finalize.
     content_type: Mapped[str] = mapped_column(String)
     size_bytes: Mapped[int] = mapped_column(Integer)
-    # Files only: the cleaned filename, for display.
+    # The cleaned filename, for display and downloads (images: None if the
+    # client sent none).
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
     # The new item's caption and tag names (already normalized).
     caption: Mapped[str | None] = mapped_column(String, nullable=True)
