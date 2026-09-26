@@ -108,27 +108,31 @@
 
 .type-tab:hover {
     background: var(--tab-tint);
-    color: var(--tab-accent);
+    color: var(--tab-text, var(--tab-accent));
 }
 
+/* Accents match each type's card colour in items.css. Image cards are
+   neutral, so their tab gets a colour no other type uses. Yellow is too
+   light for hover text, so notes darken it via --tab-text. */
 .type-tab-notes {
+    --tab-accent: #eab308;
+    --tab-text: #a16207;
+    --tab-tint: #fefce8;
+}
+
+.type-tab-images {
+    --tab-accent: #059669;
+    --tab-tint: #ecfdf5;
+}
+
+.type-tab-links {
     --tab-accent: #7c3aed;
     --tab-tint: #f5f3ff;
 }
 
-.type-tab-images {
-    --tab-accent: #f97316;
-    --tab-tint: #fff7ed;
-}
-
-.type-tab-links {
+.type-tab-files {
     --tab-accent: #0284c7;
     --tab-tint: #f0f9ff;
-}
-
-.type-tab-files {
-    --tab-accent: #059669;
-    --tab-tint: #ecfdf5;
 }
 
 .type-tab-dot {
