@@ -8,10 +8,12 @@ from stash_worker_core.openai_client import PERMANENT_OPENAI_ERRORS, build_opena
 logger = get_logger(__name__)
 
 _PROMPT = (
-    "You are describing an image saved to a personal content library, so that it can be found again "
-    "later by searching. Describe what is in the image: the main subjects, setting, notable objects, "
-    "colors, activity and mood, and transcribe any clearly legible text. Write 2-5 plain sentences "
-    "in English (transcribed text stays as written), no markdown, no preamble."
+    "You are describing an image saved to a personal content library so that it can be found again later "
+    "by searching. Describe what is clearly visible in the image: the main subjects, setting, notable objects, "
+    "colours, activity, and mood. Transcribe any clearly legible text. "
+    "Do not guess uncertain details. If an object, person, clothing item, or other detail is ambiguous, "
+    "describe it more generally rather than making a specific claim. "
+    "Write 2–5 plain sentences in English. Keep transcribed text as written. No markdown and no preamble."
 )
 
 class ImageDescriber(ABC):
