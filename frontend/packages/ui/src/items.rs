@@ -237,7 +237,11 @@ fn ItemCard(
         // too.
         ("file", _, caption) => match (&item.file, &item.download_url) {
             (Some(file), Some(url)) => (
-                "item-card-file",
+                if file.is_media() {
+                    "item-card-file item-card-media"
+                } else {
+                    "item-card-file"
+                },
                 rsx! {
                     FileBody {
                         url: url.clone(),

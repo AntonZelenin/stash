@@ -782,9 +782,10 @@ paths:
     get:
       summary: Count the current user's items
       description: >-
-        How many items the user has of each type (every type is present,
-        zero if there are none) and how many are favorites. Covers the
-        same items as listing without filters; computed on each request.
+        How many items the user has of each type and of each kind (every
+        type and kind is present, zero if there are none), and how many are
+        favorites. Covers the same items as listing without filters;
+        computed on each request.
       operationId: countItems
       tags: [items]
 
@@ -875,6 +876,21 @@ paths:
           description: Only items of this type.
           schema:
             $ref: "#/components/schemas/ItemType"
+        - name: kind
+          in: query
+          required: false
+          description: >-
+            Only images (`image`), or only files of this kind. Repeatable:
+            with several, an item may be of any of them (e.g. `image`,
+            `video` and `audio` for all media). Combined with `type`, an
+            item must match both.
+          schema:
+            type: array
+            maxItems: 6
+            items:
+              $ref: "#/components/schemas/ItemKind"
+          style: form
+          explode: true
         - name: tag_id
           in: query
           required: false
@@ -977,6 +993,12 @@ paths:
                 type:
                   description: Only items of this type (same as `GET /items`).
                   $ref: "#/components/schemas/ItemType"
+                kinds:
+                  description: Only items of any of these kinds (same as `GET /items`'s `kind`).
+                  type: array
+                  maxItems: 6
+                  items:
+                    $ref: "#/components/schemas/ItemKind"
                 tag_ids:
                   description: Only items carrying all of these tags (same as `GET /items`).
                   type: array
@@ -1146,10 +1168,28 @@ components:
         - image
         - file
 
+    ItemKind:
+      description: >-
+        What an image or file item holds, as the Media (`image`, `video`,
+        `audio`) and Files (`document`, `book`, `other`) filters group
+        them. Images are always `image`. A file's kind follows from its
+        stored content type: recognized video and audio formats; PDFs,
+        office, text and data files are documents; EPUB, FB2, MOBI/AZW and
+        DjVu are books; archives and unrecognized files are `other`.
+      type: string
+      enum:
+        - image
+        - video
+        - audio
+        - document
+        - book
+        - other
+
     ItemCounts:
       type: object
       required:
         - types
+        - kinds
         - favorites
       properties:
         types:
@@ -1170,6 +1210,35 @@ components:
               type: integer
               minimum: 0
             file:
+              type: integer
+              minimum: 0
+        kinds:
+          description: Images and files of each kind (see `ItemKind`).
+          type: object
+          required:
+            - image
+            - video
+            - audio
+            - document
+            - book
+            - other
+          properties:
+            image:
+              type: integer
+              minimum: 0
+            video:
+              type: integer
+              minimum: 0
+            audio:
+              type: integer
+              minimum: 0
+            document:
+              type: integer
+              minimum: 0
+            book:
+              type: integer
+              minimum: 0
+            other:
               type: integer
               minimum: 0
         favorites:
@@ -1194,6 +1263,7 @@ components:
         - filename
         - content_type
         - size_bytes
+        - kind
       properties:
         filename:
           description: The original filename, as uploaded.
@@ -1202,6 +1272,11 @@ components:
           type: string
         size_bytes:
           type: integer
+        kind:
+          description: >-
+            What the file holds, from its content type: `video`, `audio`,
+            `document`, `book` or `other` (never `image`).
+          $ref: "#/components/schemas/ItemKind"
 
     ListedItem:
       type: object

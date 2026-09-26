@@ -4,13 +4,16 @@ from io import BytesIO
 import pytest
 
 from app.items.files import (
+    FILE_KIND_CONTENT_TYPES,
     FORMATS,
     GENERIC_CONTENT_TYPE,
     SNIFF_BYTES,
+    ContentKind,
     classify,
     clean_filename,
     expected_format,
     is_inline,
+    kind_of,
 )
 
 _ZIP = b"PK\x03\x04" + b"\x00" * 64
@@ -20,6 +23,9 @@ _FB2 = (
     '<?xml version="1.0" encoding="windows-1251"?>\n<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">'
     "<body><p>Глава первая</p></body></FictionBook>"
 ).encode("cp1251")
+_MP4 = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32
+_EBML = b"\x1a\x45\xdf\xa3" + b"\x00" * 32
+_OGG = b"OggS" + b"\x00" * 32
 
 
 def _real_epub() -> bytes:
@@ -166,3 +172,88 @@ def test_expected_format_comes_from_the_extension_alone(filename, extension, con
     expected = expected_format(filename)
 
     assert (expected.extension, expected.content_type) == (extension, content_type)
+
+
+@pytest.mark.parametrize(
+    ("filename", "data", "content_type"),
+    [
+        ("clip.mp4", _MP4, "video/mp4"),
+        ("clip.MOV", b"\x00\x00\x00\x08wide" + b"\x00" * 16, "video/quicktime"),
+        ("clip.webm", _EBML, "video/webm"),
+        ("film.mkv", _EBML, "video/x-matroska"),
+        ("old.avi", b"RIFF\x00\x00\x00\x00AVI LIST", "video/x-msvideo"),
+        ("tape.mpg", b"\x00\x00\x01\xba" + b"\x00" * 8, "video/mpeg"),
+        ("song.mp3", b"ID3\x04\x00" + b"\x00" * 16, "audio/mpeg"),
+        ("untagged.mp3", b"\xff\xfb\x90\x64" + b"\x00" * 16, "audio/mpeg"),
+        ("voice.m4a", _MP4, "audio/mp4"),
+        ("take.wav", b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav"),
+        ("album.flac", b"fLaC\x00\x00\x00\x22", "audio/flac"),
+        ("memo.ogg", _OGG, "audio/ogg"),
+        ("memo.opus", _OGG, "audio/ogg"),
+    ],
+)
+def test_recognized_media_formats(filename, data, content_type):
+    classified = classify(filename, data)
+
+    assert classified.recognized
+    assert classified.content_type == content_type
+    # Nothing to extract text from.
+    assert not classified.analyzable
+
+
+@pytest.mark.parametrize(
+    ("filename", "data"),
+    [
+        ("renamed.mp4", b"MZ\x90\x00" + b"\x00" * 16),
+        ("renamed.mp3", b"%PDF-1.7"),
+        ("renamed.wav", b"RIFF\x00\x00\x00\x00AVI LIST"),  # an AVI, not a WAV
+        ("renamed.webm", _OGG),
+    ],
+)
+def test_media_that_doesnt_match_its_extension_is_generic(filename, data):
+    assert classify(filename, data).content_type == GENERIC_CONTENT_TYPE
+
+
+@pytest.mark.parametrize(
+    ("filename", "data", "kind"),
+    [
+        ("Report.pdf", b"%PDF-1.7", ContentKind.document),
+        ("notes.docx", _ZIP, ContentKind.document),
+        ("todo.txt", b"buy milk", ContentKind.document),
+        ("old.txt", "привет".encode("cp1251"), ContentKind.document),
+        ("data.json", b'{"a": 1}', ContentKind.document),
+        ("book.epub", _real_epub(), ContentKind.book),
+        ("Война и мир.fb2", _FB2, ContentKind.book),
+        ("book.fb2.zip", _ZIP, ContentKind.book),
+        ("book.mobi", _MOBI, ContentKind.book),
+        ("scan.djvu", b"AT&TFORM\x00\x00", ContentKind.book),
+        ("clip.mp4", _MP4, ContentKind.video),
+        ("voice.m4a", _MP4, ContentKind.audio),
+        ("memo.ogg", _OGG, ContentKind.audio),
+        ("stuff.zip", _ZIP, ContentKind.other),
+        ("program.exe", b"MZ\x90\x00", ContentKind.other),
+        ("fake.pdf", b"<html>not a pdf</html>", ContentKind.other),
+    ],
+)
+def test_a_files_kind_follows_from_its_stored_content_type(filename, data, kind):
+    assert kind_of(classify(filename, data).content_type) == kind
+
+
+def test_every_format_has_exactly_one_kind():
+    """Filtering and counting go by content type alone, so formats that
+    share a type must share a kind too."""
+    seen: dict[str, ContentKind] = {}
+    for file_format in FORMATS.values():
+        assert seen.setdefault(file_format.content_type, file_format.kind) == file_format.kind, file_format
+    kinds = list(FILE_KIND_CONTENT_TYPES.values())
+    for index, content_types in enumerate(kinds):
+        for other in kinds[index + 1 :]:
+            assert not content_types & other
+
+
+def test_files_are_never_images():
+    """Images are their own item type; an image format uploaded as a file
+    is generic, and DjVu (`image/vnd.djvu`) is a book."""
+    assert ContentKind.image not in FILE_KIND_CONTENT_TYPES
+    assert kind_of("image/vnd.djvu") == ContentKind.book
+    assert kind_of(classify("photo.heic", b"\x00\x00\x00\x18ftypheic").content_type) == ContentKind.other

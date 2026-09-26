@@ -42,7 +42,12 @@ async def search_items(
             embedder=embedder,
             normalizer=normalizer,
             filters=item_filters(
-                payload.type, payload.tag_ids, payload.favorite, payload.created_from, payload.created_before
+                payload.type,
+                payload.kinds,
+                payload.tag_ids,
+                payload.favorite,
+                payload.created_from,
+                payload.created_before,
             ),
         )
     except SearchUnavailableError:

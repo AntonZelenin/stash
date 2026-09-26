@@ -379,6 +379,7 @@ impl ApiClient {
                 query: query.to_string(),
                 limit,
                 item_type: filters.item_type.clone(),
+                kinds: filters.kinds.clone(),
                 tag_ids: filters.tag_ids.clone(),
                 favorite: filters.favorites_only,
                 created_from: filters.created_from.clone(),
@@ -543,6 +544,9 @@ impl ApiClient {
         }
         if let Some(item_type) = &filters.item_type {
             params.push(("type", item_type.clone()));
+        }
+        for kind in &filters.kinds {
+            params.push(("kind", kind.clone()));
         }
         for tag_id in &filters.tag_ids {
             params.push(("tag_id", tag_id.clone()));

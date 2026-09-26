@@ -11,6 +11,8 @@ from app.api.schemas.items import (
     CreateTextItemRequest,
     DeleteItemsRequest,
     ItemCountsResponse,
+    ItemKind,
+    ItemKindCounts,
     ItemCreated,
     ItemSort,
     ItemStatus,
@@ -29,6 +31,7 @@ from app.api.schemas.items import (
     UploadStarted,
 )
 from app.db import DbSession
+from app.items.files import ContentKind, kind_of
 from app.items.models import ItemType as DomainItemType
 from app.items.repos import ItemFilters
 from app.items.repos import ItemSort as DomainItemSort
@@ -197,6 +200,7 @@ async def count_items(
     counts = await ItemService(session, storage).count_items(user_id=current_user.id)
     return ItemCountsResponse(
         types=ItemTypeCounts(**{item_type.value: count for item_type, count in counts.by_type.items()}),
+        kinds=ItemKindCounts(**{kind.value: count for kind, count in counts.by_kind.items()}),
         favorites=counts.favorites,
     )
 
@@ -271,6 +275,7 @@ async def list_items(
     cursor: str | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     type: ItemType | None = None,
+    kind: list[ItemKind] = Query(default=[], max_length=6),
     tag_id: list[UUID] = Query(default=[], max_length=20),
     favorite: bool = False,
     created_from: AwareDatetime | None = None,
@@ -280,7 +285,7 @@ async def list_items(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ListItemsResponse:
-    filters = item_filters(type, tag_id, favorite, created_from, created_before)
+    filters = item_filters(type, kind, tag_id, favorite, created_from, created_before)
     try:
         listed_items, next_cursor = await ItemService(session, storage).list_items(
             user_id=current_user.id,
@@ -399,6 +404,7 @@ async def delete_items(
 
 def item_filters(
     item_type: ItemType | None,
+    kinds: list[ItemKind],
     tag_ids: list[UUID],
     favorites_only: bool,
     created_from: datetime | None,
@@ -407,6 +413,7 @@ def item_filters(
     """API filter parameters -> repository filters (shared with search)."""
     return ItemFilters(
         item_type=DomainItemType(item_type.value) if item_type is not None else None,
+        kinds=tuple(dict.fromkeys(ContentKind(kind.value) for kind in kinds)),
         tag_ids=tuple(dict.fromkeys(tag_ids)),
         favorites_only=favorites_only,
         created_from=created_from,
@@ -430,6 +437,7 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
                 filename=listed.item.file.filename,
                 content_type=listed.item.file.content_type,
                 size_bytes=listed.item.file.size_bytes,
+                kind=ItemKind(kind_of(listed.item.file.content_type).value),
             )
             if listed.item.file
             else None

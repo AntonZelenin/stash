@@ -85,6 +85,7 @@ async def test_listed_file_has_metadata_and_download_url(client: AsyncClient, st
         "filename": "Quarterly Report.pdf",
         "content_type": "application/pdf",
         "size_bytes": len(_PDF_BYTES),
+        "kind": "document",
     }
     # Signed with the original filename, so it opens/saves under that name.
     assert listed["download_url"] == (

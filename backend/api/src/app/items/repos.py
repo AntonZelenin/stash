@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 
+from app.items.files import FILE_KIND_CONTENT_TYPES, ContentKind, kind_of
 from app.items.models import (
     Description,
     Embedding,
@@ -65,9 +66,12 @@ class ItemFilters:
     them (each selected tag narrows the results further). `favorites_only`:
     just the user's favorites. `created_from`/`created_before`: saved in
     that half-open range (clients send the bounds of a local year, month
-    or day, so "2025" means 2025 in the user's time zone)."""
+    or day, so "2025" means 2025 in the user's time zone). `kinds`: only
+    images and files of *any* of these kinds (see `ContentKind`), e.g.
+    image, video and audio for all media."""
 
     item_type: ItemType | None = None
+    kinds: tuple[ContentKind, ...] = ()
     tag_ids: tuple[uuid.UUID, ...] = ()
     favorites_only: bool = False
     created_from: datetime | None = None
@@ -76,6 +80,8 @@ class ItemFilters:
     def apply(self, stmt):
         if self.item_type is not None:
             stmt = stmt.where(Item.type == self.item_type)
+        if self.kinds:
+            stmt = stmt.where(_is_of_kinds(self.kinds))
         if self.favorites_only:
             stmt = stmt.where(Item.is_favorite.is_(True))
         if self.created_from is not None:
@@ -87,6 +93,43 @@ class ItemFilters:
                 exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
             )
         return stmt
+
+
+def _is_of_kinds(kinds: tuple[ContentKind, ...]):
+    """Items that are images (if `image` is among `kinds`) or files of one
+    of the other `kinds`."""
+    conditions = []
+    if ContentKind.image in kinds:
+        conditions.append(Item.type == ItemType.image)
+    file_kinds = [kind for kind in kinds if kind is not ContentKind.image]
+    if file_kinds:
+        # A subquery rather than a join, with its own `item_files`: some
+        # callers already join that table.
+        conditions.append(
+            and_(
+                Item.type == ItemType.file,
+                exists()
+                .where(FileMetadata.item_id == Item.id, or_(*(_is_file_kind(kind) for kind in file_kinds)))
+                .correlate_except(FileMetadata),
+            )
+        )
+    return or_(*conditions)
+
+
+def _is_file_kind(kind: ContentKind):
+    """`item_files` rows whose stored content type is of `kind`."""
+    if kind is ContentKind.other:
+        known = set().union(*FILE_KIND_CONTENT_TYPES.values())
+        return FileMetadata.content_type.not_in(sorted(known))
+    return FileMetadata.content_type.in_(sorted(FILE_KIND_CONTENT_TYPES[kind]))
+
+
+@dataclass(frozen=True)
+class ItemCountRows:
+    # Every type with items, and every kind with images or files.
+    by_type: dict[ItemType, int]
+    by_kind: dict[ContentKind, int]
+    favorites: int
 
 
 @dataclass(frozen=True)
@@ -402,20 +445,33 @@ class ItemRepository:
         )
         return result.scalar_one_or_none()
 
-    async def count_by_type(self, *, user_id: uuid.UUID) -> tuple[dict[ItemType, int], int]:
-        """How many items the user has of each type (types with none are
-        left out), and how many are favorites."""
+    async def count(self, *, user_id: uuid.UUID) -> ItemCountRows:
+        """How many items the user has of each type and each kind (those
+        with none are left out), and how many are favorites. Grouped by the
+        file's stored content type, which `kind_of` maps to its kind."""
         result = await self._session.execute(
-            select(Item.type, func.count(), func.count().filter(Item.is_favorite.is_(True)))
+            select(
+                Item.type,
+                FileMetadata.content_type,
+                func.count(),
+                func.count().filter(Item.is_favorite.is_(True)),
+            )
+            .outerjoin(FileMetadata, FileMetadata.item_id == Item.id)
             .where(Item.user_id == user_id)
-            .group_by(Item.type)
+            .group_by(Item.type, FileMetadata.content_type)
         )
         by_type: dict[ItemType, int] = {}
+        by_kind: dict[ContentKind, int] = {}
         favorites = 0
-        for item_type, count, favorite_count in result:
-            by_type[item_type] = count
+        for item_type, content_type, count, favorite_count in result:
+            by_type[item_type] = by_type.get(item_type, 0) + count
             favorites += favorite_count
-        return by_type, favorites
+            if item_type == ItemType.image:
+                by_kind[ContentKind.image] = by_kind.get(ContentKind.image, 0) + count
+            elif item_type == ItemType.file:
+                kind = kind_of(content_type)
+                by_kind[kind] = by_kind.get(kind, 0) + count
+        return ItemCountRows(by_type=by_type, by_kind=by_kind, favorites=favorites)
 
     async def saved_years(self, *, user_id: uuid.UUID) -> list[tuple[datetime, datetime]]:
         """For each calendar year the user saved something in (the

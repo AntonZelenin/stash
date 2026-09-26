@@ -112,7 +112,7 @@
 }
 
 /* Accents match each type's card colour in items.css. Image cards are
-   neutral, so their tab gets a colour no other type uses. Yellow is too
+   neutral, so Media gets a colour no other type uses. Yellow is too
    light for hover text, so notes darken it via --tab-text. */
 .type-tab-notes {
     --tab-accent: #eab308;
@@ -120,7 +120,7 @@
     --tab-tint: #fefce8;
 }
 
-.type-tab-images {
+.type-tab-media {
     --tab-accent: #059669;
     --tab-tint: #ecfdf5;
 }
@@ -163,6 +163,112 @@
 }
 
 .type-tab-selected .filter-count {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+
+/* ---- Media and Files dropdowns ---- */
+
+.type-tab .filter-chevron {
+    margin-left: -4px;
+    color: inherit;
+    opacity: 0.55;
+    transition: transform 0.15s;
+}
+
+.type-tab-open:not(.type-tab-selected) {
+    background: var(--tab-tint);
+    color: var(--tab-text, var(--tab-accent));
+}
+
+/* Above the click-outside backdrop, so clicking the open tab closes the
+   dropdown through its own toggle. */
+.kind-menu .type-tab-open {
+    position: relative;
+    z-index: 32;
+}
+
+.type-tab-open .filter-chevron {
+    transform: rotate(180deg);
+}
+
+/* The picked kind, after the group's name: "Media · Video". */
+.type-tab-subtype {
+    margin-left: -4px;
+    font-weight: 500;
+    opacity: 0.75;
+}
+
+.type-tab-subtype::before {
+    content: "·";
+    margin-right: 4px;
+}
+
+/* Fixed to the viewport at the tab's bottom-left corner (--anchor-x/y,
+   set when it opens), since the tab row scrolls and would clip it; kept
+   8px inside the screen's edges. */
+.kind-panel {
+    --panel-width: 180px;
+
+    position: fixed;
+    top: calc(var(--anchor-y, 2px) + 6px);
+    left: max(8px, min(var(--anchor-x, 8px), calc(100vw - var(--panel-width) - 8px)));
+    width: var(--panel-width);
+    font-family: var(--font-display);
+}
+
+/* Like a type tab, minus the dot: label and count. Neutral on hover and
+   filled dark when picked; kinds have no colours of their own. */
+.kind-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px 7px 10px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: #475569;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+
+.kind-option + .kind-option {
+    margin-top: 2px;
+}
+
+/* Between "All Media"/"All Files" and the single kinds. */
+.kind-panel-divider {
+    height: 1px;
+    margin: 4px 6px;
+    background: #f1f5f9;
+}
+
+.kind-option:hover,
+.kind-option:focus-visible {
+    background: #f1f5f9;
+    color: #0f172a;
+    outline: none;
+}
+
+.kind-option-label {
+    flex: 1;
+}
+
+.kind-option-selected,
+.kind-option-selected:hover,
+.kind-option-selected:focus-visible {
+    background: #0f172a;
+    color: #fff;
+    font-weight: 700;
+}
+
+.kind-option-selected .filter-count {
     background: rgba(255, 255, 255, 0.2);
     color: #fff;
 }

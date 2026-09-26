@@ -22,6 +22,18 @@ class TextItemType(str, Enum):
     link = "link"
 
 
+class ItemKind(str, Enum):
+    """What an image or file item holds: `image`, `video`, `audio` (media),
+    `document`, `book`, `other` (files)."""
+
+    image = "image"
+    video = "video"
+    audio = "audio"
+    document = "document"
+    book = "book"
+    other = "other"
+
+
 class ItemSort(str, Enum):
     newest = "newest"
     oldest = "oldest"
@@ -42,9 +54,20 @@ class ItemTypeCounts(BaseModel):
     file: int
 
 
+class ItemKindCounts(BaseModel):
+    image: int
+    video: int
+    audio: int
+    document: int
+    book: int
+    other: int
+
+
 class ItemCountsResponse(BaseModel):
     # Items of each type; every type is present, zero if there are none.
     types: ItemTypeCounts
+    # Images and files of each kind, likewise.
+    kinds: ItemKindCounts
     favorites: int
 
 
@@ -156,6 +179,8 @@ class ListedFile(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    # What the file holds, from its content type (see `ItemKind`).
+    kind: ItemKind
 
 
 class ListedItem(BaseModel):

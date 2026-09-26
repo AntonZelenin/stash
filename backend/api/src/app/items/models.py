@@ -56,8 +56,8 @@ class ItemStatus(str, Enum):
 
 class Item(Base):
     __tablename__ = "items"
-    # Serves every per-user lookup, and counting a user's items by type
-    # (`ItemRepository.count_by_type`) from the index.
+    # Serves every per-user lookup, and finding a user's items by type
+    # (`ItemRepository.count`, the type filter).
     __table_args__ = (Index("ix_items_user_id_type", "user_id", "type"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

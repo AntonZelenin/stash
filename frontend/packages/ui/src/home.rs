@@ -143,7 +143,12 @@ pub fn Home() -> Element {
     let current_filters = move || {
         let (created_from, created_before) = saved_on().map(DateSelection::api_range).unzip();
         ItemQuery {
-            item_type: active_type().api_value().map(str::to_string),
+            item_type: active_type().api_type().map(str::to_string),
+            kinds: active_type()
+                .api_kinds()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
             favorites_only: favorites_only(),
             created_from,
@@ -782,7 +787,7 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ] [ ⇅ ]
+                    // [ All | Notes | Media ▾ | Links | Files ▾ | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ] [ ⇅ ]
                     // — typing in the search swaps the list below for
                     // semantic search results; the type, favorites, date
                     // and tag filters apply to either.

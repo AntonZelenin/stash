@@ -79,6 +79,23 @@
     --card-tag-text: #0369a1;
 }
 
+/* Video and audio files: neutral like images, not the Files blue. What
+   they are shows in their name and type badge. */
+.item-card-shell:has(> .item-card-media) {
+    --card-bg: #fff;
+    --card-border: var(--border);
+    --card-border-hover: #d8dbe2;
+    --card-separator: var(--border);
+    --card-accent: var(--text-primary);
+    --card-tag-bg: #f1f5f9;
+    --card-tag-text: #475569;
+}
+
+.item-card-media .item-card-file-icon {
+    background: #f1f5f9;
+    color: #475569;
+}
+
 .item-card {
     display: block;
     background: var(--card-bg);

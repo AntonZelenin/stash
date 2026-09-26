@@ -248,6 +248,17 @@ async def test_filename_search_applies_the_filters(
     assert await _search(client, token, "trip", type="image") == [image]
 
 
+async def test_search_applies_the_kind_filter(client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None):
+    _, token = await register_and_login(client)
+    await _file(client, storage, token, "trip.pdf")
+    video = (await upload_file(client, storage, token, "trip.webm", b"\x1a\x45\xdf\xa3" + b"\x00" * 16)).json()["id"]
+    image = (await upload_image(client, storage, token, _PNG_BYTES, filename="trip.png")).json()["id"]
+
+    assert await _search(client, token, "trip", kinds=["video"]) == [video]
+    assert await _search(client, token, "trip", kinds=["image"]) == [image]
+    assert set(await _search(client, token, "trip", kinds=["image", "video", "audio"])) == {image, video}
+
+
 async def test_filename_search_never_matches_other_users_items(
     client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None
 ):

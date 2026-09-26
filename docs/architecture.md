@@ -9,8 +9,8 @@ The MVP supports:
 - Saving text.
 - Uploading images.
 - Uploading any file (max 50 MB) as a `file` item. Recognized formats (PDF,
-  Office, ODF, iWork, EPUB, FB2, MOBI, DjVu, text/data...) keep their MIME
-  type; other files are stored as generic downloads (see
+  Office, ODF, iWork, EPUB, FB2, MOBI, DjVu, text/data, common video and
+  audio...) keep their MIME type; other files are stored as generic downloads (see
   `backend/api/src/app/items/files.py`). `analyzable` formats get an
   automatic description of what the document is and is about.
 - Automatic image description and tag generation.
@@ -770,7 +770,7 @@ unique per user case-insensitively; `item_tags`: the many-to-many link).
 Tags are private to their owner. Assigning by name reuses the user's
 existing tag of that name or creates it. Listing (`GET /items`) and
 semantic search (`POST /search`) share the same server-side filters: an
-item type, any number of tags (an item must carry all of them),
+item type, item kinds (below; an item may be of any of them), any number of tags (an item must carry all of them),
 favorites only (`items.is_favorite`, toggled per item), and a saved-date
 range (`created_from` inclusive, `created_before` exclusive, both with a
 time zone offset). The server has no notion of the user's time zone:
@@ -791,12 +791,23 @@ and last `created_at` (one `GROUP BY` over the user's items). A client
 converts both to its own time zone; every year between the two has items,
 since a calendar year in one zone overlaps at most two in another.
 
-`GET /items/counts` returns how many items the user has of each type
-(every type present, zero if none) and how many are favorites, for the
-filter controls. It's one `COUNT(*) ... GROUP BY type` over `items`,
-scoped to the user and served by `ix_items_user_id_type`; there are no
-stored counters to keep in sync. Deletes are hard deletes, so there's
-nothing to exclude.
+Kinds group images and files for the clients' Media (`image`, `video`,
+`audio`) and Files (`document`, `book`, `other`) filters. Images are
+always `image`. A file's kind isn't stored: it follows from its stored,
+validated `item_files.content_type`, and `app.items.files` is the one
+place that maps formats (and so content types) to kinds. PDFs are
+documents, since nothing reliable marks one as a book; `other` is
+whatever isn't one of the rest (archives, generic files). The filter
+matches the exact stored types of the kind, in an `EXISTS` on
+`item_files`. Files uploaded before a format was recognized (e.g. video
+before it was) stay generic, and so `other`.
+
+`GET /items/counts` returns how many items the user has of each type and
+each kind (every one present, zero if none) and how many are favorites,
+for the filter controls. It's one `COUNT(*)` over `items` left-joined to
+`item_files`, grouped by type and content type and scoped to the user;
+the API maps each content type to its kind. There are no stored counters
+to keep in sync. Deletes are hard deletes, so there's nothing to exclude.
 
 A tag exists only while some item uses it. Removing a tag from an item, or
 deleting an item, also deletes each affected tag that no item uses any more,

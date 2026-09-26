@@ -132,11 +132,14 @@ pub struct CurrentUser {
     pub email: String,
 }
 
-/// How many items the user has: of each type (every type present), and
-/// favorites. Not narrowed by any filter.
+/// How many items the user has: of each type and each kind (every one
+/// present), and favorites. Not narrowed by any filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub struct ItemCounts {
     pub types: ItemTypeCounts,
+    /// `default` keeps older API responses deserializable.
+    #[serde(default)]
+    pub kinds: ItemKindCounts,
     pub favorites: u32,
 }
 
@@ -153,6 +156,17 @@ impl ItemTypeCounts {
     pub fn total(&self) -> u32 {
         self.text + self.link + self.image + self.file
     }
+}
+
+/// Image and file counts per API item kind (the `kind` filter's values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct ItemKindCounts {
+    pub image: u32,
+    pub video: u32,
+    pub audio: u32,
+    pub document: u32,
+    pub book: u32,
+    pub other: u32,
 }
 
 /// A user's tag.
@@ -207,13 +221,16 @@ impl ItemSort {
 }
 
 /// Narrows listing and search: only items of `item_type` (the API's
-/// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`, and
-/// with `favorites_only`, only favorites; `created_from` (inclusive) and
+/// `type`, e.g. `"link"`; None = any) and of any of `kinds` (the API's
+/// `kind` values, e.g. `"video"`; empty = any), carrying *all* of
+/// `tag_ids`, and with
+/// `favorites_only`, only favorites; `created_from` (inclusive) and
 /// `created_before` (exclusive) bound when it was saved, as RFC 3339
 /// timestamps with an offset.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemQuery {
     pub item_type: Option<String>,
+    pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
     pub favorites_only: bool,
     pub created_from: Option<String>,
@@ -227,6 +244,18 @@ pub struct ListedFile {
     pub filename: String,
     pub content_type: String,
     pub size_bytes: u64,
+    /// What it holds, decided by the server from its content type:
+    /// `"video"`, `"audio"`, `"document"`, `"book"` or `"other"`. Empty
+    /// from older API responses.
+    #[serde(default)]
+    pub kind: String,
+}
+
+impl ListedFile {
+    /// Video or audio: shown like images, on a neutral card.
+    pub fn is_media(&self) -> bool {
+        matches!(self.kind.as_str(), "video" | "audio")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -278,6 +307,7 @@ pub(crate) struct SearchRequest {
     pub limit: u32,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
+    pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
     pub favorite: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,4 +326,37 @@ pub struct SearchResponse {
 pub struct ListItemsResponse {
     pub items: Vec<ListedItem>,
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(kind: &str) -> ListedFile {
+        ListedFile {
+            filename: "x".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 1,
+            kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn only_video_and_audio_files_are_media() {
+        assert!(file("video").is_media());
+        assert!(file("audio").is_media());
+        for kind in ["document", "book", "other", ""] {
+            assert!(!file(kind).is_media(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn listed_files_without_a_kind_still_parse() {
+        let parsed: ListedFile = serde_json::from_str(
+            r#"{"filename": "a.pdf", "content_type": "application/pdf", "size_bytes": 3}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.kind, "");
+        assert!(!parsed.is_media());
+    }
 }

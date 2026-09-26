@@ -25,6 +25,7 @@ from stash_shared.queue.base import (
 
 from app.config import get_settings
 from app.items import files
+from app.items.files import ContentKind
 from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
 from app.items.repos import ItemFilters, ItemRepository, ItemSort
 from app.query_normalization import QueryNormalizer
@@ -178,8 +179,10 @@ class ListedItem:
 
 @dataclass(frozen=True)
 class ItemCounts:
-    # Every item type, zero where the user has none.
+    # Every item type, and every kind of image/file item, zero where the
+    # user has none.
     by_type: dict[ItemType, int]
+    by_kind: dict[ContentKind, int]
     favorites: int
 
 
@@ -291,10 +294,15 @@ class ItemService:
         self._outbox = outbox
 
     async def count_items(self, *, user_id: uuid.UUID) -> ItemCounts:
-        """The user's items per type and favorites, counted on each call
-        (no stored counters), over the same items listing returns."""
-        by_type, favorites = await self._repo.count_by_type(user_id=user_id)
-        return ItemCounts(by_type={item_type: by_type.get(item_type, 0) for item_type in ItemType}, favorites=favorites)
+        """The user's items per type, per kind and favorites, counted on
+        each call (no stored counters), over the same items listing
+        returns."""
+        rows = await self._repo.count(user_id=user_id)
+        return ItemCounts(
+            by_type={item_type: rows.by_type.get(item_type, 0) for item_type in ItemType},
+            by_kind={kind: rows.by_kind.get(kind, 0) for kind in ContentKind},
+            favorites=rows.favorites,
+        )
 
     async def saved_years(self, *, user_id: uuid.UUID) -> list[tuple[datetime, datetime]]:
         """(first, last) save time per calendar year with items, oldest
@@ -402,6 +410,7 @@ class ItemService:
             result_count=len(rows),
             limit=limit,
             item_type=filters.item_type,
+            item_kinds=[kind.value for kind in filters.kinds],
             tag_filter_count=len(filters.tag_ids),
             favorites_only=filters.favorites_only,
             duration_ms=(time.perf_counter() - started) * 1000,
