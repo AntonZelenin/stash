@@ -262,13 +262,19 @@ impl ListedFile {
     pub fn is_video(&self) -> bool {
         self.kind == "video"
     }
+
+    /// Played in the audio player, like `is_video`.
+    pub fn is_audio(&self) -> bool {
+        self.kind == "audio"
+    }
 }
 
-/// Where to play a video item from (`GET /items/{id}/video-url`): a fresh,
-/// pre-signed URL that lasts a viewing session and supports seeking. Once
-/// it has expired, playback fails; fetch a new one.
+/// Where to play a video or audio item from (`GET
+/// /items/{id}/playback-url`): a fresh, pre-signed URL that lasts a playback
+/// session and supports seeking. Once it has expired, playback fails; fetch
+/// a new one.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct VideoUrl {
+pub struct PlaybackUrl {
     pub url: String,
     /// RFC 3339.
     pub expires_at: String,
@@ -371,6 +377,14 @@ mod tests {
         assert!(file("video").is_video());
         for kind in ["audio", "document", "book", "other", ""] {
             assert!(!file(kind).is_video(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn only_audio_files_open_in_the_audio_player() {
+        assert!(file("audio").is_audio());
+        for kind in ["video", "document", "book", "other", ""] {
+            assert!(!file(kind).is_audio(), "{kind:?}");
         }
     }
 

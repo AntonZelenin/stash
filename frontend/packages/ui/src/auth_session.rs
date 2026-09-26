@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use api::{
     ApiClient, ApiError, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
-    ListItemsResponse, ListedItem, NewUpload, SavedYear, SearchResponse, Tag, TextItemType,
-    TokenPair, TokenStore, UploadType, VideoUrl,
+    ListItemsResponse, ListedItem, NewUpload, PlaybackUrl, SavedYear, SearchResponse, Tag,
+    TextItemType, TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -328,13 +328,13 @@ impl AuthSession {
         .await
     }
 
-    /// A fresh URL to play the video item from; None if it's gone.
-    pub async fn video_url(&self, item_id: String) -> Result<Option<VideoUrl>, ApiError> {
+    /// A fresh URL to play the video or audio item from; None if it's gone.
+    pub async fn playback_url(&self, item_id: String) -> Result<Option<PlaybackUrl>, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
             let client = client.clone();
             let item_id = item_id.clone();
-            async move { client.video_url(&access_token, &item_id).await }
+            async move { client.playback_url(&access_token, &item_id).await }
         })
         .await
     }

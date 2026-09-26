@@ -205,9 +205,9 @@ class ListedItem(BaseModel):
     thumbnail_url: str | None = None
 
 
-class VideoUrl(BaseModel):
-    # Temporary, pre-signed URL to play the video from (supports ranged
-    # requests, for seeking); valid for a viewing session.
+class PlaybackUrl(BaseModel):
+    # Temporary, pre-signed URL to play the video or audio from (supports
+    # ranged requests, for seeking); valid for a playback session.
     url: str
     # When `url` stops working (it may stop earlier if the credentials
     # that signed it expire first).

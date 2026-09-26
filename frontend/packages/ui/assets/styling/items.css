@@ -461,9 +461,20 @@
 }
 
 .item-card-video:hover,
-.item-card-video:has(.item-card-video-main:focus-visible) {
+.item-card-video:has(.item-card-video-main:focus-visible),
+.item-card-audio:has(.item-card-audio-main:focus-visible) {
     border-color: var(--card-border-hover);
     box-shadow: 0 6px 16px rgba(20, 22, 27, 0.06);
+}
+
+/* ---- audio: a file row (music icon, name, type · size · length) that
+   opens the player ---- */
+
+.item-card-audio-main {
+    display: block;
+    padding: 12px 14px 10px;
+    cursor: pointer;
+    outline: none;
 }
 
 /* Edge-to-edge like an image, at video proportions; dark like the player
@@ -775,8 +786,9 @@
     object-fit: contain;
 }
 
-/* Loading, or why the video can't be shown, where it would be. */
-.lightbox-video-status {
+/* Loading, or why the video or audio can't be played, where its player
+   would be. */
+.lightbox-media-status {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -793,12 +805,12 @@
     text-align: center;
 }
 
-.lightbox-video-status p {
+.lightbox-media-status p {
     margin: 0;
     max-width: 36ch;
 }
 
-.lightbox-video-retry {
+.lightbox-media-retry {
     padding: 8px 16px;
     border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 8px;
@@ -809,8 +821,63 @@
     cursor: pointer;
 }
 
-.lightbox-video-retry:hover {
+.lightbox-media-retry:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+/* ---- audio: icon, title and player on the viewer's dark side ---- */
+
+.lightbox-audio {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    box-sizing: border-box;
+    width: min(520px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    padding: 40px 28px 32px;
+}
+
+.lightbox-audio-art {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 112px;
+    height: 112px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+}
+
+.lightbox-audio-art .icon {
+    width: 52px;
+    height: 52px;
+}
+
+.lightbox-audio-title {
+    max-width: 100%;
+    margin: 0;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    text-align: center;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+.lightbox-audio-player {
+    display: block;
+    width: 100%;
+}
+
+/* Only a line of text where the player would be, not a video-sized box. */
+.lightbox-media-status-audio {
+    width: 100%;
+    aspect-ratio: auto;
+    padding: 8px 0 0;
 }
 
 /* Date and ♡ ⋯ on top, then the caption (scrolls if long), then tags. */
@@ -1075,13 +1142,22 @@
     }
 
     .lightbox-video,
-    .lightbox-video-status {
+    .lightbox-media-status {
         width: calc(100vw - 24px);
         max-height: 70vh;
     }
 
     .lightbox-video {
         border-radius: 12px 12px 0 0;
+    }
+
+    .lightbox-audio {
+        width: calc(100vw - 24px);
+        padding: 28px 20px 24px;
+    }
+
+    .lightbox-media-status-audio {
+        width: 100%;
     }
 
     .lightbox-panel {

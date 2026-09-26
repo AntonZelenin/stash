@@ -20,8 +20,8 @@ pub use auth_session::AuthSession;
 mod date_filter;
 mod filters;
 mod items;
+mod media;
 mod text_kind;
-mod video;
 
 mod settings;
 

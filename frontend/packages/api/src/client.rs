@@ -5,9 +5,9 @@ use crate::error::{ApiError, FieldError};
 use crate::models::{
     AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, CurrentUser, ItemCounts,
     ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
-    LoginRequest, NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
-    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
-    UploadStarted, VideoUrl,
+    LoginRequest, NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest,
+    RegisterResponse, SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag,
+    TextItemType, TokenPair, UploadStarted,
 };
 
 #[derive(Clone)]
@@ -322,17 +322,17 @@ impl ApiClient {
             .await
     }
 
-    /// A fresh URL to play a video item from; None if the item no longer
-    /// exists or isn't a video.
-    pub async fn video_url(
+    /// A fresh URL to play a video or audio item from; None if the item no
+    /// longer exists or isn't either.
+    pub async fn playback_url(
         &self,
         access_token: &str,
         item_id: &str,
-    ) -> Result<Option<VideoUrl>, ApiError> {
+    ) -> Result<Option<PlaybackUrl>, ApiError> {
         let response = self
             .authenticated(
                 Method::GET,
-                &format!("/items/{item_id}/video-url"),
+                &format!("/items/{item_id}/playback-url"),
                 access_token,
             )
             .send()

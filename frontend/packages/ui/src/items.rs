@@ -11,8 +11,8 @@ use crate::icons::{
     IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
     IconTrash,
 };
+use crate::media::{AudioBody, AudioStage, MediaKind, MediaPlayer, VideoBody};
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
-use crate::video::{VideoBody, VideoPlayer};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -251,6 +251,20 @@ fn ItemCard(
                     }
                 },
             ),
+            // Opens its player, like a video.
+            (Some(file), _) if file.is_audio() => (
+                "item-card-file item-card-media item-card-audio",
+                rsx! {
+                    AudioBody {
+                        item_id: item.id.clone(),
+                        audio_url: item.download_url.clone(),
+                        filename: file.filename.clone(),
+                        details: file_details(&file.filename, file.size_bytes),
+                        caption: caption.clone(),
+                        on_open: move |_| view.set(Some(ViewMode::Viewing)),
+                    }
+                },
+            ),
             (Some(file), Some(url)) => (
                 if file.is_media() {
                     "item-card-file item-card-media"
@@ -470,6 +484,10 @@ fn OpenedItem(
         ("file", Some(file)) if file.is_video() => Some(ViewMedia::Video {
             item_id: item.id.clone(),
             poster: item.thumbnail_url.clone(),
+        }),
+        ("file", Some(file)) if file.is_audio() => Some(ViewMedia::Audio {
+            item_id: item.id.clone(),
+            title: file.filename.clone(),
         }),
         _ => None,
     };
@@ -1204,13 +1222,15 @@ enum ViewMedia {
         item_id: String,
         poster: Option<String>,
     },
+    /// The audio item's player, under its `title` (its filename).
+    Audio { item_id: String, title: String },
 }
 
 /// An item opened over the whole page, on a dimmed backdrop: a panel with
-/// `children` (the item's content and controls) and, for an image or a
-/// video, the `media` itself (scaled down to fit the screen if needed; an
-/// image never up) with the panel beside it on wide screens and below it
-/// on narrow ones.
+/// `children` (the item's content and controls) and, for an image, video
+/// or audio file, the `media` itself (scaled down to fit the screen if
+/// needed; an image never up) with the panel beside it on wide screens and
+/// below it on narrow ones.
 ///
 /// The ✕ button, Escape and a click anywhere on the backdrop close it.
 /// While `editing`, Escape calls `on_cancel_edit` instead (like the form's
@@ -1233,6 +1253,7 @@ fn ItemView(
     let label = match media {
         Some(ViewMedia::Image(_)) => t!("item-image-viewer"),
         Some(ViewMedia::Video { .. }) => t!("item-video-viewer"),
+        Some(ViewMedia::Audio { .. }) => t!("item-audio-viewer"),
         None => t!("item-viewer"),
     };
     let mut dialog = use_signal(|| None::<std::rc::Rc<MountedData>>);
@@ -1291,7 +1312,12 @@ fn ItemView(
                     },
                     Some(ViewMedia::Video { item_id, poster }) => rsx! {
                         div { class: "lightbox-media",
-                            VideoPlayer { item_id, poster }
+                            MediaPlayer { item_id, kind: MediaKind::Video, poster }
+                        }
+                    },
+                    Some(ViewMedia::Audio { item_id, title }) => rsx! {
+                        div { class: "lightbox-media lightbox-media-audio",
+                            AudioStage { item_id, title }
                         }
                     },
                     None => rsx! {},

@@ -778,19 +778,19 @@ paths:
             anything but a file, a type for an image or file, or an
             unknown field.
 
-  /items/{item_id}/video-url:
+  /items/{item_id}/playback-url:
     get:
-      summary: Get a playback URL for a video
+      summary: Get a playback URL for a video or audio file
       description: >-
-        A fresh, temporary, pre-signed URL to play a video file item from,
-        for a viewer being opened. It lasts a whole viewing session
-        (`VIDEO_PLAYBACK_URL_TTL_SECONDS`, hours rather than the listing
+        A fresh, temporary, pre-signed URL to play a video or audio file
+        item from, for a viewer being opened. It lasts a whole playback session
+        (`PLAYBACK_URL_TTL_SECONDS`, hours rather than the listing
         URLs' one hour) and supports ranged requests, so the player can
         seek. It is served as the file's validated content type. If
         playback fails because it expired (or the credentials that signed
         it did), fetch a new one. The original file is unchanged; use the
         item's `download_url` to download it.
-      operationId: getVideoUrl
+      operationId: getPlaybackUrl
       tags: [items]
 
       security:
@@ -810,14 +810,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/VideoUrl"
+                $ref: "#/components/schemas/PlaybackUrl"
 
         "401":
           description: Unauthorized
 
         "404":
           description: >-
-            No such item for the current user, or it isn't a video file.
+            No such item for the current user, or it isn't a video or audio file.
 
         "422":
           description: Invalid item id
@@ -1453,7 +1453,7 @@ components:
             - string
             - "null"
 
-    VideoUrl:
+    PlaybackUrl:
       type: object
       required:
         - url
@@ -1461,7 +1461,7 @@ components:
       properties:
         url:
           description: >-
-            Temporary, pre-signed object storage URL to play the video from.
+            Temporary, pre-signed object storage URL to play the file from.
           type: string
         expires_at:
           description: >-

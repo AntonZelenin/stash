@@ -29,7 +29,7 @@ from app.api.schemas.items import (
     TextItemType,
     UpdateItemRequest,
     UploadStarted,
-    VideoUrl,
+    PlaybackUrl,
 )
 from app.db import DbSession
 from app.items.files import ContentKind, kind_of
@@ -267,22 +267,22 @@ async def get_item(
 
 
 @router.get(
-    "/items/{item_id}/video-url",
+    "/items/{item_id}/playback-url",
     status_code=status.HTTP_200_OK,
-    response_model=VideoUrl,
-    responses={401: {"description": "Unauthorized"}, 404: {"description": "No such video item"}},
+    response_model=PlaybackUrl,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "No such video or audio item"}},
 )
-async def get_video_url(
+async def get_playback_url(
     item_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
-) -> VideoUrl:
+) -> PlaybackUrl:
     try:
-        video = await ItemService(session, storage).get_video_url(user_id=current_user.id, item_id=item_id)
+        playback = await ItemService(session, storage).get_playback_url(user_id=current_user.id, item_id=item_id)
     except ItemNotFoundError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Video not found") from None
-    return VideoUrl(url=video.url, expires_at=video.expires_at)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No playable media") from None
+    return PlaybackUrl(url=playback.url, expires_at=playback.expires_at)
 
 
 @router.get(

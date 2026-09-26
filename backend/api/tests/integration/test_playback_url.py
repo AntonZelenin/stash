@@ -1,5 +1,5 @@
-"""`GET /items/{id}/video-url`: a fresh, long-lived playback URL for a
-video file item, issued only to its owner."""
+"""`GET /items/{id}/playback-url`: a fresh, long-lived playback URL for a
+video or audio file item, issued only to its owner."""
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -14,6 +14,8 @@ from helpers import register_and_login, upload_file
 # Just enough of each format for the content check to recognize it.
 _MP4_BYTES = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32
 _MKV_BYTES = b"\x1a\x45\xdf\xa3" + b"\x00" * 32
+_MP3_BYTES = b"ID3\x04\x00" + b"\x00" * 32
+_FLAC_BYTES = b"fLaC" + b"\x00" * 32
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 _PLAYBACK_TTL_SECONDS = 4 * 3600
 
@@ -36,7 +38,7 @@ async def test_owner_gets_a_long_lived_playback_url(
     key = (await session.get(FileMetadata, item_id)).storage_key
 
     before = datetime.now(UTC)
-    response = await client.get(f"/items/{item_id}/video-url", headers=_auth(token))
+    response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))
 
     assert response.status_code == 200
     body = response.json()
@@ -58,7 +60,7 @@ async def test_formats_browsers_may_not_play_still_get_a_url(
     _, token = await register_and_login(client)
     item_id = await _upload(client, storage, token, "raw.mkv", _MKV_BYTES)
 
-    response = await client.get(f"/items/{item_id}/video-url", headers=_auth(token))
+    response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))
 
     assert response.status_code == 200
 
@@ -67,8 +69,8 @@ async def test_each_request_issues_a_fresh_url(client: AsyncClient, storage: Fak
     _, token = await register_and_login(client)
     item_id = await _upload(client, storage, token, "clip.mp4", _MP4_BYTES)
 
-    first = (await client.get(f"/items/{item_id}/video-url", headers=_auth(token))).json()
-    second = (await client.get(f"/items/{item_id}/video-url", headers=_auth(token))).json()
+    first = (await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))).json()
+    second = (await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))).json()
 
     assert second["expires_at"] >= first["expires_at"]
 
@@ -79,7 +81,7 @@ async def test_non_video_items_have_no_playback_url(client: AsyncClient, storage
     note = await client.post("/items/text", json={"text": "hello"}, headers=_auth(token))
 
     for item_id in (pdf_id, note.json()["id"], uuid4()):
-        response = await client.get(f"/items/{item_id}/video-url", headers=_auth(token))
+        response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))
         assert response.status_code == 404, item_id
 
 
@@ -90,11 +92,37 @@ async def test_other_users_video_is_indistinguishable_from_a_missing_one(
     _, other_token = await register_and_login(client, email="other@example.com")
     item_id = await _upload(client, storage, owner_token, "clip.mp4", _MP4_BYTES)
 
-    response = await client.get(f"/items/{item_id}/video-url", headers=_auth(other_token))
+    response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(other_token))
 
     assert response.status_code == 404
     assert "fake-storage" not in response.text
 
 
 async def test_playback_url_requires_authentication(client: AsyncClient):
-    assert (await client.get(f"/items/{uuid4()}/video-url")).status_code == 401
+    assert (await client.get(f"/items/{uuid4()}/playback-url")).status_code == 401
+
+
+async def test_audio_gets_a_playback_url_too(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    _, token = await register_and_login(client)
+    item_id = await _upload(client, storage, token, "Song.mp3", _MP3_BYTES)
+    key = (await session.get(FileMetadata, item_id)).storage_key
+
+    response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["url"].startswith(f"https://fake-storage.test/{key}?")
+    assert f"expires_in={_PLAYBACK_TTL_SECONDS}" in response.json()["url"]
+    assert storage.download_content_types[key] == "audio/mpeg"
+
+
+async def test_audio_formats_browsers_may_not_play_still_get_a_url(
+    client: AsyncClient, storage: FakeObjectStorage
+):
+    _, token = await register_and_login(client)
+    item_id = await _upload(client, storage, token, "master.flac", _FLAC_BYTES)
+
+    response = await client.get(f"/items/{item_id}/playback-url", headers=_auth(token))
+
+    assert response.status_code == 200

@@ -178,9 +178,13 @@ class ListedItem:
 
 
 @dataclass(frozen=True)
-class VideoUrl:
+class PlaybackUrl:
     url: str
     expires_at: datetime
+
+
+# Files the clients play in their viewer (see `get_playback_url`).
+_PLAYABLE_KINDS = frozenset({ContentKind.video, ContentKind.audio})
 
 
 @dataclass(frozen=True)
@@ -482,23 +486,23 @@ class ItemService:
         [listed] = await self._with_download_urls([row])
         return listed
 
-    async def get_video_url(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> VideoUrl:
-        """A fresh URL to play the item's video from, for a viewer being
-        opened: valid for a whole viewing session
-        (`video_playback_url_ttl_seconds`), and ranged requests (seeking)
-        work with it like with any pre-signed GET. Served as the validated
-        type from the row, with no filename: it's for the player, not for
-        saving (`download_url` stays that). Raises `ItemNotFoundError` if
-        the user has no such item, or it isn't a video."""
+    async def get_playback_url(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> PlaybackUrl:
+        """A fresh URL to play the item's video or audio from, for a viewer
+        being opened: valid for a whole playback session
+        (`playback_url_ttl_seconds`), and ranged requests (seeking) work
+        with it like with any pre-signed GET. Served as the validated type
+        from the row, with no filename: it's for the player, not for saving
+        (`download_url` stays that). Raises `ItemNotFoundError` if the user
+        has no such item, or it isn't a video or audio file."""
         row = await self._repo.get(item_id=item_id, user_id=user_id)
-        if row is None or row.file is None or files.kind_of(row.file.content_type) is not ContentKind.video:
+        if row is None or row.file is None or files.kind_of(row.file.content_type) not in _PLAYABLE_KINDS:
             raise ItemNotFoundError()
-        ttl = get_settings().video_playback_url_ttl_seconds
+        ttl = get_settings().playback_url_ttl_seconds
         expires_at = datetime.now(UTC) + timedelta(seconds=ttl)
         url = await self._storage.generate_download_url(
             key=row.file.storage_key, expires_in=ttl, content_type=row.file.content_type
         )
-        return VideoUrl(url=url, expires_at=expires_at)
+        return PlaybackUrl(url=url, expires_at=expires_at)
 
     async def random_item(self, *, user_id: uuid.UUID) -> ListedItem:
         """Any one of the user's items, for "Surprise me". Raises
