@@ -251,3 +251,95 @@ async def test_saved_years_only_covers_the_users_own_items(client: AsyncClient):
     assert response.status_code == 200
     assert response.json() == {"years": []}
     assert (await client.get("/items/years")).status_code == 401
+
+
+async def _dated_items(client: AsyncClient, session: AsyncSession, token: str, count: int) -> list[str]:
+    """`count` notes saved a minute apart, oldest first."""
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ids = [await _create_text_item(client, token, f"item {i}") for i in range(count)]
+    for i, item_id in enumerate(ids):
+        await _set_created_at(session, item_id, base + timedelta(minutes=i))
+    return ids
+
+
+async def test_list_items_sorts_oldest_first_and_paginates(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    auth = {"Authorization": f"Bearer {token}"}
+    oldest, middle, newest = await _dated_items(client, session, token, 3)
+
+    first_page = (await client.get("/items", params={"sort": "oldest", "limit": 2}, headers=auth)).json()
+    assert [item["id"] for item in first_page["items"]] == [oldest, middle]
+
+    second_page = await client.get(
+        "/items", params={"sort": "oldest", "limit": 2, "cursor": first_page["next_cursor"]}, headers=auth
+    )
+    assert second_page.status_code == 200
+    assert [item["id"] for item in second_page.json()["items"]] == [newest]
+    assert second_page.json()["next_cursor"] is None
+
+
+async def test_list_items_newest_is_the_default_sort(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    auth = {"Authorization": f"Bearer {token}"}
+    oldest, middle, newest = await _dated_items(client, session, token, 3)
+
+    default = (await client.get("/items", headers=auth)).json()["items"]
+    explicit = (await client.get("/items", params={"sort": "newest"}, headers=auth)).json()["items"]
+
+    assert [item["id"] for item in default] == [item["id"] for item in explicit] == [newest, middle, oldest]
+
+
+async def test_list_items_rejects_a_cursor_from_another_order(client: AsyncClient, session: AsyncSession):
+    _, token = await register_and_login(client)
+    auth = {"Authorization": f"Bearer {token}"}
+    await _dated_items(client, session, token, 3)
+    newest_cursor = (await client.get("/items", params={"limit": 1}, headers=auth)).json()["next_cursor"]
+    oldest_cursor = (await client.get("/items", params={"limit": 1, "sort": "oldest"}, headers=auth)).json()[
+        "next_cursor"
+    ]
+
+    for sort, cursor in (("oldest", newest_cursor), ("newest", oldest_cursor), ("random", newest_cursor)):
+        response = await client.get("/items", params={"sort": sort, "cursor": cursor}, headers=auth)
+        assert response.status_code == 422, sort
+
+
+async def test_list_items_random_only_shuffles_the_users_own_matching_items(client: AsyncClient):
+    _, alice = await register_and_login(client)
+    _, bob = await register_and_login(client, email="bob@example.com")
+    alice_notes = {await _create_text_item(client, alice, f"alice {i}") for i in range(5)}
+    alice_link = await _create_text_item(client, alice, "https://example.com")
+    for i in range(5):
+        await _create_text_item(client, bob, f"bob {i}")
+
+    response = await client.get(
+        "/items", params={"sort": "random", "type": "text"}, headers={"Authorization": f"Bearer {alice}"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # All of Alice's notes, none of Bob's items, not her link; one sample, no pages.
+    assert {item["id"] for item in body["items"]} == alice_notes
+    assert alice_link not in {item["id"] for item in body["items"]}
+    assert body["next_cursor"] is None
+
+
+async def test_list_items_random_is_a_sample_of_limit_items(client: AsyncClient):
+    _, token = await register_and_login(client)
+    ids = {await _create_text_item(client, token, f"item {i}") for i in range(5)}
+
+    response = await client.get(
+        "/items", params={"sort": "random", "limit": 2}, headers={"Authorization": f"Bearer {token}"}
+    )
+
+    items = response.json()["items"]
+    assert len(items) == 2
+    assert {item["id"] for item in items} <= ids
+    assert response.json()["next_cursor"] is None
+
+
+async def test_list_items_rejects_unknown_sort(client: AsyncClient):
+    _, token = await register_and_login(client)
+
+    response = await client.get("/items", params={"sort": "alphabetical"}, headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 422

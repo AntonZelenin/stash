@@ -119,6 +119,15 @@ date-month = { $month ->
    *[12] грудень
 }
 
+## Sorting
+
+sort-newest = Спочатку нові
+sort-oldest = Спочатку старі
+sort-random = Випадково
+sort-title = Сортування: { $order }
+sort-reshuffle = Перемішати ще раз
+sort-search-relevance = Результати пошуку впорядковано за релевантністю
+
 ## Tags
 
 tags-label = Теги

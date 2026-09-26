@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use api::{
-    ApiClient, ApiError, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemUpdate,
+    ApiClient, ApiError, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
     ListItemsResponse, ListedItem, NewUpload, SavedYear, SearchResponse, Tag, TextItemType,
     TokenPair, TokenStore, UploadType,
 };
@@ -212,6 +212,7 @@ impl AuthSession {
         cursor: Option<String>,
         limit: u32,
         filters: ItemQuery,
+        sort: ItemSort,
     ) -> Result<ListItemsResponse, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
@@ -220,7 +221,7 @@ impl AuthSession {
             let filters = filters.clone();
             async move {
                 client
-                    .list_items(&access_token, cursor.as_deref(), limit, &filters)
+                    .list_items(&access_token, cursor.as_deref(), limit, &filters, sort)
                     .await
             }
         })

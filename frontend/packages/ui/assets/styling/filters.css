@@ -572,3 +572,75 @@
         width: min(272px, calc(100vw - 48px));
     }
 }
+
+/* ---- Sort ---- */
+
+/* An icon-only square, as tall as the other controls. */
+.sort-button {
+    justify-content: center;
+    width: 34px;
+    padding: 0;
+}
+
+.sort-button .icon {
+    width: 16px;
+    height: 16px;
+    color: #64748b;
+}
+
+.sort-button.filter-button-active .icon {
+    color: #7c3aed;
+}
+
+/* Search ranks by relevance, so the order doesn't apply while searching. */
+.sort-button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.sort-button:disabled:hover {
+    background: #f8fafc;
+}
+
+/* Right-most control, so the menu drops from its right edge. */
+.sort-panel {
+    right: 0;
+    width: 180px;
+}
+
+.sort-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 10px 8px 6px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.sort-option:hover {
+    background: #f5f3ff;
+}
+
+.sort-option-selected {
+    font-weight: 600;
+}
+
+/* Keeps the labels aligned whether or not the ✓ is shown. */
+.sort-option-check {
+    display: flex;
+    flex-shrink: 0;
+    width: 14px;
+    color: #7c3aed;
+}
+
+.sort-option-check .icon {
+    width: 14px;
+    height: 14px;
+}

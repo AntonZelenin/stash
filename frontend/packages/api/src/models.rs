@@ -186,6 +186,26 @@ pub(crate) struct SavedYearsResponse {
     pub years: Vec<SavedYear>,
 }
 
+/// Listing order (`GET /items`'s `sort`); search always ranks by
+/// relevance. `Random` is a fresh shuffle each request, with no next page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ItemSort {
+    #[default]
+    Newest,
+    Oldest,
+    Random,
+}
+
+impl ItemSort {
+    pub fn api_value(self) -> &'static str {
+        match self {
+            ItemSort::Newest => "newest",
+            ItemSort::Oldest => "oldest",
+            ItemSort::Random => "random",
+        }
+    }
+}
+
 /// Narrows listing and search: only items of `item_type` (the API's
 /// `type`, e.g. `"image"`; None = any), carrying *all* of `tag_ids`, and
 /// with `favorites_only`, only favorites; `created_from` (inclusive) and

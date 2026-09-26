@@ -22,6 +22,12 @@ class TextItemType(str, Enum):
     link = "link"
 
 
+class ItemSort(str, Enum):
+    newest = "newest"
+    oldest = "oldest"
+    random = "random"
+
+
 class ItemStatus(str, Enum):
     pending = "pending"
     processing = "processing"

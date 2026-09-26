@@ -913,10 +913,23 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            `newest` or `oldest` first (by save time, pages with `cursor`;
+            a cursor only continues a listing in the same order), or
+            `random`: `limit` of the matching items in random order, a new
+            shuffle each request, always without a next page (and it takes
+            no cursor).
+          schema:
+            type: string
+            enum: [newest, oldest, random]
+            default: newest
 
       responses:
         "200":
-          description: The current user's items, newest first
+          description: The current user's items, in `sort` order
           content:
             application/json:
               schema:

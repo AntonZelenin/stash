@@ -4,7 +4,7 @@ use serde::Deserialize;
 use crate::error::{ApiError, FieldError};
 use crate::models::{
     AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, CurrentUser, ItemCounts,
-    ItemCreated, ItemQuery, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
+    ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
     LoginRequest, NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
     SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
     UploadStarted,
@@ -532,8 +532,12 @@ impl ApiClient {
         cursor: Option<&str>,
         limit: u32,
         filters: &ItemQuery,
+        sort: ItemSort,
     ) -> Result<ListItemsResponse, ApiError> {
-        let mut params: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+        let mut params: Vec<(&str, String)> = vec![
+            ("limit", limit.to_string()),
+            ("sort", sort.api_value().to_string()),
+        ];
         if let Some(cursor) = cursor {
             params.push(("cursor", cursor.to_string()));
         }

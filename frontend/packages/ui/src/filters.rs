@@ -1,13 +1,15 @@
 use std::time::Duration;
 
-use api::{ItemCounts, Tag};
+use api::{ItemCounts, ItemSort, Tag};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::i18n::api_error_message;
-use crate::icons::{IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconTag};
+use crate::icons::{
+    IconCheck, IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconSort, IconTag,
+};
 
 const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -276,6 +278,88 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
                     None => rsx! {
                         p { class: "tag-filter-empty", {t!("common-loading")} }
                     },
+                }
+            }
+        }
+    }
+}
+
+/// The sort orders offered, in menu order.
+const SORT_OPTIONS: [ItemSort; 3] = [ItemSort::Newest, ItemSort::Oldest, ItemSort::Random];
+
+fn sort_label(sort: ItemSort) -> String {
+    match sort {
+        ItemSort::Newest => t!("sort-newest"),
+        ItemSort::Oldest => t!("sort-oldest"),
+        ItemSort::Random => t!("sort-random"),
+    }
+}
+
+/// `[ ⇅ ]`: listing order, at the right end of the filter bar. Highlighted
+/// when not the default (newest first). Picking Random again reshuffles
+/// (`on_reshuffle`). Disabled while searching, since search results are
+/// ranked by relevance.
+#[component]
+pub fn SortMenu(
+    value: Signal<ItemSort>,
+    on_reshuffle: EventHandler<()>,
+    disabled: bool,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut value = value;
+
+    let current = value();
+    let title = if disabled {
+        t!("sort-search-relevance")
+    } else {
+        t!("sort-title", order: sort_label(current))
+    };
+    let mut class = String::from("filter-button sort-button");
+    if current != ItemSort::default() {
+        class.push_str(" filter-button-active");
+    }
+
+    rsx! {
+        document::Link { rel: "stylesheet", href: FILTERS_CSS }
+
+        div { class: "filter-control sort-menu",
+            button {
+                class,
+                r#type: "button",
+                title: "{title}",
+                aria_label: "{title}",
+                aria_haspopup: "menu",
+                aria_expanded: if open() { "true" } else { "false" },
+                disabled,
+                onclick: move |_| open.toggle(),
+                IconSort {}
+            }
+            if open() && !disabled {
+                div { class: "filter-backdrop", onclick: move |_| open.set(false) }
+                div { class: "filter-panel sort-panel", role: "menu",
+                    for option in SORT_OPTIONS {
+                        button {
+                            class: if option == current { "sort-option sort-option-selected" } else { "sort-option" },
+                            r#type: "button",
+                            role: "menuitemradio",
+                            aria_checked: if option == current { "true" } else { "false" },
+                            title: if option == ItemSort::Random && current == ItemSort::Random { t!("sort-reshuffle") } else { String::new() },
+                            onclick: move |_| {
+                                if option == ItemSort::Random && value() == ItemSort::Random {
+                                    on_reshuffle.call(());
+                                } else {
+                                    value.set(option);
+                                }
+                                open.set(false);
+                            },
+                            span { class: "sort-option-check",
+                                if option == current {
+                                    IconCheck {}
+                                }
+                            }
+                            span { "{sort_label(option)}" }
+                        }
+                    }
                 }
             }
         }

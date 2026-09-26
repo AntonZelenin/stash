@@ -1,6 +1,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 
 from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, extract, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,15 @@ _LISTED_ITEM_LOADS = (
     selectinload(Item.file),
     selectinload(Item.tags),
 )
+
+
+class ItemSort(str, Enum):
+    """Listing order. `random` is a fresh shuffle on every call, so it has
+    no pages: it's a random sample of the (filtered) items."""
+
+    newest = "newest"
+    oldest = "oldest"
+    random = "random"
 
 
 @dataclass(frozen=True)
@@ -339,27 +349,48 @@ class ItemRepository:
         cursor_created_at: datetime | None,
         cursor_id: uuid.UUID | None,
         filters: ItemFilters = ItemFilters(),
+        sort: ItemSort = ItemSort.newest,
     ) -> list[Item]:
-        """Keyset pagination, newest first: `(cursor_created_at, cursor_id)`
-        identifies the last item of the previous page, and this returns the
-        `limit` items immediately after it in `created_at DESC, id DESC`
-        order. `id` breaks ties between items with the same `created_at` so
-        the ordering — and therefore pagination — stays stable regardless of
-        timestamp collisions."""
+        """Keyset pagination, newest or oldest first:
+        `(cursor_created_at, cursor_id)` identifies the last item of the
+        previous page, and this returns the `limit` items immediately after
+        it in `created_at, id` order (descending for newest). `id` breaks
+        ties between items with the same `created_at` so the ordering — and
+        therefore pagination — stays stable regardless of timestamp
+        collisions.
+
+        `random`: `limit` of the user's items in random order, no cursor.
+        The shuffle runs after the `user_id` and filter conditions, so it
+        only ever sorts this user's matching items."""
         stmt = (
             select(Item)
             .options(*_LISTED_ITEM_LOADS)
             .where(Item.user_id == user_id)
         )
+        stmt = filters.apply(stmt)
+        if sort is ItemSort.random:
+            stmt = stmt.order_by(func.random()).limit(limit)
+            result = await self._session.execute(stmt)
+            return list(result.scalars().all())
+
+        newest = sort is ItemSort.newest
         if cursor_created_at is not None and cursor_id is not None:
-            stmt = stmt.where(
-                or_(
+            if newest:
+                after = or_(
                     Item.created_at < cursor_created_at,
                     and_(Item.created_at == cursor_created_at, Item.id < cursor_id),
                 )
-            )
-        stmt = filters.apply(stmt)
-        stmt = stmt.order_by(Item.created_at.desc(), Item.id.desc()).limit(limit)
+            else:
+                after = or_(
+                    Item.created_at > cursor_created_at,
+                    and_(Item.created_at == cursor_created_at, Item.id > cursor_id),
+                )
+            stmt = stmt.where(after)
+        if newest:
+            stmt = stmt.order_by(Item.created_at.desc(), Item.id.desc())
+        else:
+            stmt = stmt.order_by(Item.created_at.asc(), Item.id.asc())
+        stmt = stmt.limit(limit)
 
         result = await self._session.execute(stmt)
         return list(result.scalars().all())

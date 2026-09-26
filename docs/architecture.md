@@ -727,6 +727,14 @@ time zone offset). The server has no notion of the user's time zone:
 clients pick a year, month or day on their own calendar and send its
 bounds, so "2025" means 2025 where the user is.
 
+Listing is newest first by default; `sort=oldest` reverses it (same
+keyset pagination on `created_at, id`, the cursor recording its order),
+and `sort=random` returns `limit` matching items via `ORDER BY random()`.
+The shuffle is applied after the `user_id` and filter conditions, so it
+only sorts the user's own matching items (a scan of those, fine at a
+personal stash's size). A new shuffle every request can't be paged, so a
+random listing has no next page. Search always ranks by relevance.
+
 `GET /items/years` tells the date picker which years have items, for the
 same reason without year numbers: per calendar year it returns the first
 and last `created_at` (one `GROUP BY` over the user's items). A client

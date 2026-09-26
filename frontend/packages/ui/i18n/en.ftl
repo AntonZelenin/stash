@@ -120,6 +120,15 @@ date-month = { $month ->
    *[12] December
 }
 
+## Sorting
+
+sort-newest = Newest first
+sort-oldest = Oldest first
+sort-random = Random
+sort-title = Sort: { $order }
+sort-reshuffle = Shuffle again
+sort-search-relevance = Search results are sorted by relevance
+
 ## Tags
 
 tags-label = Tags

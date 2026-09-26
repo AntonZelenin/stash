@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use api::{ItemCounts, ItemQuery, ListedItem, Tag, TextItemType};
+use api::{ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
@@ -9,7 +9,7 @@ use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::date_filter::{DateFilter, DateSelection};
-use crate::filters::{FavoritesToggle, TagFilter, TypeFilter, TypeTabs};
+use crate::filters::{FavoritesToggle, SortMenu, TagFilter, TypeFilter, TypeTabs};
 use crate::i18n::api_error_message;
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
@@ -149,8 +149,13 @@ pub fn Home() -> Element {
         }
     };
 
-    // Re-runs whenever the filters change (they're read below, outside the
-    // async block, which is what subscribes to them). `submit`, deletes and
+    // Listing order; search ignores it (ranked by relevance). `shuffle`
+    // counts "Random" re-picks, each of which fetches a fresh shuffle.
+    let sort = use_signal(ItemSort::default);
+    let mut shuffle = use_signal(|| 0u32);
+
+    // Re-runs whenever the filters or order change (they're read below,
+    // outside the async block, which is what subscribes to them). `submit`, deletes and
     // tag edits call `.restart()` so changes show up without a reload. No
     // pagination yet.
     let mut saved_items = use_resource({
@@ -158,7 +163,9 @@ pub fn Home() -> Element {
         move || {
             let session = session.clone();
             let filters = current_filters();
-            async move { session.list_items(None, 30, filters).await }
+            let sort = sort();
+            shuffle();
+            async move { session.list_items(None, 30, filters, sort).await }
         }
     });
 
@@ -716,7 +723,7 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ]
+                    // [ All | Notes | Images | Links | Files | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ] [ ⇅ ]
                     // — typing in the search swaps the list below for
                     // semantic search results; the type, favorites, date
                     // and tag filters apply to either.
@@ -756,6 +763,11 @@ pub fn Home() -> Element {
                                 }
                             }
                             TagFilter { selected: selected_tags }
+                            SortMenu {
+                                value: sort,
+                                on_reshuffle: move |()| shuffle += 1,
+                                disabled: !search_query().trim().is_empty(),
+                            }
                         }
                     }
 

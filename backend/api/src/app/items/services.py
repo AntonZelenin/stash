@@ -25,7 +25,7 @@ from stash_shared.queue.base import (
 from app.config import get_settings
 from app.items import files
 from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
-from app.items.repos import ItemFilters, ItemRepository
+from app.items.repos import ItemFilters, ItemRepository, ItemSort
 from app.query_normalization import QueryNormalizer
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
@@ -204,18 +204,27 @@ def _check_size(
         raise too_large()
 
 
-def _encode_cursor(created_at: datetime, item_id: uuid.UUID) -> str:
+def _encode_cursor(created_at: datetime, item_id: uuid.UUID, sort: ItemSort) -> str:
+    """Oldest-first cursors carry the order, so one can't continue a
+    newest-first listing (or the reverse); newest-first ones keep the
+    original format."""
     raw = f"{created_at.isoformat()}|{item_id}"
+    if sort is ItemSort.oldest:
+        raw += f"|{ItemSort.oldest.value}"
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
-def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+def _decode_cursor(cursor: str, sort: ItemSort) -> tuple[datetime, uuid.UUID]:
     """`ValueError` covers every way this can be malformed: bad base64
     padding (`binascii.Error` is a `ValueError` subclass), a missing `|`
-    separator, an unparseable timestamp, or an invalid UUID."""
+    separator, an unparseable timestamp, or an invalid UUID. A cursor
+    from a listing in another order is invalid too."""
     try:
         raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        created_at_str, item_id_str = raw.split("|", 1)
+        created_at_str, item_id_str, *order = raw.split("|", 2)
+        cursor_sort = ItemSort(order[0]) if order else ItemSort.newest
+        if cursor_sort is not sort:
+            raise ValueError("cursor is for another order")
         return datetime.fromisoformat(created_at_str), uuid.UUID(item_id_str)
     except ValueError as exc:
         raise InvalidCursorError() from exc
@@ -284,12 +293,23 @@ class ItemService:
         return await self._repo.saved_years(user_id=user_id)
 
     async def list_items(
-        self, *, user_id: uuid.UUID, limit: int, cursor: str | None, filters: ItemFilters = ItemFilters()
+        self,
+        *,
+        user_id: uuid.UUID,
+        limit: int,
+        cursor: str | None,
+        filters: ItemFilters = ItemFilters(),
+        sort: ItemSort = ItemSort.newest,
     ) -> tuple[list[ListedItem], str | None]:
+        """A page of the user's items in `sort` order, and the cursor of the
+        next page (None on the last). Random order is a single sample with
+        no next page, and takes no cursor."""
         cursor_created_at: datetime | None = None
         cursor_id: uuid.UUID | None = None
         if cursor is not None:
-            cursor_created_at, cursor_id = _decode_cursor(cursor)
+            if sort is ItemSort.random:
+                raise InvalidCursorError()
+            cursor_created_at, cursor_id = _decode_cursor(cursor, sort)
 
         # Fetch one extra row, purely to tell whether another page exists —
         # it's dropped below and never appears in `items`.
@@ -299,11 +319,12 @@ class ItemService:
             cursor_created_at=cursor_created_at,
             cursor_id=cursor_id,
             filters=filters,
+            sort=sort,
         )
-        has_more = len(rows) > limit
+        has_more = len(rows) > limit and sort is not ItemSort.random
         rows = rows[:limit]
 
-        next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        next_cursor = _encode_cursor(rows[-1].created_at, rows[-1].id, sort) if has_more and rows else None
         return await self._with_download_urls(rows), next_cursor
 
     @_tracer.start_as_current_span("items.search")

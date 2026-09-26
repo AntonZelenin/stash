@@ -12,6 +12,7 @@ from app.api.schemas.items import (
     DeleteItemsRequest,
     ItemCountsResponse,
     ItemCreated,
+    ItemSort,
     ItemStatus,
     ItemType,
     ItemTypeCounts,
@@ -30,6 +31,7 @@ from app.api.schemas.items import (
 from app.db import DbSession
 from app.items.models import ItemType as DomainItemType
 from app.items.repos import ItemFilters
+from app.items.repos import ItemSort as DomainItemSort
 from app.items.services import (
     EmptyFileError,
     FileTooLargeError,
@@ -273,6 +275,7 @@ async def list_items(
     favorite: bool = False,
     created_from: AwareDatetime | None = None,
     created_before: AwareDatetime | None = None,
+    sort: ItemSort = ItemSort.newest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
@@ -280,7 +283,11 @@ async def list_items(
     filters = item_filters(type, tag_id, favorite, created_from, created_before)
     try:
         listed_items, next_cursor = await ItemService(session, storage).list_items(
-            user_id=current_user.id, limit=limit, cursor=cursor, filters=filters
+            user_id=current_user.id,
+            limit=limit,
+            cursor=cursor,
+            filters=filters,
+            sort=DomainItemSort(sort.value),
         )
     except InvalidCursorError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid cursor") from None
