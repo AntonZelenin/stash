@@ -7,7 +7,7 @@ use crate::models::{
     ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
     LoginRequest, NewUpload, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
     SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
-    UploadStarted,
+    UploadStarted, VideoUrl,
 };
 
 #[derive(Clone)]
@@ -320,6 +320,35 @@ impl ApiClient {
     ) -> Result<Option<ListedItem>, ApiError> {
         self.get_optional_item(&format!("/items/{item_id}"), access_token)
             .await
+    }
+
+    /// A fresh URL to play a video item from; None if the item no longer
+    /// exists or isn't a video.
+    pub async fn video_url(
+        &self,
+        access_token: &str,
+        item_id: &str,
+    ) -> Result<Option<VideoUrl>, ApiError> {
+        let response = self
+            .authenticated(
+                Method::GET,
+                &format!("/items/{item_id}/video-url"),
+                access_token,
+            )
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response
+                .json()
+                .await
+                .map(Some)
+                .map_err(|_| ApiError::Server),
+            404 => Ok(None),
+            401 => Err(ApiError::Unauthorized),
+            _ => Err(ApiError::Server),
+        }
     }
 
     /// One of the user's items, picked at random; None if they have none.

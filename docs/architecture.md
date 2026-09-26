@@ -211,6 +211,19 @@ lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
 only source of truth. The thumbnail worker builds its key from the job's
 `user_id` and records it only if that user still owns the item.
 
+Video playback: a video file item is played in the clients' own item
+viewer with the browser's native `<video>` player, straight from storage
+(ranged GETs, so seeking works). The original upload is played as is:
+nothing is transcoded, and a format the browser can't play shows a
+message, with the original still downloadable. A listing's `download_url`
+lasts an hour and is signed for downloading, so the viewer instead asks
+`GET /items/{id}/video-url` for a fresh URL each time it opens, signed for
+`VIDEO_PLAYBACK_URL_TTL_SECONDS` (4 hours by default), owner-only like
+every other URL. A URL can still stop working early, when the temporary
+credentials that signed it expire, so the client treats an error on a URL
+that already played as expiry: it fetches a new one and continues from the
+same position.
+
 Behind `app.storage.base.ObjectStorage` (the S3 implementation,
 `MinioStorage`, serves MinIO and AWS S3 alike); item logic never calls
 boto3 or knows which backend it's on.

@@ -12,6 +12,6 @@ pub use models::{
     CurrentUser, ItemCounts, ItemCreated, ItemKindCounts, ItemQuery, ItemSort, ItemTypeCounts,
     ItemUpdate, ListItemsResponse, ListTagsResponse, ListedFile, ListedItem, NewUpload,
     PresignedUpload, RegisterResponse, SavedYear, SearchResponse, Tag, TextItemType, TokenPair,
-    UploadStarted, UploadType,
+    UploadStarted, UploadType, VideoUrl,
 };
 pub use token_store::TokenStore;

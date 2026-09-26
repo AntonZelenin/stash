@@ -178,6 +178,12 @@ class ListedItem:
 
 
 @dataclass(frozen=True)
+class VideoUrl:
+    url: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class ItemCounts:
     # Every item type, and every kind of image/file item, zero where the
     # user has none.
@@ -475,6 +481,24 @@ class ItemService:
             raise ItemNotFoundError()
         [listed] = await self._with_download_urls([row])
         return listed
+
+    async def get_video_url(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> VideoUrl:
+        """A fresh URL to play the item's video from, for a viewer being
+        opened: valid for a whole viewing session
+        (`video_playback_url_ttl_seconds`), and ranged requests (seeking)
+        work with it like with any pre-signed GET. Served as the validated
+        type from the row, with no filename: it's for the player, not for
+        saving (`download_url` stays that). Raises `ItemNotFoundError` if
+        the user has no such item, or it isn't a video."""
+        row = await self._repo.get(item_id=item_id, user_id=user_id)
+        if row is None or row.file is None or files.kind_of(row.file.content_type) is not ContentKind.video:
+            raise ItemNotFoundError()
+        ttl = get_settings().video_playback_url_ttl_seconds
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl)
+        url = await self._storage.generate_download_url(
+            key=row.file.storage_key, expires_in=ttl, content_type=row.file.content_type
+        )
+        return VideoUrl(url=url, expires_at=expires_at)
 
     async def random_item(self, *, user_id: uuid.UUID) -> ListedItem:
         """Any one of the user's items, for "Surprise me". Raises

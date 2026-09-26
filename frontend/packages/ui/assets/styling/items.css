@@ -452,6 +452,99 @@
     scrollbar-width: thin;
 }
 
+/* ---- video: poster (thumbnail or placeholder) + name, opens the player ---- */
+
+.item-card-video-main {
+    display: block;
+    cursor: pointer;
+    outline: none;
+}
+
+.item-card-video:hover,
+.item-card-video:has(.item-card-video-main:focus-visible) {
+    border-color: var(--card-border-hover);
+    box-shadow: 0 6px 16px rgba(20, 22, 27, 0.06);
+}
+
+/* Edge-to-edge like an image, at video proportions; dark like the player
+   it opens. Rounds its own top corners, as the card doesn't clip. */
+.item-card-video-poster {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 16 / 9;
+    border-radius: 13px 13px 0 0;
+    background: #14161b;
+    overflow: hidden;
+}
+
+.item-card-video-poster img,
+.item-card-video-poster video {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* In a corner, so the play badge in the middle doesn't cover it. */
+.item-card-video-placeholder {
+    position: absolute;
+    left: 12px;
+    bottom: 10px;
+    display: flex;
+    color: #9ca3af;
+}
+
+.item-card-video-placeholder .icon {
+    width: 22px;
+    height: 22px;
+}
+
+/* Centered over the poster. */
+.item-card-video-play {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    color: #14161b;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    transform: translate(-50%, -50%);
+    transition: transform 0.15s ease;
+}
+
+.item-card-video-main:hover .item-card-video-play {
+    transform: translate(-50%, -50%) scale(1.08);
+}
+
+.item-card-video-play .icon {
+    width: 22px;
+    height: 22px;
+    /* The triangle's visual center is right of its box's. */
+    margin-left: 3px;
+}
+
+.item-card-video-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 14px 0;
+}
+
+.item-card-video-caption {
+    padding: 0 14px;
+}
+
+.item-card-video .item-card-footer {
+    margin-top: 10px;
+}
+
 /* ---- link: compact, one row ---- */
 
 /* ---- file: compact, icon + filename (+ caption) ---- */
@@ -663,6 +756,61 @@
     max-width: calc(100vw - 48px - var(--lightbox-panel-width));
     max-height: calc(100vh - 112px);
     object-fit: contain;
+}
+
+/* As wide as the viewer allows (up to a limit), and as tall as its aspect
+   ratio makes it, within the same bounds as an image: a video taller than
+   that is letterboxed inside, never cropped or stretched. Unlike an image,
+   small videos are scaled up, so the controls have room. */
+.lightbox-video {
+    display: block;
+    width: min(1280px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    height: auto;
+    /* 16:9 until its metadata gives the real ratio (the default box is a
+       fixed 150px tall). */
+    aspect-ratio: auto 16 / 9;
+    max-height: calc(100vh - 112px);
+    border-radius: 12px 0 0 12px;
+    background: #000;
+    object-fit: contain;
+}
+
+/* Loading, or why the video can't be shown, where it would be. */
+.lightbox-video-status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    box-sizing: border-box;
+    width: min(720px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    max-height: calc(100vh - 112px);
+    aspect-ratio: 16 / 9;
+    padding: 24px;
+    color: #e5e7eb;
+    font-size: 15px;
+    line-height: 1.5;
+    text-align: center;
+}
+
+.lightbox-video-status p {
+    margin: 0;
+    max-width: 36ch;
+}
+
+.lightbox-video-retry {
+    padding: 8px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 8px;
+    background: transparent;
+    color: #fff;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.lightbox-video-retry:hover {
+    background: rgba(255, 255, 255, 0.1);
 }
 
 /* Date and ♡ ⋯ on top, then the caption (scrolls if long), then tags. */
@@ -924,6 +1072,16 @@
     .lightbox-image {
         max-width: calc(100vw - 24px);
         max-height: 70vh;
+    }
+
+    .lightbox-video,
+    .lightbox-video-status {
+        width: calc(100vw - 24px);
+        max-height: 70vh;
+    }
+
+    .lightbox-video {
+        border-radius: 12px 12px 0 0;
     }
 
     .lightbox-panel {

@@ -29,6 +29,7 @@ from app.api.schemas.items import (
     TextItemType,
     UpdateItemRequest,
     UploadStarted,
+    VideoUrl,
 )
 from app.db import DbSession
 from app.items.files import ContentKind, kind_of
@@ -263,6 +264,25 @@ async def get_item(
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
     return to_listed_item(listed)
+
+
+@router.get(
+    "/items/{item_id}/video-url",
+    status_code=status.HTTP_200_OK,
+    response_model=VideoUrl,
+    responses={401: {"description": "Unauthorized"}, 404: {"description": "No such video item"}},
+)
+async def get_video_url(
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> VideoUrl:
+    try:
+        video = await ItemService(session, storage).get_video_url(user_id=current_user.id, item_id=item_id)
+    except ItemNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Video not found") from None
+    return VideoUrl(url=video.url, expires_at=video.expires_at)
 
 
 @router.get(

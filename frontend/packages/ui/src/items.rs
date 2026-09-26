@@ -12,6 +12,7 @@ use crate::icons::{
     IconTrash,
 };
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
+use crate::video::{VideoBody, VideoPlayer};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -173,12 +174,12 @@ enum ViewMode {
 /// favorite button and upload date, and its actions menu.
 ///
 /// The card is a plain box; only the content part is clickable (a link or
-/// file opens, an image opens the viewer), so the tag controls in the
+/// file opens, an image or video opens the viewer), so the tag controls in the
 /// footer never trigger it. The menu sits in a wrapper *beside* the card,
 /// and nothing in the card clips its content, so dropdowns can extend past
 /// short cards.
 ///
-/// Clicking an image opens it in an `ItemView` with the same controls as
+/// Clicking an image or video opens it in an `ItemView` with the same controls as
 /// the card, as does clicking a note's (clamped) preview, to read the whole
 /// text; "Edit" in the menu opens any item there, in edit mode. The
 /// card owns the view, so both show one favorite state and share the same
@@ -236,6 +237,20 @@ fn ItemCard(
         // Before the catch-all below: a file with a caption has `text`
         // too.
         ("file", _, caption) => match (&item.file, &item.download_url) {
+            // Previewed like an image; its viewer fetches its own URL.
+            (Some(file), _) if file.is_video() => (
+                "item-card-media item-card-video",
+                rsx! {
+                    VideoBody {
+                        thumbnail_url: item.thumbnail_url.clone(),
+                        video_url: item.download_url.clone(),
+                        filename: file.filename.clone(),
+                        details: file_details(&file.filename, file.size_bytes),
+                        caption: caption.clone(),
+                        on_open: move |_| view.set(Some(ViewMode::Viewing)),
+                    }
+                },
+            ),
             (Some(file), Some(url)) => (
                 if file.is_media() {
                     "item-card-file item-card-media"
@@ -445,16 +460,24 @@ fn OpenedItem(
     on_tag_click: EventHandler<Tag>,
     on_saved: EventHandler<ListedItem>,
 ) -> Element {
-    // The view shows the full original image, not the thumbnail.
-    let full_size_url = match item.r#type.as_str() {
-        "image" => item.download_url.clone().or(item.thumbnail_url.clone()),
+    let media = match (item.r#type.as_str(), &item.file) {
+        // The view shows the full original image, not the thumbnail.
+        ("image", _) => item
+            .download_url
+            .clone()
+            .or(item.thumbnail_url.clone())
+            .map(ViewMedia::Image),
+        ("file", Some(file)) if file.is_video() => Some(ViewMedia::Video {
+            item_id: item.id.clone(),
+            poster: item.thumbnail_url.clone(),
+        }),
         _ => None,
     };
     let is_note = !matches!(item.r#type.as_str(), "image" | "link" | "file");
 
     rsx! {
         ItemView {
-            image_url: full_size_url,
+            media,
             editing: mode == ViewMode::Editing,
             reading: is_note && mode == ViewMode::Viewing,
             on_close: move |_| on_mode.call(None),
@@ -1170,10 +1193,24 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
     }
 }
 
+/// What an `ItemView` shows beside its panel.
+#[derive(Clone, PartialEq)]
+enum ViewMedia {
+    /// The image at this URL.
+    Image(String),
+    /// The video item's player (it fetches its own URL); `poster` is its
+    /// thumbnail, if any.
+    Video {
+        item_id: String,
+        poster: Option<String>,
+    },
+}
+
 /// An item opened over the whole page, on a dimmed backdrop: a panel with
-/// `children` (the item's content and controls) and, for an image, the
-/// image itself (scaled down to fit the screen if needed, never up) with
-/// the panel beside it on wide screens and below it on narrow ones.
+/// `children` (the item's content and controls) and, for an image or a
+/// video, the `media` itself (scaled down to fit the screen if needed; an
+/// image never up) with the panel beside it on wide screens and below it
+/// on narrow ones.
 ///
 /// The ✕ button, Escape and a click anywhere on the backdrop close it.
 /// While `editing`, Escape calls `on_cancel_edit` instead (like the form's
@@ -1185,14 +1222,19 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
 /// the text inside the panel.
 #[component]
 fn ItemView(
-    image_url: Option<String>,
+    media: Option<ViewMedia>,
     editing: bool,
     #[props(default)] reading: bool,
     on_close: EventHandler<()>,
     on_cancel_edit: EventHandler<()>,
     children: Element,
 ) -> Element {
-    let has_image = image_url.is_some();
+    let has_media = media.is_some();
+    let label = match media {
+        Some(ViewMedia::Image(_)) => t!("item-image-viewer"),
+        Some(ViewMedia::Video { .. }) => t!("item-video-viewer"),
+        None => t!("item-viewer"),
+    };
     let mut dialog = use_signal(|| None::<std::rc::Rc<MountedData>>);
 
     // Keep keyboard focus on the dialog whenever it's not being edited, so
@@ -1212,7 +1254,7 @@ fn ItemView(
             class: if reading { "lightbox lightbox-reading" } else { "lightbox" },
             role: "dialog",
             aria_modal: "true",
-            aria_label: if has_image { t!("item-image-viewer") } else { t!("item-viewer") },
+            aria_label: label,
             // Focusable so it can receive Escape (see the effect above).
             tabindex: "-1",
             onmounted: move |evt| dialog.set(Some(evt.data())),
@@ -1233,18 +1275,26 @@ fn ItemView(
                 }
             },
             div {
-                class: if has_image { "lightbox-content" } else { "lightbox-content lightbox-content-no-media" },
+                class: if has_media { "lightbox-content" } else { "lightbox-content lightbox-content-no-media" },
                 // Also catches clicks on the full-screen backdrops of the
                 // menu and tag picker inside, which only close those.
                 onclick: move |evt| evt.stop_propagation(),
-                if let Some(url) = image_url {
-                    div { class: "lightbox-media",
-                        img {
-                            class: "lightbox-image",
-                            src: "{url}",
-                            alt: t!("item-image-alt"),
+                match media {
+                    Some(ViewMedia::Image(url)) => rsx! {
+                        div { class: "lightbox-media",
+                            img {
+                                class: "lightbox-image",
+                                src: "{url}",
+                                alt: t!("item-image-alt"),
+                            }
                         }
-                    }
+                    },
+                    Some(ViewMedia::Video { item_id, poster }) => rsx! {
+                        div { class: "lightbox-media",
+                            VideoPlayer { item_id, poster }
+                        }
+                    },
+                    None => rsx! {},
                 }
                 div { class: "lightbox-panel", {children} }
             }

@@ -205,6 +205,15 @@ class ListedItem(BaseModel):
     thumbnail_url: str | None = None
 
 
+class VideoUrl(BaseModel):
+    # Temporary, pre-signed URL to play the video from (supports ranged
+    # requests, for seeking); valid for a viewing session.
+    url: str
+    # When `url` stops working (it may stop earlier if the credentials
+    # that signed it expire first).
+    expires_at: datetime
+
+
 class ListItemsResponse(BaseModel):
     items: list[ListedItem]
     next_cursor: str | None = None

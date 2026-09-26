@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # refreshes them shortly before they expire) that can be well before
     # this TTL, so keep it short there and let clients re-fetch the URL.
     image_download_url_ttl_seconds: int = 3600
+    # A video's playback URL (`GET /items/{id}/video-url`), fetched when the
+    # viewer opens, has to last a whole viewing session: the player keeps
+    # making range requests with it for as long as the video is watched
+    # and sought. The same credential caveat applies, so clients fetch a
+    # new URL (and resume where they were) when playback fails with it.
+    video_playback_url_ttl_seconds: int = 4 * 3600
     # How long a pre-signed upload URL can be used to *start* an upload
     # (S3 checks it when the request arrives, so a slow upload may finish
     # later). Also stamped on the pending upload as `expires_at`.
