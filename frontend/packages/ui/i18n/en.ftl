@@ -59,7 +59,7 @@ account-logout = Logout
 ## Capture box
 
 home-title = Save anything. Find anytime.
-home-tagline = Save notes, links, images, videos, audio, and files — all in one place.
+home-tagline = Notes, links, media, and files — all in one place.
 home-drop-hint = Drop files to upload
 home-input-placeholder = Paste a link, drag an image, or type a fleeting thought...
 home-remove-file = Remove file
