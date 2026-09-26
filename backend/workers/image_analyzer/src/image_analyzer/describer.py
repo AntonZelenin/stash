@@ -8,11 +8,19 @@ from stash_worker_core.openai_client import PERMANENT_OPENAI_ERRORS, build_opena
 logger = get_logger(__name__)
 
 _PROMPT = (
-    "You are describing an image saved to a personal content library so that it can be found again later "
-    "by searching. Describe what is clearly visible in the image: the main subjects, setting, notable objects, "
-    "colours, activity, and mood. Transcribe any clearly legible text. "
-    "Do not guess uncertain details. If an object, person, clothing item, or other detail is ambiguous, "
-    "describe it more generally rather than making a specific claim. "
+    "You are describing an image saved to a personal content library so that it can be found again later by searching. "
+    "Describe what is clearly visible in the image, focusing on: "
+    "the main subjects and their activity; "
+    "the overall setting or scene, explicitly naming the broad scene type when apparent,"
+    " such as a city, street, beach, forest, room, or event; "
+    "a few distinctive or important objects, colours, and visual details; "
+    "and the overall mood when it is reasonably apparent. "
+    "Prioritise details that would be useful for searching for this image later. "
+    "Do not list minor background elements unless they are distinctive or important to the scene. "
+    "Infer likely actions or events when reasonably supported by the image. If the interpretation is uncertain, "
+    "describe what is visibly happening without inferring intent or cause."
+    "Do not guess uncertain details. If a detail is ambiguous or not clearly visible, describe it more generally "
+    "rather than making a specific claim. Transcribe any clearly legible text. "
     "Write 2–5 plain sentences in English. Keep transcribed text as written. No markdown and no preamble."
 )
 
