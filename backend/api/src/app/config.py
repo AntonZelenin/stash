@@ -80,8 +80,15 @@ class Settings(BaseSettings):
     # doesn't return the whole library ranked; None returns everything.
     # Measured with text-embedding-3-small on short notes: real matches
     # scored ~0.55-0.66, loosely related items ~0.72-0.8, unrelated ones
-    # mostly 0.83+. Retune if the model changes.
-    search_max_cosine_distance: float | None = 0.8
+    # mostly 0.83+. 0.8 let clearly irrelevant image descriptions through
+    # (~0.78), so the cutoff sits just above the real matches. Retune if
+    # the model changes.
+    search_max_cosine_distance: float | None = 0.7
+    # The user's own text (notes, links, captions) matches a search when its
+    # closest stretch shares at least this share of the query's trigrams
+    # (pg_trgm `word_similarity`, 0-1): 0.6 lets "город" find "городу"
+    # (0.83) and "city" find "cities" (0.6), but not unrelated words.
+    search_min_text_similarity: float = 0.6
 
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Self:

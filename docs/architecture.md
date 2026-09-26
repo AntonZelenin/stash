@@ -669,12 +669,22 @@ Client → API (finalize) → PostgreSQL
 
 ### Search
 
-Client → API → PostgreSQL filename match
-             → OpenAI Responses (query → English) → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search
-             → Results (filename matches first, then semantic matches)
+Client → API → PostgreSQL filename match (query as typed)
+             → OpenAI Responses (query → English) → OpenAI Embeddings (English query)
+             → PostgreSQL pg_trgm user-text match (query as typed)
+             → PostgreSQL full-text description match (English query)
+             → PostgreSQL + pgvector similarity search (English query embedding)
+             → Results (one list, in that order of tiers)
 
-Search has two parts, and filename matches always rank above semantic
-ones:
+Search is hybrid: four matches, ranked in tiers in this order. An item
+found by several is listed once, in the first tier that found it. Text
+the user wrote (filenames, notes, captions) can be in any language, so
+it's matched against the query as typed; the generated descriptions are
+in English, so they're matched against the English rewrite (below). The
+literal matches exist because the embedding alone misses short queries:
+"city" scores ~0.8 cosine distance against a description of "a
+futuristic cyberpunk city", past the semantic threshold, and loosening
+the threshold would let unrelated items back in.
 
 1. Filename match (`ItemRepository.search_by_filename`): files and images
    whose filename (`item_files.filename` / `item_images.filename`) contains
@@ -686,12 +696,26 @@ ones:
    query isn't normalized for this part, since translating it would break
    names. Renames apply immediately. Images uploaded before their name was
    kept have no name to match.
-2. Semantic match, below: items with the closest meaning, minus any already
-   matched by name.
+2. User-text match (`ItemRepository.search_by_user_text`): items whose own
+   text (`item_text_contents`: a note's or link's text, an image's or
+   file's caption) contains something close to the query as typed, by
+   `pg_trgm`'s `word_similarity` (the share of the query's trigrams found
+   in the text's closest stretch) of at least
+   `SEARCH_MIN_TEXT_SIMILARITY` (default 0.6), most similar first.
+   Trigrams are language-neutral and forgiving: "город" finds "городу",
+   "tody" finds "today". A plain scan of the user's items, no index.
+3. Description match (`ItemRepository.search_by_description`): items whose
+   `item_descriptions` text (generated description, plus caption) contains
+   every word of the English query, by Postgres full-text search
+   (`websearch_to_tsquery('english')` against the generated, GIN-indexed
+   `search_vector` column; English stemming, so "cities" finds "city"),
+   best `ts_rank` first. A query of only stopwords ("the") matches nothing
+   here.
+4. Semantic match, below: items with the closest meaning.
 
-Both use the same filters and together return at most `limit` items. If
-the query can't be embedded, the whole search is unavailable (503), even
-when some filenames match.
+All four use the same filters and together return at most `limit` items.
+If the query can't be embedded, the whole search is unavailable (503),
+even when some other part matches.
 
 What's embedded is each item's `item_descriptions` text — the single
 searchable text per item (a note's/link's text, a caption, a generated
@@ -719,9 +743,12 @@ Before a query is embedded, the API has a small, fast model
 (`SEARCH_QUERY_NORMALIZATION_MODEL`, default `gpt-5-nano`, minimal
 reasoning) rewrite it into concise English with the same meaning
 (`app.query_normalization`): searchable text is mostly English, since the
-generated descriptions are, and a Ukrainian query otherwise lands further
+generated image and document descriptions are always written in English
+(the describer prompts ask for it, whatever the content's language), and a
+Ukrainian query otherwise lands further
 from it than the same query in English. English queries are kept as they
-are. Only the rewrite is embedded; nothing else about the search changes.
+are. The rewrite is embedded and used for the description full-text match;
+the filename and user-text matches use the query as typed.
 The rewrite is best-effort: if the call fails, times out
 (`SEARCH_QUERY_NORMALIZATION_TIMEOUT_SECONDS`, default 5, no retries) or
 returns something unusable (empty, or far longer than the query), the
@@ -732,7 +759,7 @@ rewritten.
 `POST /search` embeds the query with the same model and returns the user's
 items by cosine distance (`<=>`), nearest first, via an HNSW index
 (`vector_cosine_ops`; iterative scan so the per-user filter doesn't truncate
-results). Items further than `SEARCH_MAX_COSINE_DISTANCE` (default 0.8) are
+results). Items further than `SEARCH_MAX_COSINE_DISTANCE` (default 0.7) are
 left out, so unrelated items aren't returned. Items without an embedding
 yet aren't searchable.
 

@@ -347,14 +347,20 @@ class ItemService:
         normalizer: QueryNormalizer,
         filters: ItemFilters = ItemFilters(),
     ) -> list[ListedItem]:
-        """Files and images whose filename matches `query` first (see
-        `_filename_terms`), then semantic matches: the user's items whose
-        description embedding is closest in meaning to `query`, most
-        similar first, minus those already listed. The filename match uses
-        the query as typed; for the semantic one it's first rewritten into
-        English (see `app.query_normalization`), since searchable text is
-        mostly English; if that fails, the original query is searched."""
+        """Hybrid search, in tiers: files and images whose filename matches
+        `query` (see `_filename_terms`), then items whose own text (note,
+        link, caption) is close to it (trigram similarity), then items
+        whose description contains its words (full-text), then semantic
+        matches: items whose description embedding is closest in meaning.
+        Each item is listed once, in the first tier that found it.
+
+        User-written text (filenames, notes, captions) can be in any
+        language, so it's matched against the query as typed. Descriptions
+        are generated in English, so the full-text and semantic matches use
+        the query rewritten into English (see `app.query_normalization`);
+        if that fails, the original query is searched."""
         started = time.perf_counter()
+        settings = get_settings()
         name_matches = await self._search_by_filename(user_id=user_id, query=query, limit=limit, filters=filters)
         search_text = await _normalized_query(query, normalizer)
         try:
@@ -362,21 +368,37 @@ class ItemService:
         except Exception as exc:
             logger.exception("Failed to embed search query; search unavailable", query_chars=len(query))
             raise SearchUnavailableError() from exc
-        rows = await self._repo.search_items(
+        text_matches = await self._repo.search_by_user_text(
+            user_id=user_id,
+            query=query,
+            min_similarity=settings.search_min_text_similarity,
+            limit=limit,
+            filters=filters,
+        )
+        description_matches = await self._repo.search_by_description(
+            user_id=user_id, query=search_text, limit=limit, filters=filters
+        )
+        semantic_matches = await self._repo.search_items(
             user_id=user_id,
             query_embedding=query_embedding,
             limit=limit,
-            max_distance=get_settings().search_max_cosine_distance,
+            max_distance=settings.search_max_cosine_distance,
             filters=filters,
         )
-        matched_ids = {item.id for item in name_matches}
-        rows = (name_matches + [row for row in rows if row.id not in matched_ids])[:limit]
+        ranked: dict[uuid.UUID, Item] = {}
+        for tier in (name_matches, text_matches, description_matches, semantic_matches):
+            for item in tier:
+                ranked.setdefault(item.id, item)
+        rows = list(ranked.values())[:limit]
         # The query itself is user content: only its length is logged.
         logger.info(
             "Search completed",
             query_chars=len(query),
             query_rewritten=search_text != query,
             filename_match_count=len(name_matches),
+            user_text_match_count=len(text_matches),
+            description_match_count=len(description_matches),
+            semantic_match_count=len(semantic_matches),
             result_count=len(rows),
             limit=limit,
             item_type=filters.item_type,

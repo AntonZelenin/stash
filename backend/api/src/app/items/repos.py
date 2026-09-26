@@ -3,7 +3,23 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Float, String, and_, bindparam, case, cast, delete, exists, extract, func, or_, select, text, update
+from sqlalchemy import (
+    Float,
+    String,
+    and_,
+    bindparam,
+    case,
+    cast,
+    delete,
+    exists,
+    extract,
+    func,
+    literal_column,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -303,6 +319,54 @@ class ItemRepository:
         )
         if max_distance is not None:
             stmt = stmt.where(distance <= max_distance)
+        stmt = filters.apply(stmt)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def search_by_user_text(
+        self, *, user_id: uuid.UUID, query: str, min_similarity: float, limit: int, filters: ItemFilters = ItemFilters()
+    ) -> list[Item]:
+        """The user's items whose own text (a note's or link's text, an
+        image's or file's caption) contains something close to `query` by
+        pg_trgm's `word_similarity` (the share of the query's trigrams
+        found in the text's closest stretch), most similar first, then
+        newest. Language-neutral, so `query` is searched as typed. A plain
+        scan of the user's items, like the filename match. Postgres +
+        pg_trgm only."""
+        similarity = func.word_similarity(query, TextContent.text)
+        stmt = (
+            select(Item)
+            .join(TextContent, TextContent.item_id == Item.id)
+            .options(*_LISTED_ITEM_LOADS)
+            .where(Item.user_id == user_id, similarity >= min_similarity)
+            .order_by(similarity.desc(), Item.created_at.desc(), Item.id)
+            .limit(limit)
+        )
+        stmt = filters.apply(stmt)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def search_by_description(
+        self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters = ItemFilters()
+    ) -> list[Item]:
+        """The user's items whose searchable text (`item_descriptions`: the
+        AI-generated description, plus the caption) contains every word of
+        `query` (an English query: the text is indexed with the 'english'
+        config, so "cities" finds "city"), best `ts_rank` first, then
+        newest. `websearch_to_tsquery` accepts any input, and a query
+        of only stopwords ("the") matches nothing. Uses the GIN index on
+        `search_vector`. Postgres only."""
+        search_vector = literal_column("item_descriptions.search_vector")
+        ts_query = func.websearch_to_tsquery("english", query)
+        rank = func.ts_rank(search_vector, ts_query)
+        stmt = (
+            select(Item)
+            .join(Description, Description.item_id == Item.id)
+            .options(*_LISTED_ITEM_LOADS)
+            .where(Item.user_id == user_id, search_vector.op("@@")(ts_query))
+            .order_by(rank.desc(), Item.created_at.desc(), Item.id)
+            .limit(limit)
+        )
         stmt = filters.apply(stmt)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -16,9 +17,10 @@ from app.query_normalization import OpenAIQueryNormalizer, get_query_normalizer
 from conftest import FakeEmbedder, FakeObjectStorage, FakeQueryNormalizer
 from helpers import register_and_login, upload_file, upload_image
 
-# The vector similarity query itself is Postgres + pgvector only and these
-# tests run on SQLite, so they cover the endpoint's contract up to the
-# point where it would hit the index.
+# The trigram, full-text and vector queries themselves are Postgres only
+# and these tests run on SQLite, so they're stubbed (`stubbed_searches`):
+# the tests cover the endpoint's contract, which query each search gets,
+# and how their results are ranked and merged.
 
 
 async def test_search_requires_token(client: AsyncClient):
@@ -54,29 +56,50 @@ async def test_search_unavailable_when_query_cannot_be_embedded(client: AsyncCli
     assert response.status_code == 503
 
 
+@dataclass
+class StubbedSearches:
+    """The ids each Postgres-only search "finds", in order, and the
+    queries the text searches were given."""
+
+    user_text: list[str] = field(default_factory=list)
+    description: list[str] = field(default_factory=list)
+    semantic: list[str] = field(default_factory=list)
+    user_text_queries: list[str] = field(default_factory=list)
+    description_queries: list[str] = field(default_factory=list)
+
+
 @pytest.fixture
-def no_vector_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replaces the pgvector query (Postgres only) with one matching
-    nothing, so a search can complete on SQLite."""
+def stubbed_searches(monkeypatch: pytest.MonkeyPatch) -> StubbedSearches:
+    """Replaces the Postgres-only searches (pg_trgm, full-text, pgvector)
+    with ones returning the items whose ids a test puts in the lists, so a
+    search can complete on SQLite. The filename match runs for real."""
+    stub = StubbedSearches()
 
-    async def search_items(self, **kwargs):
-        return []
+    def returning(ids: list[str], queries: list[str] | None = None):
+        async def search(self, *, user_id, limit, query=None, **kwargs):
+            if queries is not None:
+                queries.append(query)
+            items = [await self.get(item_id=UUID(item_id), user_id=user_id) for item_id in ids]
+            return [item for item in items if item is not None][:limit]
 
-    monkeypatch.setattr(ItemRepository, "search_items", search_items)
+        return search
+
+    monkeypatch.setattr(ItemRepository, "search_by_user_text", returning(stub.user_text, stub.user_text_queries))
+    monkeypatch.setattr(ItemRepository, "search_by_description", returning(stub.description, stub.description_queries))
+    monkeypatch.setattr(ItemRepository, "search_items", returning(stub.semantic))
+    return stub
 
 
 @pytest.fixture
-def vector_matches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def no_vector_index(stubbed_searches: StubbedSearches) -> None:
+    """Only the filename match finds anything."""
+
+
+@pytest.fixture
+def vector_matches(stubbed_searches: StubbedSearches) -> list[str]:
     """Like `no_vector_index`, but the "semantic" matches are the items
     whose ids a test puts in the returned list, in that order."""
-    ids: list[str] = []
-
-    async def search_items(self, *, user_id, limit, **kwargs):
-        items = [await self.get(item_id=UUID(item_id), user_id=user_id) for item_id in ids]
-        return [item for item in items if item is not None][:limit]
-
-    monkeypatch.setattr(ItemRepository, "search_items", search_items)
-    return ids
+    return stubbed_searches.semantic
 
 
 _PNG_BYTES = bytes.fromhex(
@@ -158,6 +181,61 @@ async def test_filename_matches_count_towards_the_limit(
     vector_matches.append(await _file(client, storage, token, "summary.pdf"))
 
     assert await _search(client, token, "report", limit=2) == [second, first]
+
+
+async def test_results_are_ranked_by_tier_and_listed_once(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches
+):
+    _, token = await register_and_login(client)
+    by_name = await _file(client, storage, token, "city.pdf")
+    by_text = await _file(client, storage, token, "a.pdf")
+    by_description = await _file(client, storage, token, "b.pdf")
+    by_meaning = await _file(client, storage, token, "c.pdf")
+    # Items found by several searches take the first tier that found them.
+    stubbed_searches.user_text.extend([by_text, by_name])
+    stubbed_searches.description.extend([by_meaning, by_description, by_text])
+    stubbed_searches.semantic.extend([by_meaning, by_name])
+
+    # Filename, then user text, then description (full-text), then semantic.
+    assert await _search(client, token, "city") == [by_name, by_text, by_meaning, by_description]
+
+
+async def test_a_literal_description_match_is_found_without_a_semantic_one(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches
+):
+    _, token = await register_and_login(client)
+    item = await _file(client, storage, token, "render.png")
+    stubbed_searches.description.append(item)
+
+    assert await _search(client, token, "city") == [item]
+
+
+async def test_user_text_is_searched_as_typed_and_descriptions_in_english(
+    client: AsyncClient,
+    embedder: FakeEmbedder,
+    query_normalizer: FakeQueryNormalizer,
+    stubbed_searches: StubbedSearches,
+):
+    query_normalizer.rewrites["місто вночі"] = "city at night"
+    _, token = await register_and_login(client)
+
+    await _search(client, token, "місто вночі")
+
+    assert stubbed_searches.user_text_queries == ["місто вночі"]
+    assert stubbed_searches.description_queries == ["city at night"]
+    assert embedder.queries == ["city at night"]
+
+
+async def test_merged_results_count_towards_the_limit(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches
+):
+    _, token = await register_and_login(client)
+    first, second, third = [await _file(client, storage, token, f"{name}.pdf") for name in "abc"]
+    stubbed_searches.user_text.append(first)
+    stubbed_searches.description.append(second)
+    stubbed_searches.semantic.append(third)
+
+    assert await _search(client, token, "anything", limit=2) == [first, second]
 
 
 async def test_filename_search_applies_the_filters(
