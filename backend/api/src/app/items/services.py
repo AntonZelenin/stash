@@ -1,4 +1,5 @@
 import base64
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -230,6 +231,14 @@ def _decode_cursor(cursor: str, sort: ItemSort) -> tuple[datetime, uuid.UUID]:
         raise InvalidCursorError() from exc
 
 
+def _filename_terms(query: str) -> list[str]:
+    """The words a filename must all contain to match `query`: its runs of
+    letters and digits, lowercased. So "resume 2", "Resume-2" and
+    "resume-2.pdf" all match "resume-2.pdf" (as does "resume", along with
+    every other resume)."""
+    return list(dict.fromkeys(re.findall(r"\w+", query.lower())))
+
+
 def _detect_image_content_type(data: bytes) -> str | None:
     """Sniffs the actual image format from its leading bytes, ignoring the
     client-supplied content type header, which is untrusted."""
@@ -338,12 +347,15 @@ class ItemService:
         normalizer: QueryNormalizer,
         filters: ItemFilters = ItemFilters(),
     ) -> list[ListedItem]:
-        """Semantic search: the user's items whose description embedding is
-        closest in meaning to `query`, most similar first. The query is
-        first rewritten into English (see `app.query_normalization`), since
-        searchable text is mostly English; if that fails, the original
-        query is searched."""
+        """Files and images whose filename matches `query` first (see
+        `_filename_terms`), then semantic matches: the user's items whose
+        description embedding is closest in meaning to `query`, most
+        similar first, minus those already listed. The filename match uses
+        the query as typed; for the semantic one it's first rewritten into
+        English (see `app.query_normalization`), since searchable text is
+        mostly English; if that fails, the original query is searched."""
         started = time.perf_counter()
+        name_matches = await self._search_by_filename(user_id=user_id, query=query, limit=limit, filters=filters)
         search_text = await _normalized_query(query, normalizer)
         try:
             query_embedding = await embedder.embed(search_text)
@@ -357,11 +369,14 @@ class ItemService:
             max_distance=get_settings().search_max_cosine_distance,
             filters=filters,
         )
+        matched_ids = {item.id for item in name_matches}
+        rows = (name_matches + [row for row in rows if row.id not in matched_ids])[:limit]
         # The query itself is user content: only its length is logged.
         logger.info(
             "Search completed",
             query_chars=len(query),
             query_rewritten=search_text != query,
+            filename_match_count=len(name_matches),
             result_count=len(rows),
             limit=limit,
             item_type=filters.item_type,
@@ -370,6 +385,16 @@ class ItemService:
             duration_ms=(time.perf_counter() - started) * 1000,
         )
         return await self._with_download_urls(rows)
+
+    async def _search_by_filename(
+        self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters
+    ) -> list[Item]:
+        terms = _filename_terms(query)
+        if not terms:
+            return []
+        return await self._repo.search_by_filename(
+            user_id=user_id, terms=terms, exact=query.strip().lower(), limit=limit, filters=filters
+        )
 
     async def get_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> ListedItem:
         row = await self._repo.get(item_id=item_id, user_id=user_id)

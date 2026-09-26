@@ -944,6 +944,12 @@ paths:
   /search:
     post:
       summary: Search saved content
+      description: >-
+        Files and images whose filename contains every word of the query
+        (case-insensitive; an exact filename first, then newest first) come
+        first, followed by items whose content is closest in meaning to the
+        query. An item appears only once, and at most `limit` items are
+        returned in total. The filters apply to both.
       operationId: searchItems
 
       security:

@@ -20,5 +20,6 @@ class SearchRequest(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    # Same shape as `GET /items` entries, best match first.
+    # Same shape as `GET /items` entries: filename matches first, then
+    # semantic matches, best first.
     items: list[ListedItem]

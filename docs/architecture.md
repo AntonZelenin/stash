@@ -669,7 +669,29 @@ Client → API (finalize) → PostgreSQL
 
 ### Search
 
-Client → API → OpenAI Responses (query → English) → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search → Results
+Client → API → PostgreSQL filename match
+             → OpenAI Responses (query → English) → OpenAI Embeddings (query) → PostgreSQL + pgvector similarity search
+             → Results (filename matches first, then semantic matches)
+
+Search has two parts, and filename matches always rank above semantic
+ones:
+
+1. Filename match (`ItemRepository.search_by_filename`): files and images
+   whose filename (`item_files.filename` / `item_images.filename`) contains
+   every word of the query as typed (runs of letters and digits,
+   case-insensitive), so "resume 2" and "Resume-2.PDF" both find
+   `resume-2.pdf`. An exact filename match comes first, then newest first.
+   It's a plain `LIKE` scan of the user's items, with no index, which is
+   fine at one user's scale; `pg_trgm` is the option if that changes. The
+   query isn't normalized for this part, since translating it would break
+   names. Renames apply immediately. Images uploaded before their name was
+   kept have no name to match.
+2. Semantic match, below: items with the closest meaning, minus any already
+   matched by name.
+
+Both use the same filters and together return at most `limit` items. If
+the query can't be embedded, the whole search is unavailable (503), even
+when some filenames match.
 
 What's embedded is each item's `item_descriptions` text — the single
 searchable text per item (a note's/link's text, a caption, a generated

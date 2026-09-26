@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Float, String, and_, bindparam, cast, delete, exists, extract, func, or_, select, text, update
+from sqlalchemy import Float, String, and_, bindparam, case, cast, delete, exists, extract, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
@@ -303,6 +303,28 @@ class ItemRepository:
         )
         if max_distance is not None:
             stmt = stmt.where(distance <= max_distance)
+        stmt = filters.apply(stmt)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def search_by_filename(
+        self, *, user_id: uuid.UUID, terms: list[str], exact: str, limit: int, filters: ItemFilters = ItemFilters()
+    ) -> list[Item]:
+        """The user's files and images whose filename contains every one of
+        `terms` (lowercase), case-insensitively. A filename equal to `exact`
+        (lowercase) comes first, then newest first. A plain scan of the
+        user's items: no index, which is fine at one user's scale."""
+        filename = func.lower(func.coalesce(FileMetadata.filename, ImageMetadata.filename))
+        stmt = (
+            select(Item)
+            .outerjoin(FileMetadata, FileMetadata.item_id == Item.id)
+            .outerjoin(ImageMetadata, ImageMetadata.item_id == Item.id)
+            .options(*_LISTED_ITEM_LOADS)
+            .where(Item.user_id == user_id, filename.is_not(None))
+            .where(*(filename.contains(term, autoescape=True) for term in terms))
+            .order_by(case((filename == exact, 0), else_=1), Item.created_at.desc(), Item.id)
+            .limit(limit)
+        )
         stmt = filters.apply(stmt)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
