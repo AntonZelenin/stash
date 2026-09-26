@@ -20,6 +20,8 @@ use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
+/// The capture box: files pasted while it has focus are staged.
+const CAPTURE_FORM_ID: &str = "home-capture-form";
 /// The search box, focused by the Ctrl+F / ⌘F shortcut.
 const SEARCH_INPUT_ID: &str = "home-search-input";
 const LOGO_PNG: Asset = asset!("/assets/stash-logo.png");
@@ -480,6 +482,62 @@ pub fn Home() -> Element {
         document::eval(&script);
     });
 
+    // Pasting files (a screenshot, an image copied from a page, files copied
+    // in the file manager) into the capture box stages them, like picking
+    // them. Dioxus's paste event carries no clipboard data, so a
+    // document-level listener hands them to the file input instead and
+    // fires its `change`: `stage_picked_files` then takes them as picked.
+    // Pastes without files (text, links) are left alone. A pasted image
+    // without a real name (a screenshot: browsers call every clipboard image
+    // "image.png", or give none) is named after the moment it was pasted,
+    // e.g. `image-2026-09-26_17_05_12.png`, local time; its extension comes
+    // from its type, since staging recognizes images by extension.
+    use_effect(move || {
+        let script = format!(
+            r##"
+                if (!window.__stashPasteFiles) {{
+                    window.__stashPasteFiles = true;
+                    const pad = (n) => String(n).padStart(2, "0");
+                    const pastedName = (file, now) => {{
+                        const unnamed = !file.name || /^image\.[a-z0-9]+$/i.test(file.name);
+                        if (!unnamed || !file.type.startsWith("image/")) {{
+                            return file.name;
+                        }}
+                        const subtype = file.type.slice("image/".length).split(/[+;]/)[0];
+                        const extension = {{ jpeg: "jpg" }}[subtype] ?? subtype;
+                        const date = `${{now.getFullYear()}}-${{pad(now.getMonth() + 1)}}-${{pad(now.getDate())}}`;
+                        const time = `${{pad(now.getHours())}}_${{pad(now.getMinutes())}}_${{pad(now.getSeconds())}}`;
+                        return `image-${{date}}_${{time}}.${{extension}}`;
+                    }};
+                    document.addEventListener("paste", (e) => {{
+                        const files = e.clipboardData?.files;
+                        if (!files?.length || !e.target.closest?.("#{CAPTURE_FORM_ID}")) {{
+                            return;
+                        }}
+                        const input = document.getElementById("{FILE_UPLOAD_INPUT_ID}");
+                        if (!input || input.disabled) {{
+                            return;
+                        }}
+                        e.preventDefault();
+                        const transfer = new DataTransfer();
+                        const now = new Date();
+                        for (const file of files) {{
+                            const name = pastedName(file, now);
+                            transfer.items.add(
+                                name === file.name
+                                    ? file
+                                    : new File([file], name, {{ type: file.type, lastModified: file.lastModified }})
+                            );
+                        }}
+                        input.files = transfer.files;
+                        input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                    }});
+                }}
+                "##
+        );
+        document::eval(&script);
+    });
+
     rsx! {
         document::Link { rel: "preconnect", href: "https://fonts.googleapis.com" }
         document::Link {
@@ -530,6 +588,7 @@ pub fn Home() -> Element {
                 }
 
                 form {
+                    id: CAPTURE_FORM_ID,
                     class: "home-input-wrap",
                     onsubmit: move |evt| {
                         evt.prevent_default();

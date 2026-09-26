@@ -63,7 +63,7 @@ home-tagline = Notes, links, media, and files — all in one place.
 home-drop-hint = Drop files to upload
 home-input-placeholder = Paste a link, drag an image, or type a fleeting thought...
 home-remove-file = Remove file
-home-attach = Attach images or files
+home-attach = Attach images or files (or paste them here)
 home-submit = Stash
 home-read-failed = Could not read the selected file
 
