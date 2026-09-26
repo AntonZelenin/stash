@@ -17,7 +17,6 @@ from sqlalchemy import (
     literal_column,
     or_,
     select,
-    text,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,13 +26,13 @@ from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 from app.items.files import FILE_KIND_CONTENT_TYPES, ContentKind, kind_of
 from app.items.models import (
     Description,
-    Embedding,
     FileMetadata,
     ImageMetadata,
     Item,
     ItemStatus,
     ItemType,
     PendingUpload,
+    SearchChunk,
     Tag,
     TextContent,
     Vector,
@@ -130,6 +129,15 @@ class ItemCountRows:
     by_type: dict[ItemType, int]
     by_kind: dict[ContentKind, int]
     favorites: int
+
+
+@dataclass(frozen=True)
+class SemanticMatch:
+    item: Item
+    # Cosine distance of the item's best-matching chunk (0 = same
+    # direction, 2 = opposite), and that chunk's text.
+    distance: float
+    chunk_text: str
 
 
 @dataclass(frozen=True)
@@ -280,10 +288,10 @@ class ItemRepository:
         )
         return result.scalar_one_or_none()
 
-    async def delete_embedding(self, item_id: uuid.UUID) -> None:
-        """For an item left with nothing searchable: its old vector would
+    async def delete_search_chunks(self, item_id: uuid.UUID) -> None:
+        """For an item left with nothing searchable: its old chunks would
         otherwise keep matching text it no longer has."""
-        await self._session.execute(delete(Embedding).where(Embedding.item_id == item_id))
+        await self._session.execute(delete(SearchChunk).where(SearchChunk.item_id == item_id))
 
     async def set_favorite(self, *, item_id: uuid.UUID, user_id: uuid.UUID, is_favorite: bool) -> bool:
         """Marks or unmarks the user's item as a favorite. Returns False if
@@ -326,45 +334,64 @@ class ItemRepository:
         keys = (row.storage_key, row.thumbnail_key, row.file_key)
         return DeletedItem(storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids)
 
-    async def search_items(
+    async def search_by_chunks(
         self,
         *,
         user_id: uuid.UUID,
         query_embedding: list[float],
         limit: int,
-        max_distance: float | None = None,
         filters: ItemFilters = ItemFilters(),
-    ) -> list[Item]:
-        """The user's items nearest to `query_embedding` by cosine distance,
-        nearest first (ties by id, for a stable order). Items without an
-        embedding yet aren't searchable. Postgres + pgvector only.
+    ) -> list[SemanticMatch]:
+        """The user's `limit` items nearest to `query_embedding`, each by
+        its best-matching search chunk: an item's distance is the smallest
+        cosine distance of any of its chunks. Each item once, nearest first
+        (ties by id, for a stable order), with that chunk. No distance
+        cutoff: the caller applies it, to the best distance. Items without
+        chunks yet aren't searchable. Postgres + pgvector only.
 
-        Uses the HNSW index (`vector_cosine_ops`). By default an HNSW scan
-        yields only `hnsw.ef_search` candidates *before* the `user_id`
-        filter is applied, so with other users' items interleaved it could
-        return fewer than `limit` results; iterative scanning keeps going
-        until enough rows pass the filter, in exact distance order.
+        `DISTINCT ON` picks each item's nearest chunk (a per-item `MIN`
+        that also keeps which chunk it was). It computes the distance to
+        every chunk of the user's (filtered) items, exactly, without the
+        HNSW index: fine at one user's scale. To use the index instead,
+        take the candidates from an inner `ORDER BY embedding <=> query
+        LIMIT n` over the chunks (with `hnsw.iterative_scan`, so the
+        `user_id` filter doesn't truncate it), then keep each item's best
+        of those.
         """
-        await self._session.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
-        await self._session.execute(text(f"SET LOCAL hnsw.ef_search = {max(40, 2 * int(limit))}"))
-
         query_vector = cast(
             bindparam("query_embedding", to_pgvector(query_embedding), type_=String), Vector(EMBEDDING_DIMENSIONS)
         )
-        distance = Embedding.embedding.op("<=>", return_type=Float)(query_vector)
-        stmt = (
-            select(Item)
-            .join(Embedding, Embedding.item_id == Item.id)
-            .options(*_LISTED_ITEM_LOADS)
+        distance = SearchChunk.embedding.op("<=>", return_type=Float)(query_vector)
+        best_chunks = (
+            select(SearchChunk.item_id, SearchChunk.text, distance.label("distance"))
+            .join(Item, Item.id == SearchChunk.item_id)
             .where(Item.user_id == user_id)
-            .order_by(distance, Item.id)
-            .limit(limit)
+            .distinct(SearchChunk.item_id)
+            .order_by(SearchChunk.item_id, distance, SearchChunk.position)
         )
-        if max_distance is not None:
-            stmt = stmt.where(distance <= max_distance)
-        stmt = filters.apply(stmt)
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        best_chunks = filters.apply(best_chunks).subquery()
+        nearest = (
+            await self._session.execute(
+                select(best_chunks.c.item_id, best_chunks.c.text, best_chunks.c.distance)
+                .order_by(best_chunks.c.distance, best_chunks.c.item_id)
+                .limit(limit)
+            )
+        ).all()
+        if not nearest:
+            return []
+        items = {
+            item.id: item
+            for item in (
+                await self._session.execute(
+                    select(Item).options(*_LISTED_ITEM_LOADS).where(Item.id.in_([row.item_id for row in nearest]))
+                )
+            ).scalars()
+        }
+        return [
+            SemanticMatch(item=items[row.item_id], distance=row.distance, chunk_text=row.text)
+            for row in nearest
+            if row.item_id in items
+        ]
 
     async def search_by_user_text(
         self, *, user_id: uuid.UUID, query: str, min_similarity: float, limit: int, filters: ItemFilters = ItemFilters()
@@ -393,8 +420,10 @@ class ItemRepository:
         self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters = ItemFilters()
     ) -> list[Item]:
         """The user's items whose searchable text (`item_descriptions`: the
-        AI-generated description, plus the caption) contains every word of
-        `query` (an English query: the text is indexed with the 'english'
+        AI-generated description — for an image, all its search chunks —
+        plus the caption) contains every word of `query`, so "city" finds
+        an image with a "cyberpunk city" chunk however far its embedding
+        is (an English query: the text is indexed with the 'english'
         config, so "cities" finds "city"), best `ts_rank` first, then
         newest. `websearch_to_tsquery` accepts any input, and a query
         of only stopwords ("the") matches nothing. Uses the GIN index on

@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.queue.base import ItemType as QueueItemType
 
-from app.items.models import Description, Embedding, FileMetadata, TextContent
+from app.items.models import Description, FileMetadata, SearchChunk, TextContent
 
 from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import register_and_login, upload_file, upload_image
@@ -215,12 +215,15 @@ async def test_removing_caption_keeps_the_generated_description(client: AsyncCli
     assert await _description(session, item_id) == "A grey cat."
 
 
-async def test_removing_the_only_searchable_text_removes_description_and_embedding(
+async def test_removing_the_only_searchable_text_removes_description_and_search_chunks(
     client: AsyncClient, storage: FakeObjectStorage, session: AsyncSession, embedding_queue: FakeJobQueue
 ):
     _, token = await register_and_login(client)
     item_id = await _image(client, storage, token, text="our cat")
-    session.add(Embedding(item_id=UUID(item_id), embedding="[0]", content_hash="x"))
+    session.add_all(
+        SearchChunk(item_id=UUID(item_id), position=position, text=chunk, embedding="[0]")
+        for position, chunk in enumerate(["our cat", "grey cat, kitten"])
+    )
     await session.commit()
     embedding_queue.published.clear()
 
@@ -228,7 +231,7 @@ async def test_removing_the_only_searchable_text_removes_description_and_embeddi
 
     session.expire_all()
     assert await _description(session, item_id) is None
-    assert await session.get(Embedding, UUID(item_id)) is None
+    assert (await session.execute(select(SearchChunk).where(SearchChunk.item_id == UUID(item_id)))).all() == []
     assert embedding_queue.published == []
 
 

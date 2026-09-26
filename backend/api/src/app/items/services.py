@@ -27,7 +27,7 @@ from app.config import get_settings
 from app.items import files
 from app.items.files import ContentKind
 from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
-from app.items.repos import ItemFilters, ItemRepository, ItemSort
+from app.items.repos import ItemFilters, ItemRepository, ItemSort, SemanticMatch
 from app.query_normalization import QueryNormalizer
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
@@ -277,6 +277,25 @@ async def _normalized_query(query: str, normalizer: QueryNormalizer) -> str:
         return query
 
 
+def _log_semantic_candidates(candidates: list[SemanticMatch], max_distance: float | None) -> None:
+    """TEMPORARY search diagnostics, for tuning `search_max_cosine_distance`
+    and the image analyzer's chunks: every item the semantic search
+    considered, with its best chunk and whether that passed the cutoff.
+    Unlike every other log line, this includes content (the chunk's text:
+    generated from an image, or the user's own note or caption). Remove once
+    search is tuned."""
+    for candidate in candidates:
+        logger.info(
+            "Semantic search candidate",
+            item_id=candidate.item.id,
+            cosine_distance=round(candidate.distance, 4),
+            similarity=round(1 - candidate.distance, 4),
+            best_chunk=candidate.chunk_text,
+            passed_threshold=max_distance is None or candidate.distance <= max_distance,
+            max_cosine_distance=max_distance,
+        )
+
+
 class ItemService:
     def __init__(self, session: AsyncSession, storage: ObjectStorage, outbox: OutboxPublisher | None = None):
         """`outbox` publishes the jobs this service's writes trigger; needed
@@ -359,8 +378,9 @@ class ItemService:
         `query` (see `_filename_terms`), then items whose own text (note,
         link, caption) is close to it (trigram similarity), then items
         whose description contains its words (full-text), then semantic
-        matches: items whose description embedding is closest in meaning.
-        Each item is listed once, in the first tier that found it.
+        matches: items whose best-matching search chunk is closest in
+        meaning, within `search_max_cosine_distance`. Each item is listed
+        once, in the first tier that found it.
 
         User-written text (filenames, notes, captions) can be in any
         language, so it's matched against the query as typed. Descriptions
@@ -386,18 +406,39 @@ class ItemService:
         description_matches = await self._repo.search_by_description(
             user_id=user_id, query=search_text, limit=limit, filters=filters
         )
-        semantic_matches = await self._repo.search_items(
-            user_id=user_id,
-            query_embedding=query_embedding,
-            limit=limit,
-            max_distance=settings.search_max_cosine_distance,
-            filters=filters,
+        semantic_candidates = await self._repo.search_by_chunks(
+            user_id=user_id, query_embedding=query_embedding, limit=limit, filters=filters
         )
+        max_distance = settings.search_max_cosine_distance
+        semantic_matches = [
+            match for match in semantic_candidates if max_distance is None or match.distance <= max_distance
+        ]
+        _log_semantic_candidates(semantic_candidates, max_distance)
+
         ranked: dict[uuid.UUID, Item] = {}
-        for tier in (name_matches, text_matches, description_matches, semantic_matches):
+        # Every tier that found each item, for the diagnostics below.
+        sources: dict[uuid.UUID, list[str]] = {}
+        tiers = {
+            "filename": name_matches,
+            "user_text": text_matches,
+            "description": description_matches,
+            "semantic": [match.item for match in semantic_matches],
+        }
+        for source, tier in tiers.items():
             for item in tier:
                 ranked.setdefault(item.id, item)
+                sources.setdefault(item.id, []).append(source)
         rows = list(ranked.values())[:limit]
+        distances = {match.item.id: match.distance for match in semantic_candidates}
+        # TEMPORARY search diagnostics: how each result was found.
+        for rank, item in enumerate(rows, start=1):
+            logger.info(
+                "Search result",
+                item_id=item.id,
+                rank=rank,
+                match_sources=sources[item.id],
+                cosine_distance=distances.get(item.id),
+            )
         # The query itself is user content: only its length is logged.
         logger.info(
             "Search completed",
@@ -406,6 +447,7 @@ class ItemService:
             filename_match_count=len(name_matches),
             user_text_match_count=len(text_matches),
             description_match_count=len(description_matches),
+            semantic_candidate_count=len(semantic_candidates),
             semantic_match_count=len(semantic_matches),
             result_count=len(rows),
             limit=limit,
@@ -538,7 +580,7 @@ class ItemService:
         """An image's/file's caption. Its description is rebuilt from the
         new caption plus whatever was generated by analysis (see
         `stash_shared.descriptions`); if nothing searchable is left, the
-        description and embedding are removed. Returns whether there's a
+        description and search chunks are removed. Returns whether there's a
         changed description to embed."""
         caption = raw_caption.strip() or None
         old_caption = item.text_content.text if item.text_content is not None else None
@@ -559,7 +601,7 @@ class ItemService:
         if description is None:
             if item.description is not None:
                 await self._session.delete(item.description)
-            await self._repo.delete_embedding(item.id)
+            await self._repo.delete_search_chunks(item.id)
             return False
         if item.description is None:
             item.description = Description(text=description)

@@ -20,11 +20,11 @@ from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import (
     Description,
-    Embedding,
     FileMetadata,
     ImageMetadata,
     Item,
     PendingUpload,
+    SearchChunk,
     Tag,
     TextContent,
     item_tags,
@@ -47,8 +47,8 @@ _TEST_TABLES = [
     ImageMetadata.__table__,
     Description.__table__,
     FileMetadata.__table__,
-    # VECTOR(n) is just a type name to SQLite; tests never store vectors.
-    Embedding.__table__,
+    # VECTOR(n) is just a type name to SQLite, which never checks vectors.
+    SearchChunk.__table__,
     Tag.__table__,
     item_tags,
     outbox_events,
@@ -230,11 +230,11 @@ class FakeEmbedder(Embedder):
         self.queries: list[str] = []
         self.fail = False
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
         if self.fail:
             raise ConnectionError("openai is unreachable")
-        self.queries.append(text)
-        return [0.0] * EMBEDDING_DIMENSIONS
+        self.queries.extend(texts)
+        return [[0.0] * EMBEDDING_DIMENSIONS for _ in texts]
 
 
 @pytest.fixture

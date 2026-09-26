@@ -24,7 +24,8 @@ SQL only; the table itself is created by the API's Alembic migrations.
 Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
 API (search queries) and the embedding worker (item text), so both always
 use the same model and vector size (`EMBEDDING_DIMENSIONS`, which must
-match the `item_embeddings.embedding` column).
+match the `item_search_chunks.embedding` column). An `Embedder` embeds a
+batch of texts in one request (`embed_many`); `embed` is one text.
 
 Also holds `stash_shared.log`: the structured logging abstraction every
 service uses (`get_logger(__name__)`, `log_context`/`bind_context`,

@@ -75,15 +75,17 @@ class Settings(BaseSettings):
     # searched instead.
     search_query_normalization_model: str = "gpt-5-nano"
     search_query_normalization_timeout_seconds: float = 5.0
-    # Results further than this cosine distance from the query (0 = same
-    # direction, 1 = unrelated, 2 = opposite) are left out, so a search
-    # doesn't return the whole library ranked; None returns everything.
-    # Measured with text-embedding-3-small on short notes: real matches
-    # scored ~0.55-0.66, loosely related items ~0.72-0.8, unrelated ones
-    # mostly 0.83+. 0.8 let clearly irrelevant image descriptions through
-    # (~0.78), so the cutoff sits just above the real matches. Retune if
-    # the model changes.
-    search_max_cosine_distance: float | None = 0.7
+    # Items whose best-matching search chunk is further than this cosine
+    # distance from the query (0 = same direction, 1 = unrelated, 2 =
+    # opposite) are left out, so a search doesn't return the whole library
+    # ranked; None returns everything. Measured with text-embedding-3-small,
+    # short queries against an image's short chunks: real matches scored
+    # 0.24-0.53 ("girl" -> "young woman, girl, female" 0.41), unrelated
+    # queries 0.646+ ("man" 0.646, "kitten" 0.695 against that same chunk).
+    # 0.7, tuned for whole-description embeddings, let "kitten" through.
+    # Borderline literal matches ("city" 0.66) are found by the full-text
+    # match instead. Retune if the model or the chunk prompt changes.
+    search_max_cosine_distance: float | None = 0.6
     # The user's own text (notes, links, captions) matches a search when its
     # closest stretch shares at least this share of the query's trigrams
     # (pg_trgm `word_similarity`, 0-1): 0.6 lets "город" find "городу"

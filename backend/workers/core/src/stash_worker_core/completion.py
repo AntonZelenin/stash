@@ -13,15 +13,17 @@ def embedding_job_for(job: ProcessingJob) -> ProcessingJob:
     return ProcessingJob(item_id=job.item_id, user_id=job.user_id, item_type=job.item_type)
 
 
-def log_completion(completed: bool, *, description_chars: int) -> None:
+def log_completion(completed: bool, *, description_chars: int, **fields) -> None:
     """The item's final state transition, shared by the image and document
-    analyzers."""
+    analyzers. `fields`: anything else worth logging about the description
+    (sizes and counts, never its content)."""
     if completed:
         logger.info(
             "Item completed with generated description",
             item_status="completed",
             description_chars=description_chars,
             next_queue=EMBEDDING_JOBS,
+            **fields,
         )
     else:
         # A concurrent duplicate delivery finished it first; see

@@ -6,13 +6,12 @@ has `pytest_plugins = ["stash_worker_core.testing"]`. Needs the `testing`
 extra; never imported by worker code."""
 
 import asyncio
-import hashlib
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
-from sqlalchemy import DateTime, bindparam, event, text
+from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 from stash_shared.outbox import OutboxPublisher
@@ -32,13 +31,6 @@ async def engine() -> AsyncGenerator[AsyncEngine]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    # Postgres has md5() built in; the embedding queries rely on it.
-    @event.listens_for(engine.sync_engine, "connect")
-    def _add_md5(dbapi_connection, _record):
-        dbapi_connection.create_function(
-            "md5", 1, lambda value: hashlib.md5(value.encode("utf-8")).hexdigest(), deterministic=True
-        )
-
     await create_schema(engine)
     yield engine
     await engine.dispose()
@@ -56,9 +48,12 @@ async def create_schema(engine: AsyncEngine) -> None:
         await conn.execute(text("CREATE TABLE item_descriptions (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         await conn.execute(text("CREATE TABLE item_text_contents (item_id TEXT PRIMARY KEY, text TEXT NOT NULL)"))
         # `embedding` is vector(1536) on Postgres; SQLite just keeps whatever
-        # CAST(... AS vector) yields, which tests don't inspect.
+        # CAST(... AS vector) yields.
         await conn.execute(
-            text("CREATE TABLE item_embeddings (item_id TEXT PRIMARY KEY, embedding, content_hash TEXT NOT NULL)")
+            text(
+                "CREATE TABLE item_search_chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, "
+                "position INTEGER NOT NULL, text TEXT NOT NULL, embedding NOT NULL, UNIQUE (item_id, position))"
+            )
         )
         await conn.execute(
             text(

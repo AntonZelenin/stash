@@ -33,9 +33,9 @@ class _RecordingDescriber:
     def __init__(self):
         self.received: list[tuple[bytes, str]] = []
 
-    async def describe(self, image: bytes, *, content_type: str) -> str:
+    async def describe(self, image: bytes, *, content_type: str) -> list[str]:
         self.received.append((image, content_type))
-        return "A teal rectangle."
+        return ["teal rectangle", "plain background"]
 
 
 def _job(item_id: uuid.UUID) -> ProcessingJob:
@@ -93,7 +93,7 @@ async def test_describes_the_image_the_job_points_at_and_completes_the_item(
 
     assert describer.received == [(_THUMBNAIL, "image/webp")]
     assert await fetch_status(engine, item_id) == "completed"
-    assert await fetch_descriptions(engine, item_id) == ["A teal rectangle."]
+    assert await fetch_descriptions(engine, item_id) == ["teal rectangle\nplain background"]
     assert len(queue.acked) == 1
     # Description saved -> handed on for embedding (never embedded here).
     [embedding_job] = embedding_queue.published
@@ -152,7 +152,7 @@ async def test_a_duplicate_job_completes_the_item_once(worker, engine, describer
     assert len(describer.received) == 1
     assert len(queue.acked) == 2
     assert await fetch_status(engine, item_id) == "completed"
-    assert await fetch_descriptions(engine, item_id) == ["A teal rectangle."]
+    assert await fetch_descriptions(engine, item_id) == ["teal rectangle\nplain background"]
     assert [job.item_id for job in embedding_queue.published] == [item_id]
     async with engine.connect() as conn:
         assert (await conn.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one() == 1

@@ -17,8 +17,10 @@ The MVP supports:
 - Semantic and keyword-based search across saved content.
 - Searching by tags and generated descriptions.
 
-Search is semantic: items and queries are embedded with OpenAI embeddings and matched by vector
-similarity (pgvector).
+Search is hybrid: literal matches (filenames, the user's own text, full-text
+over descriptions) plus semantic ones, where each item's text is split into
+short chunks embedded with OpenAI embeddings, and an item matches a query by
+its closest chunk (pgvector).
 
 ## Components
 
@@ -73,9 +75,13 @@ stage a separate worker with its own package (see
    the thumbnail. Undecodable uploads fail here.
 2. Image-analyzer worker (`image_analyzer` service, consumes
    `content_analysis_jobs`): sends the thumbnail — not the original — to the
-   OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), stores
-   the text in `item_descriptions` and completes the item. Tag and embedding
-   generation are not implemented yet.
+   OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), which
+   answers with a JSON list of short search chunks (structured output), each
+   one searchable concept ("anime woman, girl, female", "cyberpunk city,
+   futuristic urban environment", legible text as written...). It stores them
+   one per line in `item_descriptions` and completes the item, handing it on
+   to the embedding stage (see "Search"). Tag generation isn't implemented
+   yet.
 
 The item is `processing` across both stages. Clients display the thumbnail
 (`thumbnail_url`), falling back to the original until it exists. Both
@@ -143,7 +149,8 @@ Stores:
   AI-generated for images (by the worker), the item's own text for
   notes/links (written by the API on save).
 - Tags.
-- Embeddings.
+- Search chunks — each description split into short pieces, each with its
+  embedding (`item_search_chunks`).
 - Processing status.
 
 The schema is managed with Alembic (`backend/api/alembic`). By default the
@@ -421,7 +428,10 @@ succeeded/failed` with `operation`, `model` and `duration_ms`; storage
 failures with `storage_key`.
 
 Never logged: passwords, tokens, emails, note text, captions, filenames,
-search queries (only their length), or document/image content.
+search queries (only their length), or document/image content. One
+temporary exception: search's diagnostics (`Semantic search candidate`)
+log each candidate's best-matching chunk text, while search is being tuned
+(see "Search").
 
 Inside a trace span (see "Tracing"), every record — third-party ones
 included — also carries that span's `trace_id` and `span_id`, added by
@@ -673,7 +683,7 @@ Client → API → PostgreSQL filename match (query as typed)
              → OpenAI Responses (query → English) → OpenAI Embeddings (English query)
              → PostgreSQL pg_trgm user-text match (query as typed)
              → PostgreSQL full-text description match (English query)
-             → PostgreSQL + pgvector similarity search (English query embedding)
+             → PostgreSQL + pgvector best-chunk similarity search (English query embedding)
              → Results (one list, in that order of tiers)
 
 Search is hybrid: four matches, ranked in tiers in this order. An item
@@ -681,10 +691,12 @@ found by several is listed once, in the first tier that found it. Text
 the user wrote (filenames, notes, captions) can be in any language, so
 it's matched against the query as typed; the generated descriptions are
 in English, so they're matched against the English rewrite (below). The
-literal matches exist because the embedding alone misses short queries:
-"city" scores ~0.8 cosine distance against a description of "a
-futuristic cyberpunk city", past the semantic threshold, and loosening
-the threshold would let unrelated items back in.
+literal matches exist because the embedding alone can miss short queries,
+and loosening the semantic threshold would let unrelated items back in.
+That's also why items are embedded as several short chunks rather than
+one text: a whole image description embedded at once scored "city" ~0.8
+cosine distance from "a futuristic cyberpunk city", past the threshold,
+because the concept was diluted by everything else the image shows.
 
 1. Filename match (`ItemRepository.search_by_filename`): files and images
    whose filename (`item_files.filename` / `item_images.filename`) contains
@@ -705,39 +717,52 @@ the threshold would let unrelated items back in.
    Trigrams are language-neutral and forgiving: "город" finds "городу",
    "tody" finds "today". A plain scan of the user's items, no index.
 3. Description match (`ItemRepository.search_by_description`): items whose
-   `item_descriptions` text (generated description, plus caption) contains
-   every word of the English query, by Postgres full-text search
+   `item_descriptions` text (generated description — for an image, all its
+   search chunks — plus caption) contains every word of the English query,
+   so "city" finds an image with a "cyberpunk city" chunk however far that
+   chunk is by meaning, by Postgres full-text search
    (`websearch_to_tsquery('english')` against the generated, GIN-indexed
    `search_vector` column; English stemming, so "cities" finds "city"),
    best `ts_rank` first. A query of only stopwords ("the") matches nothing
    here.
-4. Semantic match, below: items with the closest meaning.
+4. Semantic match, below: items with a chunk closest in meaning.
 
 All four use the same filters and together return at most `limit` items.
 If the query can't be embedded, the whole search is unavailable (503),
 even when some other part matches.
 
-What's embedded is each item's `item_descriptions` text — the single
-searchable text per item (a note's/link's text, a caption, a generated
-image/document description, or caption + description). Embedding is its own
-asynchronous stage, separate from content analysis:
+What's embedded comes from each item's `item_descriptions` text — the
+single searchable text per item (a note's/link's text, a caption, a
+generated image/document description, or caption + description) — split
+into search chunks (`stash_shared.descriptions.search_chunks`): the
+user's own text (note, link, caption) is one chunk however many lines it
+has, and each line of the generated description is a chunk of its own. So
+an image is its caption plus each of the analyzer's chunks; a document's
+description is normally a single chunk. Embedding is its own asynchronous
+stage, separate from content analysis:
 
     text/link item created, or upload with a caption → API ─┐
     image/document description saved → content analyzer ───┴→ embedding_jobs
-        → embedding_worker → OpenAI Embeddings → item_embeddings
+        → embedding_worker → OpenAI Embeddings (all chunks, one request) → item_search_chunks
 
 Events carry only the item id; the embedding worker reads the current
-description when it runs. `item_embeddings` holds one `vector(1536)` per
-item (`text-embedding-3-small` by default, `EMBEDDING_MODEL`; the API and
-worker must use the same model) plus the MD5 of the text it was made from:
-unchanged text isn't re-embedded, and a vector is only saved if the
-description hasn't changed meanwhile. The embedding worker uses the same
+description when it runs. `item_search_chunks` holds one row per chunk:
+its position, text and `vector(1536)` (`text-embedding-3-small` by default,
+`EMBEDDING_MODEL`; the API and worker must use the same model), deleted
+with the item (`ON DELETE CASCADE`). When the text changes, all of an
+item's chunks are replaced in one transaction, never added to: the worker
+row-locks the description, checks it still splits into exactly the chunks
+it embedded (if not, it writes nothing: a newer job is on its way), then
+deletes the old rows and inserts the new ones. Text whose chunks are
+already stored isn't re-embedded. The embedding worker uses the same
 `Worker` as the other stages (retries, 5 attempts, dead-letter queue) but
 never changes an item's status. Its events go through the outbox, in the
 same transaction as the description they're for. An embedding job
 dead-lettered after its retries (e.g. an OpenAI outage longer than them)
-leaves the item without an up-to-date embedding until the job is replayed
-from the dead-letter queue or the text changes again.
+leaves the item without up-to-date chunks until the job is replayed from
+the dead-letter queue or the text changes again. Items saved before search
+chunks existed have none until their text is embedded again (re-analysis
+or an edit); until then they're found by the literal matches only.
 
 Before a query is embedded, the API has a small, fast model
 (`SEARCH_QUERY_NORMALIZATION_MODEL`, default `gpt-5-nano`, minimal
@@ -756,12 +781,27 @@ original query is embedded instead and the search still succeeds. Neither
 the query nor its rewrite is logged, only lengths and whether it was
 rewritten.
 
-`POST /search` embeds the query with the same model and returns the user's
-items by cosine distance (`<=>`), nearest first, via an HNSW index
-(`vector_cosine_ops`; iterative scan so the per-user filter doesn't truncate
-results). Items further than `SEARCH_MAX_COSINE_DISTANCE` (default 0.7) are
-left out, so unrelated items aren't returned. Items without an embedding
-yet aren't searchable.
+`POST /search` embeds the query once, with the same model, and compares it
+with every chunk of the user's (filtered) items by cosine distance (`<=>`).
+An item's distance is that of its best-matching chunk (`DISTINCT ON`
+item, nearest chunk first: a per-item `MIN` that also keeps which chunk
+it was), so each item is listed once, nearest first
+(`ItemRepository.search_by_chunks`). Items whose best chunk is further than
+`SEARCH_MAX_COSINE_DISTANCE` (default 0.6: short chunks score real matches much closer than whole descriptions did, see `app.config`) are left out, so unrelated items
+aren't returned. Items without chunks yet aren't semantically searchable.
+This computes the distance to all of a user's chunks exactly, which is
+fine at one user's scale. `item_search_chunks.embedding` already has an
+HNSW index (`vector_cosine_ops`) for when that changes: the query would
+then take its candidates from an inner `ORDER BY embedding <=> query LIMIT
+n` over the chunks (with `hnsw.iterative_scan`, so the per-user filter
+doesn't truncate them) and keep each item's best of those.
+
+Temporary diagnostics, while search is tuned: each search logs one
+`Semantic search candidate` line per item the semantic match considered
+(`item_id`, `cosine_distance`, `similarity`, `best_chunk` — its text,
+the one content the logs otherwise never carry — and `passed_threshold`),
+and one `Search result` line per returned item with `match_sources`: every
+tier that found it (`filename`, `user_text`, `description`, `semantic`).
 
 ### Tags, favorites and filtering
 
@@ -859,7 +899,7 @@ stored type and never infer it from the content again
   caption plus the generated description (`stash_shared.descriptions`,
   also used by the content analyzers), under a row lock on the item so an
   analyzer finishing at the same moment can't overwrite the edit or be
-  overwritten. With nothing searchable left, the description and embedding
+  overwritten. With nothing searchable left, the description and search chunks
   are removed.
 - Files: the displayed filename, which is also what downloads are named.
   The storage key and stored object never change.

@@ -100,7 +100,7 @@ services:
       # Search queries are embedded with the same model as item text.
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      SEARCH_MAX_COSINE_DISTANCE: ${SEARCH_MAX_COSINE_DISTANCE:-0.7}
+      SEARCH_MAX_COSINE_DISTANCE: ${SEARCH_MAX_COSINE_DISTANCE:-0.6}
       SEARCH_MIN_TEXT_SIMILARITY: ${SEARCH_MIN_TEXT_SIMILARITY:-0.6}
       # Rewrites search queries into English before they're embedded.
       SEARCH_QUERY_NORMALIZATION_MODEL: ${SEARCH_QUERY_NORMALIZATION_MODEL:-gpt-5-nano}

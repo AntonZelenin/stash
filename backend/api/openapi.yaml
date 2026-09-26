@@ -1022,9 +1022,11 @@ paths:
       responses:
         "200":
           description: >-
-            Semantic search: the current user's items closest in meaning to
-            `query` (by embedding cosine similarity, across languages),
-            most similar first; clearly unrelated items are left out. Items
+            Hybrid search: the current user's items whose filename or own
+            text matches `query`, whose description contains its words, then
+            those closest in meaning to it (by embedding cosine similarity
+            of their best-matching part, across languages), each item once;
+            clearly unrelated items are left out. Items
             whose content hasn't been embedded yet (a few seconds after
             saving/analysis) aren't found. Same item shape as `GET /items`.
           content:

@@ -3,15 +3,18 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     JSON,
     String,
     Table,
+    UniqueConstraint,
     Uuid,
     false,
     func,
@@ -76,7 +79,10 @@ class Item(Base):
     image: Mapped["ImageMetadata | None"] = relationship(back_populates="item", uselist=False)
     file: Mapped["FileMetadata | None"] = relationship(back_populates="item", uselist=False)
     description: Mapped["Description | None"] = relationship(back_populates="item", uselist=False)
-    embedding: Mapped["Embedding | None"] = relationship(back_populates="item", uselist=False)
+    # Deleted by the database with the item (never loaded to delete them).
+    search_chunks: Mapped[list["SearchChunk"]] = relationship(
+        back_populates="item", order_by="SearchChunk.position", passive_deletes=True
+    )
     # Sorted by name so every client shows them in the same order.
     tags: Mapped[list["Tag"]] = relationship(secondary="item_tags", order_by="Tag.name")
 
@@ -206,14 +212,32 @@ class Tag(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class Embedding(Base):
-    __tablename__ = "item_embeddings"
+class SearchChunk(Base):
+    """One short piece of an item's searchable text, embedded on its own:
+    a note's or link's text, a caption, one of an image's generated search
+    chunks (see `stash_shared.descriptions.search_chunks`). An item matches
+    a semantic search by its best-matching chunk, so a short query ("girl")
+    isn't diluted by everything else the image shows.
 
-    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
-    # Embedding of the item's description (see `stash_shared.embeddings`),
-    # written by the embedding worker; searched by cosine distance.
+    Written only by the embedding worker, which replaces all of an item's
+    chunks at once whenever its searchable text changes; they go with the
+    item (ON DELETE CASCADE)."""
+
+    __tablename__ = "item_search_chunks"
+    # Leads with `item_id`: serves the per-item replace and cascade, and
+    # keeps each item's chunks in order.
+    __table_args__ = (UniqueConstraint("item_id", "position", name="uq_item_search_chunks_item_id_position"),)
+
+    # INTEGER on SQLite (tests), where only that auto-increments.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), Identity(always=True), primary_key=True
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"))
+    # The chunk's order within the item's text.
+    position: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(String)
+    # Embedding of `text` (see `stash_shared.embeddings`); searched by
+    # cosine distance.
     embedding: Mapped[str] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
-    # Hash of the exact description text `embedding` was made from.
-    content_hash: Mapped[str] = mapped_column(String)
 
-    item: Mapped[Item] = relationship(back_populates="embedding")
+    item: Mapped[Item] = relationship(back_populates="search_chunks")

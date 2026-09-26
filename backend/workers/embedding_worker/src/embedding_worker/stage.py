@@ -12,7 +12,7 @@ QUEUE = EMBEDDING_JOBS
 
 
 def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | None = None) -> Worker:
-    """Consumes `EMBEDDING_JOBS`: stores each item's embedding for semantic search."""
+    """Consumes `EMBEDDING_JOBS`: stores each item's search-chunk embeddings for semantic search."""
     require_openai_key(settings.openai_api_key)
     return build_stage_worker(
         settings,

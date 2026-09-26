@@ -1,4 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncEngine
+from stash_shared import descriptions
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import ProcessingJob
 from stash_worker_core.completion import embedding_job_for, log_completion
@@ -14,6 +15,10 @@ class ImageAnalysisHandler:
     the job points at — the thumbnail, put there by the thumbnail stage — and
     completes the item. Only image descriptions so far (tags aren't
     implemented yet; embeddings are the embedding worker's job).
+
+    The description is a list of short search chunks, stored one per line
+    as the item's generated description: the embedding worker embeds each
+    line on its own (`stash_shared.descriptions.search_chunks`).
 
     Safe to re-run: `complete_item` only writes if the item isn't finished
     yet, so a redelivered job costs at most a repeated OpenAI call, never a
@@ -37,9 +42,10 @@ class ImageAnalysisHandler:
             raise PermanentProcessingError("Image job has no storage reference")
 
         data = await self._storage.download(job.image.storage_key)
-        description = await self._describer.describe(data, content_type=job.image.content_type)
+        chunks = await self._describer.describe(data, content_type=job.image.content_type)
+        description = descriptions.from_chunks(chunks)
         completed = await complete_item(
             self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)
         )
-        log_completion(completed, description_chars=len(description))
+        log_completion(completed, description_chars=len(description), chunk_count=len(chunks))
         await self._outbox.flush()

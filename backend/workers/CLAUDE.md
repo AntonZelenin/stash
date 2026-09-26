@@ -23,7 +23,9 @@ Two form the image pipeline:
    (`items.record_thumbnail`) records the thumbnail and adds that job to the
    outbox in one transaction.
 2. `image_analyzer/`: consumes `CONTENT_ANALYSIS_JOBS`, describes the image
-   the job points at via OpenAI and completes the item.
+   the job points at via OpenAI — as short search chunks (JSON, via
+   structured output), stored one per line as its generated description —
+   and completes the item.
 
 And one analyzes documents:
 
@@ -38,9 +40,11 @@ And one turns searchable text into vectors:
 
 4. `embedding_worker/`: consumes `EMBEDDING_JOBS`, published by the API
    (text items, captions) and by the two analyzers once they've saved a
-   description. Analyzers never call the Embeddings API themselves. Embeds
-   the item's current description and stores it in `item_embeddings` (its
-   own SQL in `items`). Runs with `manages_item_status=False`: items are
+   description. Analyzers never call the Embeddings API themselves. Splits
+   the item's current description into search chunks
+   (`stash_shared.descriptions.search_chunks`), embeds them all in one
+   request and replaces the item's rows in `item_search_chunks` with them
+   (its own SQL in `items`). Runs with `manages_item_status=False`: items are
    already finished, and a failed embedding must not mark them failed.
 
 Each worker looks up the item's status in Postgres by id and drives

@@ -3,13 +3,13 @@ import uuid
 import openai
 import pytest
 from sqlalchemy import text
-from stash_shared.embeddings import EMBEDDING_DIMENSIONS
+from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 from stash_shared.queue.base import Delivery, ItemType, ProcessingJob
 from stash_worker_core.testing import FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
 from stash_worker_core.worker import Worker
 
 from embedding_worker.handler import EmbeddingHandler
-from embedding_worker.items import description_hash, save_embedding
+from embedding_worker.items import EmbeddedChunk, replace_chunks
 
 try:  # the transport library the installed openai SDK builds its errors on
     import httpx2 as httpx
@@ -18,18 +18,25 @@ except ImportError:
 
 
 class _FakeEmbedder:
+    """Records each request's inputs. Each text's vector encodes the text's
+    length, so tests can tell which vector was stored for which chunk."""
+
     def __init__(self, errors: list[Exception] | None = None, on_embed=None):
-        self.texts: list[str] = []
+        self.requests: list[list[str]] = []
         self.errors = list(errors or [])
         self.on_embed = on_embed
 
-    async def embed(self, text: str) -> list[float]:
-        self.texts.append(text)
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        self.requests.append(list(texts))
         if self.on_embed is not None:
             await self.on_embed()
         if self.errors:
             raise self.errors.pop(0)
-        return [0.5] * EMBEDDING_DIMENSIONS
+        return [_vector_for(text) for text in texts]
+
+
+def _vector_for(value: str) -> list[float]:
+    return [float(len(value))] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
 
 
 async def _set_description(engine, item_id, value: str) -> None:
@@ -43,12 +50,31 @@ async def _set_description(engine, item_id, value: str) -> None:
         )
 
 
-async def _embedding_hash(engine, item_id) -> str | None:
+async def _stored_chunks(engine, item_id) -> list[str]:
+    """The texts of the item's stored chunks, in order. (Their vectors
+    can't be read back: SQLite turns `CAST(... AS vector)` into a number.
+    `saved_chunks` shows which vector went with which text.)"""
     async with engine.connect() as conn:
         result = await conn.execute(
-            text("SELECT content_hash FROM item_embeddings WHERE item_id = :id"), {"id": str(item_id)}
+            text("SELECT text FROM item_search_chunks WHERE item_id = :id ORDER BY position"),
+            {"id": str(item_id)},
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars())
+
+
+@pytest.fixture
+def saved_chunks(monkeypatch) -> list[list[EmbeddedChunk]]:
+    """Every list of chunks the handler stores, as it passes them on."""
+    from embedding_worker import handler
+
+    calls: list[list[EmbeddedChunk]] = []
+
+    async def recording_replace_chunks(engine, item_id, chunks):
+        calls.append(chunks)
+        return await replace_chunks(engine, item_id, chunks)
+
+    monkeypatch.setattr(handler, "replace_chunks", recording_replace_chunks)
+    return calls
 
 
 def _delivery(item_id, item_type=ItemType.text, delivery_count: int = 1) -> Delivery:
@@ -91,61 +117,109 @@ async def test_embeds_current_description_of_finished_item(engine, queue, dead_l
 
     await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, item_type))
 
-    assert embedder.texts == ["our cat Mochi"]
-    assert await _embedding_hash(engine, item_id) == description_hash("our cat Mochi")
+    assert embedder.requests == [["our cat Mochi"]]
+    assert await _stored_chunks(engine, item_id) == ["our cat Mochi"]
     assert await fetch_status(engine, item_id) == "completed"
     assert len(queue.acked) == 1
 
 
+async def test_note_is_one_chunk_whatever_its_lines(engine, queue, dead_letters):
+    item_id = uuid.uuid4()
+    note = "shopping\nmilk\neggs"
+    await insert_item(engine, item_id, status="completed", item_type="text", caption=note)
+    await _set_description(engine, item_id, note)
+    embedder = _FakeEmbedder()
+
+    await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id))
+
+    assert embedder.requests == [[note]]
+
+
+async def test_image_chunks_are_embedded_in_one_request_and_stored_one_row_each(
+    engine, queue, dead_letters, saved_chunks
+):
+    """The caption is one chunk, then each generated chunk (one per line);
+    each row keeps the vector made from its own text."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="completed", caption="my wallpaper")
+    await _set_description(
+        engine,
+        item_id,
+        "my wallpaper\n\nanime woman, girl, female\ncyberpunk city, futuristic urban environment\n"
+        "cybernetic leg, mechanical cables",
+    )
+    embedder = _FakeEmbedder()
+
+    await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
+
+    chunks = [
+        "my wallpaper",
+        "anime woman, girl, female",
+        "cyberpunk city, futuristic urban environment",
+        "cybernetic leg, mechanical cables",
+    ]
+    assert embedder.requests == [chunks]
+    assert await _stored_chunks(engine, item_id) == chunks
+    [saved] = saved_chunks
+    assert saved == [EmbeddedChunk(text=chunk, embedding=to_pgvector(_vector_for(chunk))) for chunk in chunks]
+
+
 async def test_unchanged_text_is_not_embedded_again(engine, queue, dead_letters):
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id, status="completed", item_type="text")
-    await _set_description(engine, item_id, "call mom")
+    await insert_item(engine, item_id, status="completed")
+    await _set_description(engine, item_id, "grey cat\nsofa")
     embedder = _FakeEmbedder()
     worker = _worker(engine, embedder, queue, dead_letters)
 
-    await worker.process_message(_delivery(item_id))
-    await worker.process_message(_delivery(item_id))
+    await worker.process_message(_delivery(item_id, ItemType.image))
+    await worker.process_message(_delivery(item_id, ItemType.image))
 
-    assert embedder.texts == ["call mom"]
+    assert embedder.requests == [["grey cat", "sofa"]]
     assert len(queue.acked) == 2
 
 
-async def test_changed_text_replaces_embedding(engine, queue, dead_letters):
-    """E.g. a caption embedded at upload, then caption + generated
-    description once analysis is done."""
+async def test_changed_text_replaces_all_chunks(engine, queue, dead_letters):
+    """E.g. a caption embedded at upload, then caption + generated chunks
+    once analysis is done, then reprocessed into other chunks: each time
+    the old rows are replaced, never added to."""
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id, status="completed")
+    await insert_item(engine, item_id, status="completed", caption="our cat")
     embedder = _FakeEmbedder()
     worker = _worker(engine, embedder, queue, dead_letters)
 
     await _set_description(engine, item_id, "our cat")
     await worker.process_message(_delivery(item_id, ItemType.image))
-    await _set_description(engine, item_id, "our cat\n\nA grey cat asleep on a sofa.")
+    await _set_description(engine, item_id, "our cat\n\ngrey cat, kitten\nsofa, living room\nsleeping")
+    await worker.process_message(_delivery(item_id, ItemType.image))
+    await _set_description(engine, item_id, "our cat\n\ngrey cat asleep on a sofa")
     await worker.process_message(_delivery(item_id, ItemType.image))
 
-    assert embedder.texts == ["our cat", "our cat\n\nA grey cat asleep on a sofa."]
-    assert await _embedding_hash(engine, item_id) == description_hash("our cat\n\nA grey cat asleep on a sofa.")
+    assert embedder.requests == [
+        ["our cat"],
+        ["our cat", "grey cat, kitten", "sofa, living room", "sleeping"],
+        ["our cat", "grey cat asleep on a sofa"],
+    ]
+    assert await _stored_chunks(engine, item_id) == ["our cat", "grey cat asleep on a sofa"]
     async with engine.connect() as conn:
-        rows = (await conn.execute(text("SELECT count(*) FROM item_embeddings"))).scalar_one()
-    assert rows == 1
+        rows = (await conn.execute(text("SELECT count(*) FROM item_search_chunks"))).scalar_one()
+    assert rows == 2
 
 
-async def test_text_changed_while_embedding_is_not_overwritten_by_stale_vector(engine, queue, dead_letters):
+async def test_text_changed_while_embedding_is_not_overwritten_by_stale_vectors(engine, queue, dead_letters):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
     await _set_description(engine, item_id, "our cat")
 
     async def description_changes_meanwhile():
-        await _set_description(engine, item_id, "our cat\n\nA grey cat on a sofa.")
+        await _set_description(engine, item_id, "grey cat\nsofa")
 
     embedder = _FakeEmbedder(on_embed=description_changes_meanwhile)
 
     await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
 
-    # The vector for "our cat" was dropped; the newer text's own job will
+    # The vectors for "our cat" were dropped; the newer text's own job will
     # embed it.
-    assert await _embedding_hash(engine, item_id) is None
+    assert await _stored_chunks(engine, item_id) == []
     assert len(queue.acked) == 1
 
 
@@ -156,13 +230,13 @@ async def test_item_without_description_is_skipped(engine, queue, dead_letters):
 
     await _worker(engine, embedder, queue, dead_letters).process_message(_delivery(item_id, ItemType.image))
 
-    assert embedder.texts == []
+    assert embedder.requests == []
     assert len(queue.acked) == 1
     assert dead_letters.letters == []
 
 
-async def test_save_embedding_for_deleted_item_writes_nothing(engine):
-    assert await save_embedding(engine, uuid.uuid4(), embedding="[0.1]", content_hash="x") is False
+async def test_replace_chunks_for_deleted_item_writes_nothing(engine):
+    assert await replace_chunks(engine, uuid.uuid4(), [EmbeddedChunk(text="cat", embedding="[0.1]")]) is False
 
 
 async def test_outage_is_retried_then_dead_lettered_without_failing_the_item(engine, queue, dead_letters):
@@ -196,3 +270,27 @@ async def test_rejected_input_is_dead_lettered_immediately(engine, queue, dead_l
     assert queue.retried == []
     assert len(dead_letters.letters) == 1
     assert await fetch_status(engine, item_id) == "completed"
+
+
+async def test_openai_embedder_sends_every_text_in_one_request(monkeypatch):
+    """One request for all of an item's chunks; each vector goes back to
+    its own text by the `index` OpenAI returns, whatever the response's
+    order."""
+    from types import SimpleNamespace
+
+    from stash_shared.embeddings import OpenAIEmbedder
+
+    embedder = OpenAIEmbedder(api_key="test")
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+        data = [SimpleNamespace(index=i, embedding=[float(i)]) for i in range(len(kwargs["input"]))]
+        return SimpleNamespace(data=list(reversed(data)))
+
+    monkeypatch.setattr(embedder._client.embeddings, "create", create)
+
+    vectors = await embedder.embed_many(["girl", "city", "cables"])
+
+    assert [request["input"] for request in requests] == [["girl", "city", "cables"]]
+    assert vectors == [[0.0], [1.0], [2.0]]

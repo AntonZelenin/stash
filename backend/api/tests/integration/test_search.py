@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -11,7 +12,7 @@ from app import embeddings
 from app.config import get_settings
 from app.embeddings import get_embedder
 from app.items.models import Item
-from app.items.repos import ItemRepository
+from app.items.repos import ItemRepository, SemanticMatch
 from app.main import app
 from app.query_normalization import OpenAIQueryNormalizer, get_query_normalizer
 from conftest import FakeEmbedder, FakeObjectStorage, FakeQueryNormalizer
@@ -59,11 +60,15 @@ async def test_search_unavailable_when_query_cannot_be_embedded(client: AsyncCli
 @dataclass
 class StubbedSearches:
     """The ids each Postgres-only search "finds", in order, and the
-    queries the text searches were given."""
+    queries the text searches were given. A semantic match's best-chunk
+    distance is `semantic_distances[id]`, well within the cutoff unless
+    given, and its best chunk `semantic_chunks[id]`."""
 
     user_text: list[str] = field(default_factory=list)
     description: list[str] = field(default_factory=list)
     semantic: list[str] = field(default_factory=list)
+    semantic_distances: dict[str, float] = field(default_factory=dict)
+    semantic_chunks: dict[str, str] = field(default_factory=dict)
     user_text_queries: list[str] = field(default_factory=list)
     description_queries: list[str] = field(default_factory=list)
 
@@ -84,9 +89,20 @@ def stubbed_searches(monkeypatch: pytest.MonkeyPatch) -> StubbedSearches:
 
         return search
 
+    async def search_by_chunks(self, *, user_id, limit, **kwargs):
+        items = await returning(stub.semantic)(self, user_id=user_id, limit=limit)
+        return [
+            SemanticMatch(
+                item=item,
+                distance=stub.semantic_distances.get(str(item.id), 0.3),
+                chunk_text=stub.semantic_chunks.get(str(item.id), "some chunk"),
+            )
+            for item in items
+        ]
+
     monkeypatch.setattr(ItemRepository, "search_by_user_text", returning(stub.user_text, stub.user_text_queries))
     monkeypatch.setattr(ItemRepository, "search_by_description", returning(stub.description, stub.description_queries))
-    monkeypatch.setattr(ItemRepository, "search_items", returning(stub.semantic))
+    monkeypatch.setattr(ItemRepository, "search_by_chunks", search_by_chunks)
     return stub
 
 
@@ -236,6 +252,52 @@ async def test_merged_results_count_towards_the_limit(
     stubbed_searches.semantic.append(third)
 
     assert await _search(client, token, "anything", limit=2) == [first, second]
+
+
+async def test_the_cutoff_applies_to_each_items_best_chunk_distance(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches
+):
+    """`search_max_cosine_distance` (0.6) against the distance of each
+    item's best-matching chunk, whatever its other chunks score."""
+    _, token = await register_and_login(client)
+    near, borderline, far = [await _file(client, storage, token, f"{name}.pdf") for name in "abc"]
+    stubbed_searches.semantic.extend([near, borderline, far])
+    stubbed_searches.semantic_distances.update({near: 0.42, borderline: 0.6, far: 0.61})
+
+    assert await _search(client, token, "girl") == [near, borderline]
+
+
+async def test_search_logs_semantic_diagnostics_and_how_each_result_matched(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches, caplog
+):
+    caplog.set_level(logging.INFO)
+    _, token = await register_and_login(client)
+    by_name_and_meaning = await _file(client, storage, token, "city.pdf")
+    by_description = await _file(client, storage, token, "b.pdf")
+    too_far = await _file(client, storage, token, "c.pdf")
+    stubbed_searches.description.append(by_description)
+    stubbed_searches.semantic.extend([by_name_and_meaning, too_far])
+    stubbed_searches.semantic_distances.update({by_name_and_meaning: 0.5, too_far: 0.9})
+    stubbed_searches.semantic_chunks[by_name_and_meaning] = "cyberpunk city, futuristic urban environment"
+
+    await _search(client, token, "city")
+
+    candidates = {
+        str(record.stash_fields["item_id"]): record.stash_fields
+        for record in caplog.records
+        if record.getMessage() == "Semantic search candidate"
+    }
+    assert candidates[by_name_and_meaning]["best_chunk"] == "cyberpunk city, futuristic urban environment"
+    assert candidates[by_name_and_meaning]["cosine_distance"] == 0.5
+    assert candidates[by_name_and_meaning]["similarity"] == 0.5
+    assert candidates[by_name_and_meaning]["passed_threshold"] is True
+    assert candidates[too_far]["passed_threshold"] is False
+    results = {
+        str(record.stash_fields["item_id"]): record.stash_fields["match_sources"]
+        for record in caplog.records
+        if record.getMessage() == "Search result"
+    }
+    assert results == {by_name_and_meaning: ["filename", "semantic"], by_description: ["description"]}
 
 
 async def test_filename_search_applies_the_filters(

@@ -7,8 +7,8 @@ from app.config import get_openai_api_key, get_settings
 
 
 class LazyOpenAIEmbedder(Embedder):
-    """The OpenAI embedder, created on the first `embed`, when the API key
-    is first needed (`get_openai_api_key`). If the key can't be had, `embed`
+    """The OpenAI embedder, created on the first call, when the API key is
+    first needed (`get_openai_api_key`). If the key can't be had, embedding
     raises like any other embedding failure (search answers 503), and the
     next call tries again; once created, the embedder is reused."""
 
@@ -17,10 +17,10 @@ class LazyOpenAIEmbedder(Embedder):
         self._model = model
         self._embedder: OpenAIEmbedder | None = None
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
         if self._embedder is None:
             self._embedder = OpenAIEmbedder(api_key=self._api_key(), model=self._model)
-        return await self._embedder.embed(text)
+        return await self._embedder.embed_many(texts)
 
 
 @lru_cache
