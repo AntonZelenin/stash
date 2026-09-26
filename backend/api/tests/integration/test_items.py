@@ -28,7 +28,7 @@ async def test_create_text_item_persists_and_associates_with_user(client: AsyncC
     text_content = await session.execute(select(TextContent).where(TextContent.item_id == item.id))
     assert text_content.scalar_one().text == "hello world"
 
-    # The note's text is also its description — the single source search
+    # The note's text is also its description â€” the single source search
     # reads from, whatever the item type.
     description = await session.get(Description, item.id)
     assert description.text == "hello world"
