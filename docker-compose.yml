@@ -154,6 +154,13 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-stash}
+      # Processing limits (thumbnailer.config): passed on only if set (in
+      # .env or the shell); unset, the worker's own default applies.
+      THUMBNAIL_MAX_WIDTH:
+      THUMBNAIL_MAX_HEIGHT:
+      THUMBNAIL_MAX_DECLARED_PIXELS:
+      THUMBNAIL_MAX_PIXELS:
+      THUMBNAIL_MAX_SOURCE_BYTES:
     depends_on:
       postgres:
         condition: service_healthy
@@ -188,6 +195,23 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
       DOCUMENT_ANALYSIS_MAX_CHARS: ${DOCUMENT_ANALYSIS_MAX_CHARS:-24000}
+      # Processing limits (document_analyzer.config): passed on only if set (in
+      # .env or the shell); unset, the worker's own default applies.
+      DOCUMENT_MAX_PREFIX_BYTES:
+      DOCUMENT_MAX_BYTES_READ:
+      DOCUMENT_MAX_DOWNLOAD_BYTES:
+      DOCUMENT_MAX_UNCOMPRESSED_BYTES:
+      DOCUMENT_MAX_ARCHIVE_ENTRIES:
+      DOCUMENT_MAX_MEMBER_BYTES:
+      DOCUMENT_MAX_COMPRESSION_RATIO:
+      DOCUMENT_MAX_XML_ELEMENTS:
+      DOCUMENT_MAX_PDF_PAGES:
+      DOCUMENT_MAX_PDF_PAGE_COUNT:
+      DOCUMENT_MAX_PDF_OPEN_BYTES:
+      DOCUMENT_MAX_PDF_PAGE_CONTENT_BYTES:
+      DOCUMENT_MAX_PDF_STREAM_BYTES:
+      DOCUMENT_MAX_TEXT_CHARS:
+      DOCUMENT_PARSE_TIMEOUT_SECONDS:
     depends_on:
       postgres:
         condition: service_healthy

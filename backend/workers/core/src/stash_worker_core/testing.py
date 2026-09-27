@@ -237,12 +237,14 @@ class FakeObjectStore:
     the same way the real store does (permanently).
 
     `bytes_served` counts, per key, every byte a worker read (whole or in
-    ranges), so tests can check how much of an object was read."""
+    ranges), so tests can check how much of an object was read;
+    `largest_read` the most read at once (all of it for a `download`)."""
 
     def __init__(self, objects: dict[str, bytes] | None = None):
         self.objects: dict[str, bytes] = dict(objects or {})
         self.content_types: dict[str, str] = {}
         self.bytes_served: dict[str, int] = {}
+        self.largest_read: dict[str, int] = {}
 
     @staticmethod
     def etag_of(data: bytes) -> str:
@@ -274,6 +276,7 @@ class FakeObjectStore:
 
     def _served(self, key: str, count: int) -> None:
         self.bytes_served[key] = self.bytes_served.get(key, 0) + count
+        self.largest_read[key] = max(self.largest_read.get(key, 0), count)
 
     async def upload(self, key: str, data: bytes, *, content_type: str) -> None:
         self.objects[key] = data

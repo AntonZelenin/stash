@@ -8,7 +8,9 @@ requires-python = ">=3.14"
 dependencies = [
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "openai>=1.66",
-    "pypdf>=5.0",
+    # `parsers` hooks two pypdf internals and sets its limits (see
+    # `parsers._PdfBudget`); check both on upgrading.
+    "pypdf>=6.19,<7",
     "striprtf>=0.0.26",
     "defusedxml>=0.7",
     "charset-normalizer>=3.3",

@@ -1,4 +1,6 @@
+import io
 import uuid
+import zipfile
 
 import pytest
 from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, FileRef, ImageRef, ItemType, ProcessingJob
@@ -19,6 +21,15 @@ from document_analyzer.handler import DocumentAnalysisHandler
 from document_analyzer.parsers import ParserLimits
 
 _KEY = "files/doc.txt"
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _zip(members: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
 
 
 class _FakeDocumentDescriber:
@@ -149,6 +160,16 @@ async def test_large_document_sends_excerpts_within_limit(engine, describer, que
         ("application/octet-stream", b"MZ", "No parser"),  # unsupported format
         ("application/pdf", b"%PDF-1.7 garbage", "Could not extract text"),  # corrupt
         ("text/plain", b"   \n\n  ", "no extractable text"),  # nothing to describe
+        pytest.param(
+            _DOCX, _zip({"word/document.xml": "<w:document><w:p>unclosed"}), "Could not extract text", id="corrupt-docx"
+        ),
+        pytest.param(
+            _DOCX, _zip({"word/document.xml": "<x/>", "../../evil.sh": "boom"}), "outside the archive", id="zip-slip"
+        ),
+        # Over a limit before any text.
+        pytest.param(
+            _DOCX, _zip({"word/document.xml": "<document>" + " " * (20 * 1024 * 1024)}), "200:1", id="zip-bomb"
+        ),
     ],
 )
 async def test_unusable_documents_fail_immediately_without_retry(

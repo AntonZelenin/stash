@@ -23,8 +23,8 @@ locals {
     thumbnailer = {
       handler = "thumbnailer.aws_lambda.handler"
       queue   = "thumbnail_jobs"
-      # Pillow decodes the whole original (the API accepts images up to
-      # 100 MB) before resizing.
+      # Pillow decodes the original (up to 100 MB, read from /tmp) at up
+      # to THUMBNAIL_MAX_PIXELS (50 MP, 200 MB of pixels) before resizing.
       memory_size = 1024
       openai      = false
     }
@@ -35,9 +35,14 @@ locals {
       openai      = true
     }
     document_analyzer = {
-      handler     = "document_analyzer.aws_lambda.handler"
-      queue       = "document_analysis_jobs"
-      memory_size = 512
+      handler = "document_analyzer.aws_lambda.handler"
+      queue   = "document_analysis_jobs"
+      # Parsing a pathological PDF can take ~300 MB of Python allocations
+      # within its processing limits (DOCUMENT_MAX_*), on top of the
+      # runtime and libraries. An estimate until measured: tune it
+      # (lambda_config) from CloudWatch's Max Memory Used, see
+      # docs/deployment.md.
+      memory_size = 768
       openai      = true
       # PDFs are downloaded to /tmp to be parsed (up to
       # DOCUMENT_MAX_DOWNLOAD_BYTES, 512 MB, above the 500 MB upload limit);

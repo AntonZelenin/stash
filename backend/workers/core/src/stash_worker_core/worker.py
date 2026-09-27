@@ -10,7 +10,7 @@ from stash_shared import metrics, tracing
 from stash_shared.log import get_logger, log_context
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob, RetryMode
 
-from stash_worker_core.errors import PermanentProcessingError
+from stash_worker_core.errors import ErrorCategory, PermanentProcessingError, error_category
 from stash_worker_core.items import fail_item, get_item_status, start_attempt
 
 logger = get_logger(__name__)
@@ -78,7 +78,10 @@ class Worker:
       `maxReceiveCount`, so the last attempt the item gets is SQS's last.
     The distinction still matters where the platform retries: a permanent
     error fails the item at once, and redeliveries of it are skipped (the
-    item is `failed`) instead of re-running the handler.
+    item is `failed`) instead of re-running the handler. Retry and
+    dead-letter logs and spans carry the failure's `error_category`
+    (`stash_worker_core.errors.ErrorCategory`): transient, malformed input,
+    processing limit exceeded, or otherwise permanent.
     A message is only ever acked after its outcome is durable, so a crash at
     any point means redelivery, never loss. Redelivery is safe because every
     status write is guarded (see `stash_worker_core.items`) and an item
@@ -341,10 +344,11 @@ class Worker:
             retry_mode=retry_mode,
             delay_seconds=delay,
             duration_ms=_elapsed_ms(started),
+            error_category=error_category(exc),
         )
         span = trace.get_current_span()
         tracing.mark_failed(span, f"Attempt failed; retrying: {exc!r}", error=exc)
-        _set_outcome("retry", retry_mode=retry_mode, retry_delay_seconds=delay)
+        _set_outcome("retry", retry_mode=retry_mode, retry_delay_seconds=delay, error_category=error_category(exc))
         await self._queue.retry_later(delivery, delay_seconds=delay)
         metrics.count("JobRetries", queue=self._queue_label)
 
@@ -376,10 +380,14 @@ class Worker:
         await self._queue.abandon(delivery)
         metrics.count("JobsDeadLettered", queue=self._queue_label)
         tracing.mark_failed(trace.get_current_span(), reason, error=error)
+        # A malformed payload or crashed deliveries have no exception: not
+        # the file's fault as far as we know.
+        category = error_category(error) if error is not None else ErrorCategory.TRANSIENT
         _set_outcome(
             "dead_lettered",
             dead_letter_reason=reason,
             permanent=isinstance(error, PermanentProcessingError),
+            error_category=category,
             item_status=_STATUS_FAILED if marked_failed else None,
         )
         logger.error(
@@ -388,6 +396,7 @@ class Worker:
             reason=reason,
             retry_mode=self._queue.retry_mode,
             permanent=isinstance(error, PermanentProcessingError),
+            error_category=category,
             max_attempts=self._max_attempts,
             duration_ms=duration_ms,
             item_status=_STATUS_FAILED if marked_failed else None,

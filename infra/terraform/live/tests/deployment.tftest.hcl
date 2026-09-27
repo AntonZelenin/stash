@@ -108,6 +108,32 @@ run "api_verifies_turnstile_tokens_for_the_frontend" {
   }
 }
 
+run "document_analyzer_has_memory_for_pdfs" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.main["document_analyzer"].memory_size == 768
+    error_message = "The document analyzer parses PDFs within ~300 MB of allocations; 512 MB leaves too little headroom."
+  }
+  assert {
+    condition     = aws_lambda_function.main["image_analyzer"].memory_size == 256
+    error_message = "Other functions keep their own memory."
+  }
+}
+
+run "document_analyzer_memory_is_configurable" {
+  command = plan
+
+  variables {
+    lambda_config = { document_analyzer = { memory_size = 1024 } }
+  }
+
+  assert {
+    condition     = aws_lambda_function.main["document_analyzer"].memory_size == 1024
+    error_message = "lambda_config overrides the document analyzer's memory."
+  }
+}
+
 run "document_analyzer_has_disk_for_pdfs" {
   command = plan
 

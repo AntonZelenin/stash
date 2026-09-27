@@ -4,7 +4,7 @@ from stash_worker_core.runtime import build_object_store, build_outbox, build_st
 from stash_worker_core.worker import Worker
 
 from thumbnailer.config import Settings
-from thumbnailer.handler import ThumbnailHandler
+from thumbnailer.handler import ImageLimits, ThumbnailHandler
 
 SERVICE = "thumbnailer"
 QUEUE = THUMBNAIL_JOBS
@@ -23,7 +23,12 @@ def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | N
             outbox=build_outbox(settings, engine),
             max_size=settings.thumbnail_max_size,
             quality=settings.thumbnail_quality,
-            max_pixels=settings.thumbnail_max_pixels,
+            limits=ImageLimits(
+                max_width=settings.thumbnail_max_width,
+                max_height=settings.thumbnail_max_height,
+                max_declared_pixels=settings.thumbnail_max_declared_pixels,
+                max_pixels=settings.thumbnail_max_pixels,
+            ),
             max_source_bytes=settings.thumbnail_max_source_bytes,
         ),
     )

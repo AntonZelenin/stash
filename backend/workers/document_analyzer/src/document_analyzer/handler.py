@@ -9,7 +9,7 @@ from stash_shared.log import get_logger
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import ProcessingJob
 from stash_worker_core.completion import embedding_job_for, log_completion
-from stash_worker_core.errors import PermanentProcessingError
+from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
 from stash_worker_core.items import complete_item
 from stash_worker_core.storage import ObjectStore
 
@@ -35,11 +35,12 @@ class DocumentAnalysisHandler:
     described, as a partial document.
 
     Permanent, so dead-lettered without retries: an unsupported format, a
-    file that can't be parsed (corrupt, encrypted...), one with no
-    extractable text (e.g. a scanned PDF — there's no OCR), or one that hits
-    a processing limit before yielding any text. Parsing is deterministic,
-    so retrying those could only fail the same way. Failing to read from
-    storage is transient, even in the middle of parsing.
+    file that can't be parsed (corrupt, encrypted...), or one with no
+    extractable text (e.g. a scanned PDF — there's no OCR), all
+    `MalformedInputError`; or one that hits a processing limit before
+    yielding any text (`ProcessingLimitExceeded`). Parsing is
+    deterministic, so retrying those could only fail the same way. Failing
+    to read from storage is transient, even in the middle of parsing.
 
     Safe to re-run: `complete_item` only writes if the item isn't finished
     yet, so a redelivered job costs at most a repeated OpenAI call.
@@ -75,7 +76,7 @@ class DocumentAnalysisHandler:
             raise PermanentProcessingError("Item has no stored file of the job's user")
         parser = parser_for(stored.content_type)
         if parser is None:
-            raise PermanentProcessingError(f"No parser for {stored.content_type!r}")
+            raise MalformedInputError(f"No parser for {stored.content_type!r}")
 
         key = stored.storage_key
         source = DocumentSource(
@@ -88,19 +89,23 @@ class DocumentAnalysisHandler:
             )
             try:
                 extracted = await asyncio.to_thread(extract_text, parser, source, self._limits)
-            except PermanentProcessingError:
-                raise
             except Exception as exc:
+                # Storage first: a parser may have turned a failed read into
+                # anything, a limit or a parse error included.
                 if source.storage_error is not None:
                     raise source.storage_error from exc
-                raise PermanentProcessingError(f"Could not extract text: {exc!r}") from exc
+                if isinstance(exc, PermanentProcessingError):
+                    raise
+                if isinstance(exc, MemoryError):
+                    raise ProcessingLimitExceeded("Text extraction ran out of memory") from exc
+                raise MalformedInputError(f"Could not extract text: {exc!r}") from exc
             if source.storage_error is not None:
                 # Caught by the parser, which then made do without it.
                 raise source.storage_error
             text = normalize_text(extracted.text)
             tracing.set_attributes(span, text_chars=len(text), bytes_read=source.bytes_read)
         if not text:
-            raise PermanentProcessingError("Document has no extractable text")
+            raise MalformedInputError("Document has no extractable text")
 
         excerpt = select_excerpt(text, self._max_chars)
         is_partial = excerpt.is_partial or extracted.is_partial

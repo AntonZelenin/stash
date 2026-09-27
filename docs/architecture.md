@@ -68,16 +68,23 @@ stage a separate worker with its own package (see
 
 1. Thumbnail worker (`thumbnailer` service, consumes `thumbnail_jobs`):
    downloads the original (the whole file: decoding needs all of it; at
-   most the 100 MB upload limit), makes a WebP thumbnail with Pillow (max
+   most the 100 MB upload limit) to an anonymous temporary file in `/tmp`,
+   in 8 MB ranges, never whole into memory, makes a WebP thumbnail with Pillow (max
    1024px on the longest side, EXIF orientation applied), stores it at
    `users/{user_id}/thumbnails/{item_id}.webp`, records it in
    `item_images.thumbnail_key` (only if the item is still that user's),
    and only then publishes to `content_analysis_jobs`, pointing that job at
-   the thumbnail. Undecodable uploads fail here, and so do images over
-   `THUMBNAIL_MAX_PIXELS` (50 MP) as decoded, checked before decoding: a
-   JPEG decodes straight at 1/2-1/8 scale (never below the thumbnail
-   size), so a 200 MP photo costs a few megapixels, while a small file
-   declaring huge dimensions (a decompression bomb) is refused unread.
+   the thumbnail. Undecodable uploads fail here (only PNG, JPEG, GIF and
+   WebP decoders ever run), and so do images over a limit, all checked from
+   the header before decoding: 50,000 px on either side
+   (`THUMBNAIL_MAX_WIDTH`/`_HEIGHT`), 250 MP as stored
+   (`THUMBNAIL_MAX_DECLARED_PIXELS`, also Pillow's own decompression-bomb
+   guard, whose warning is an error) and 50 MP as decoded
+   (`THUMBNAIL_MAX_PIXELS`, 200 MB of pixels): a JPEG decodes straight at
+   1/2-1/8 scale (never below the thumbnail size), so a 200 MP photo costs
+   a few megapixels, while a small file declaring huge dimensions (a
+   decompression bomb) is refused unread. Only the first frame of an
+   animation is decoded.
 2. Image-analyzer worker (`image_analyzer` service, consumes
    `content_analysis_jobs`): sends the thumbnail — not the original — to the
    OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), which
@@ -851,18 +858,24 @@ settings), far below the upload limit:
 |---|---|---|
 | Plain text (TXT, MD, CSV, JSON, YAML...) | up to 8 MB whole; larger, only the ranges the excerpts come from (a few hundred KB) | — |
 | HTML, XML, FB2, RTF | the first 8 MB (`DOCUMENT_MAX_PREFIX_BYTES`) | XML streamed, entities refused |
-| DOCX/XLSX/PPTX, ODT/ODS/ODP, EPUB, FB2.ZIP | ranges: the ZIP directory, then only the members parsed (never media), at most 64 MB (`DOCUMENT_MAX_BYTES_READ`) | 10,000 entries (checked before the directory is read); 64 MB decompressed, all members together, counted as inflated; XML streamed |
-| PDF | the whole file, to local disk (`/tmp`), never into memory, up to 512 MB (`DOCUMENT_MAX_DOWNLOAD_BYTES`) | 50 pages (half from the start, half spread over the rest); 64 MB per decompressed stream |
+| DOCX/XLSX/PPTX, ODT/ODS/ODP, EPUB, FB2.ZIP | ranges: the ZIP directory, then only the members parsed (never media), at most 64 MB (`DOCUMENT_MAX_BYTES_READ`) | 10,000 entries (declared, checked before the directory is read, and listed); 64 MB decompressed, all members together, counted as inflated; per member at most 64 MB and 200:1 compression (past 1 MB); encrypted members and members outside the archive (`..`, absolute: zip-slip) refused; never extracted to disk; XML streamed, 2,000,000 elements |
+| PDF | the whole file, to local disk (`/tmp`), never into memory, up to 512 MB (`DOCUMENT_MAX_DOWNLOAD_BYTES`); pypdf reads at most 64 MB of it | 10,000 pages in all; 8 MB read and decompressed to open it (cross-references, page tree); 50 pages read (half from the start, half spread over the rest), each only if its content (with its form XObjects) is at most 2 MB, else skipped; 64 MB decompressed in all, 16 MB per stream |
 
-For every format: at most 1,000,000 characters extracted, and 60 s of
-parsing (checked between pages, members, chunks and XML elements). PDFs
+For every format: at most 240,000 characters extracted (10x what's sent
+to OpenAI), and 60 s of parsing (checked between pages, members, chunks,
+every thousand XML elements, every thousand PDF operators, and while
+pypdf reads the file). One uninterruptible library call can overrun it by
+a few seconds; the function's timeout is the backstop. PDFs
 are the one format read whole: objects can be anywhere, and pypdf checks
 the header of every object in the cross-reference table as it opens a file
 (to recover damaged ones), which would fetch most of the file range by
 range anyway. A limit reached after some text was extracted stops there
 and the text so far is described (as excerpts); reached before any, the
 item fails, permanently. The upload itself is never rejected for it. A
-storage error while parsing is retried like any other.
+storage error while parsing is retried like any other. Failures are logged
+and traced with an error category (`stash_worker_core.errors.ErrorCategory`:
+`TRANSIENT`, retried; `MALFORMED_INPUT`, `PROCESSING_LIMIT_EXCEEDED` and
+`PERMANENT`, never retried); users only ever see the item as failed.
 
 The listing's pre-signed `download_url` serves the file under its original
 filename: inline for PDF, plain text and JSON, as a download for everything

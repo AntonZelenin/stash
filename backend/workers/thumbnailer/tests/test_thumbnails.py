@@ -1,12 +1,15 @@
 import io
+import tempfile
 import uuid
+import warnings
 
 import pytest
 from PIL import Image
 from sqlalchemy import text
 from stash_shared import storage_keys
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
-from stash_worker_core.errors import PermanentProcessingError
+from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
+from stash_worker_core.storage import DOWNLOAD_CHUNK_BYTES
 from stash_worker_core.testing import (
     OWNER_ID,
     FakeDeadLetterQueue,
@@ -19,8 +22,9 @@ from stash_worker_core.testing import (
 )
 from stash_worker_core.worker import Worker
 
-from thumbnailer.handler import ThumbnailHandler, make_thumbnail
+from thumbnailer.handler import ImageLimits, ThumbnailHandler, make_thumbnail
 
+_CORRUPT_PNG = bytes.fromhex("89504e470d0a1a0a") + b" corrupt"
 _ORIGINAL_KEY = f"users/{OWNER_ID}/images/original.png"
 
 
@@ -85,7 +89,7 @@ def test_large_jpeg_is_decoded_at_reduced_scale():
     thumbnail, decoded at 1/8 scale."""
     original = _encode(Image.new("RGB", (12_000, 9_000), "navy"), "JPEG")
 
-    thumbnail = _decode(make_thumbnail(original, max_size=1024, quality=80, max_pixels=5_000_000))
+    thumbnail = _decode(make_thumbnail(original, max_size=1024, quality=80, limits=ImageLimits(max_pixels=5_000_000)))
 
     assert thumbnail.size == (1024, 768)
 
@@ -96,14 +100,14 @@ def test_decoding_over_the_pixel_limit_is_refused_before_decoding():
     assert len(original) < 100_000
 
     with pytest.raises(PermanentProcessingError, match="pixel limit"):
-        make_thumbnail(original, max_size=1024, quality=80, max_pixels=50_000_000)
+        make_thumbnail(original, max_size=1024, quality=80, limits=ImageLimits(max_pixels=50_000_000))
 
 
 def test_jpeg_too_large_even_at_reduced_scale_is_refused():
     original = _encode(Image.new("L", (16_000, 16_000)), "JPEG")
 
     with pytest.raises(PermanentProcessingError, match="pixel limit"):
-        make_thumbnail(original, max_size=1024, quality=80, max_pixels=1_000_000)
+        make_thumbnail(original, max_size=1024, quality=80, limits=ImageLimits(max_pixels=1_000_000))
 
 
 @pytest.mark.parametrize(
@@ -114,9 +118,79 @@ def test_jpeg_too_large_even_at_reduced_scale_is_refused():
         _encode(Image.new("RGB", (400, 400)), "JPEG")[:200],  # truncated
     ],
 )
-def test_undecodable_input_is_permanent(data):
-    with pytest.raises(PermanentProcessingError):
+def test_undecodable_input_is_malformed(data):
+    with pytest.raises(MalformedInputError):
         make_thumbnail(data, max_size=1024, quality=80)
+
+
+# ---- image limits: refused from the header, before decoding ----
+
+
+def test_huge_declared_dimensions_are_refused_before_decoding():
+    # A tiny file declaring 20000x20000 pixels (a decompression bomb).
+    original = _encode(Image.new("1", (20_000, 20_000)), "PNG")
+    assert len(original) < 100_000
+
+    with pytest.raises(ProcessingLimitExceeded, match="pixel limit"):
+        make_thumbnail(original, max_size=1024, quality=80)
+
+
+def test_degenerate_strip_over_the_side_limit_is_refused():
+    # Few pixels in all, but absurdly long on one side.
+    original = _encode(Image.new("1", (60_000, 2)), "PNG")
+
+    with pytest.raises(ProcessingLimitExceeded, match="60000x2"):
+        make_thumbnail(original, max_size=1024, quality=80, limits=ImageLimits(max_width=50_000))
+
+
+def test_too_many_declared_pixels_are_refused_even_if_small_decoded():
+    # Within the decoded-pixel limit at 1/8 scale, but over what's declared.
+    original = _encode(Image.new("L", (12_000, 9_000)), "JPEG")
+
+    with pytest.raises(ProcessingLimitExceeded, match="100000000-pixel limit"):
+        make_thumbnail(original, max_size=1024, quality=80, limits=ImageLimits(max_declared_pixels=100_000_000))
+
+
+@pytest.mark.parametrize("size", [(1_200, 1_200), (1_500, 1_500)], ids=["warning-zone", "over-twice"])
+def test_pillows_own_bomb_guard_is_a_limit_not_a_crash(monkeypatch, size):
+    """Pillow's guard (a warning up to twice its limit, an error over it),
+    as `configure_pillow` sets it up, whatever our own limits say."""
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1_000_000)
+    original = _encode(Image.new("RGB", size), "PNG")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with pytest.raises(ProcessingLimitExceeded, match="decompression-bomb"):
+            make_thumbnail(original, max_size=1024, quality=80)
+
+
+def test_pillow_bomb_guard_is_on_and_its_warning_is_an_error():
+    ThumbnailHandler(
+        storage=FakeObjectStore(), engine=None, outbox=None, max_size=1024, quality=80,
+        limits=ImageLimits(max_declared_pixels=123_000_000),
+    )
+
+    assert Image.MAX_IMAGE_PIXELS == 123_000_000
+    with pytest.raises(Image.DecompressionBombWarning):
+        warnings.warn("bomb", Image.DecompressionBombWarning)
+    ThumbnailHandler(storage=FakeObjectStore(), engine=None, outbox=None, max_size=1024, quality=80)
+
+
+def test_formats_the_api_never_accepts_are_not_decoded():
+    # Pillow could decode these, but no upload is one.
+    for format in ("BMP", "TIFF"):
+        with pytest.raises(MalformedInputError):
+            make_thumbnail(_encode(Image.new("RGB", (64, 64)), format), max_size=1024, quality=80)
+
+
+def test_only_the_first_frame_of_an_animation_is_used():
+    frames = [Image.new("RGB", (64, 64), color) for color in ("red", "lime", "blue")]
+    original = _encode(frames[0], "GIF", save_all=True, append_images=frames[1:])
+
+    thumbnail = _decode(make_thumbnail(original, max_size=32, quality=100))
+
+    red, green, blue = thumbnail.convert("RGB").getpixel((16, 16))
+    assert red > 200 and green < 60 and blue < 60
 
 
 # ---- ThumbnailHandler ----
@@ -236,20 +310,107 @@ async def test_item_already_deleted_is_not_processed(engine, storage, analysis_q
 async def test_item_deleted_meanwhile_discards_thumbnail(engine, storage, analysis_queue, handler):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
-    download = storage.download
+    size = storage.size
 
-    async def download_then_delete_item(key, **kwargs):
-        data = await download(key, **kwargs)
+    async def read_then_delete_item(key, **kwargs):
+        result = await size(key, **kwargs)
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM item_images WHERE item_id = :id"), {"id": str(item_id)})
             await conn.execute(text("DELETE FROM items WHERE id = :id"), {"id": str(item_id)})
-        return data
+        return result
 
-    storage.download = download_then_delete_item
+    storage.size = read_then_delete_item
 
     await handler.handle(_job(item_id))
 
     assert thumbnail_key(item_id) not in storage.objects
+    assert analysis_queue.published == []
+
+
+async def test_original_is_read_to_disk_in_ranges_never_whole_into_memory(
+    engine, analysis_queue, monkeypatch
+):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+    monkeypatch.setattr("stash_worker_core.storage.DOWNLOAD_CHUNK_BYTES", 64 * 1024)
+    # Noise doesn't compress: a few hundred KB of PNG.
+    original = _encode(Image.effect_noise((512, 512), 64).convert("RGB"))
+    storage = FakeObjectStore({_ORIGINAL_KEY: original})
+
+    async def no_download(*args, **kwargs):
+        raise AssertionError("the original must not be downloaded into memory")
+
+    storage.download = no_download
+    handler = ThumbnailHandler(
+        storage=storage,
+        engine=engine,
+        outbox=outbox_for(engine, {CONTENT_ANALYSIS_JOBS: analysis_queue}),
+        max_size=1024,
+        quality=80,
+    )
+
+    await handler.handle(_job(item_id))
+
+    assert storage.bytes_served[_ORIGINAL_KEY] == len(original) > 4 * 64 * 1024
+    assert storage.largest_read[_ORIGINAL_KEY] == 64 * 1024
+    assert await fetch_thumbnail_key(engine, item_id) == thumbnail_key(item_id)
+    assert DOWNLOAD_CHUNK_BYTES == 8 * 1024 * 1024  # the real chunk, patched above
+
+
+@pytest.mark.parametrize("data", [_encode(Image.new("RGB", (64, 64))), _CORRUPT_PNG], ids=["ok", "corrupt"])
+async def test_temporary_file_is_removed_on_success_and_failure(engine, analysis_queue, monkeypatch, data):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+    opened = []
+    temporary_file = tempfile.TemporaryFile
+
+    def tracked(*args, **kwargs):
+        opened.append(temporary_file(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", tracked)
+    handler = ThumbnailHandler(
+        storage=FakeObjectStore({_ORIGINAL_KEY: data}),
+        engine=engine,
+        outbox=outbox_for(engine, {CONTENT_ANALYSIS_JOBS: analysis_queue}),
+        max_size=1024,
+        quality=80,
+    )
+
+    try:
+        await handler.handle(_job(item_id))
+    except MalformedInputError:
+        pass
+
+    assert len(opened) == 1 and opened[0].closed
+
+
+async def test_image_over_a_limit_fails_once_without_retries(engine, analysis_queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, storage_key=_ORIGINAL_KEY)
+    dead_letters = FakeDeadLetterQueue()
+    thumbnail_queue = FakeJobQueue()
+    bomb = _encode(Image.new("1", (20_000, 20_000)), "PNG")
+    worker = Worker(
+        queue=thumbnail_queue,
+        dead_letters=dead_letters,
+        engine=engine,
+        handler=ThumbnailHandler(
+            storage=FakeObjectStore({_ORIGINAL_KEY: bomb}),
+            engine=engine,
+            outbox=outbox_for(engine, {CONTENT_ANALYSIS_JOBS: analysis_queue}),
+            max_size=1024,
+            quality=80,
+        ),
+    )
+
+    await worker.process_message(_delivery(_job(item_id)))
+
+    assert await fetch_status(engine, item_id) == "failed"
+    assert [letter.delivery_count for letter in dead_letters.letters] == [1]
+    # Pillow's own guard, as the handler sets it up, is what stops it here.
+    assert "decompression-bomb limit" in dead_letters.letters[0].reason
+    assert thumbnail_queue.retried == []
     assert analysis_queue.published == []
 
 

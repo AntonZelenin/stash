@@ -1,5 +1,6 @@
 import asyncio
 from abc import ABC, abstractmethod
+from typing import IO
 
 import boto3
 from botocore.client import Config
@@ -10,6 +11,10 @@ from stash_shared.log import get_logger
 from stash_worker_core.errors import PermanentProcessingError, ProcessingLimitExceeded
 
 logger = get_logger(__name__)
+
+# `download_to_file` fetches objects in ranges this large: the most of one
+# held in memory at a time.
+DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 
 _MISSING_OBJECT_CODES = {"NoSuchKey", "404", "NotFound"}
 _CHANGED_OBJECT_CODES = {"PreconditionFailed", "412"}
@@ -175,6 +180,25 @@ class S3ObjectStore(ObjectStore):
             if code in _CHANGED_OBJECT_CODES:
                 raise PermanentProcessingError(f"Object {key!r} is not the validated content") from exc
             raise
+
+
+async def download_to_file(
+    store: ObjectStore, key: str, file: IO[bytes], *, max_bytes: int, etag: str | None = None
+) -> int:
+    """Writes the whole object to `file` (e.g. a `tempfile.TemporaryFile`,
+    on local disk) in `DOWNLOAD_CHUNK_BYTES` ranges, so never more than one
+    range of it is in memory, however large it is. For parsers that need a
+    whole file but not in memory. Every range is pinned to `etag`.
+
+    Refused with `ProcessingLimitExceeded`, before any of it is read, if
+    it's over `max_bytes`: bounds the local disk used. Returns its size."""
+    size = await store.size(key, etag=etag)
+    if size > max_bytes:
+        raise ProcessingLimitExceeded(f"Object {key!r} is {size} bytes, over the {max_bytes}-byte limit")
+    for start in range(0, size, DOWNLOAD_CHUNK_BYTES):
+        end = min(size, start + DOWNLOAD_CHUNK_BYTES)
+        file.write(await asyncio.to_thread(store.read_range_blocking, key, start, end, etag=etag))
+    return size
 
 
 def _error_code(exc: BaseException | None) -> str | None:

@@ -107,6 +107,26 @@ Until it's set, registration answers 503 (it never lets a registration
 through unverified); everything else works. The API reads it on the next
 registration, no redeploy needed.
 
+### After the first deployment: document analyzer memory
+
+The document analyzer's 768 MB (`lambda_defaults` in
+`infra/terraform/live/lambda.tf`) is an estimate from its processing
+limits, not a measurement: nothing has run on Lambda yet. Upload
+representative large and pathological files — a few hundred pages of PDF,
+a scanned PDF, a PDF near 500 MB, and ones hitting the limits (huge
+cross-reference table, a page of megabytes of drawing operators, a zip bomb
+DOCX) — then check the function in CloudWatch:
+
+- Max Memory Used (the `REPORT` line of each invocation, or Lambda
+  Insights): compare it with the memory size;
+- Duration: compare it with the timeout (`worker_timeout_seconds`);
+- timeouts and out-of-memory errors (`Runtime exited` / `Task timed out` in
+  the logs, the function's `Errors` metric, messages reaching its DLQ).
+
+Adjust it with `lambda_config = { document_analyzer = { memory_size = ... } }`
+(more memory also means more CPU on Lambda, so faster parsing). Do the
+same for the thumbnailer (1024 MB) with large images.
+
 ## Pull requests and `main`
 
 `ci.yml`, on every pull request:

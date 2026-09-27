@@ -25,7 +25,7 @@ Modules:
 - `openai_client` — OpenAI client setup shared by the workers that call
   OpenAI, and which OpenAI errors are permanent
   (`errors.PermanentProcessingError`) vs. transient (anything else).
-- `storage` — small S3 object store: bounded download, size, ranged reads, upload, delete.
+- `storage` — small S3 object store: bounded download, size, ranged reads, upload, delete; `download_to_file` streams a whole object to local disk in ranges (never whole into memory).
 - `ranged` — `RangeReader`, a seekable file over part of a stored object (fetches only what's read, within a byte limit).
 - `config.WorkerSettings` — the settings every worker has (DB, queue, S3,
   retries, observability); each worker subclasses it with its own.
@@ -35,7 +35,8 @@ Modules:
   settings explicitly.
 - `aws_lambda.SqsWorkerFunction` — the Lambda runtime each worker's
   `aws_lambda.handler` is an instance of.
-- `db`, `errors`.
+- `errors` — `PermanentProcessingError` (never retried) and its kinds `MalformedInputError` and `ProcessingLimitExceeded`; `error_category` classifies any failure (`ErrorCategory`) for logs and spans.
+- `db`.
 - `testing` — fakes (queues, dead letters, object store), the minimal
   SQLite schema and the `engine`/`lambda_db` fixtures, for this package's
   tests and every worker's (`pytest_plugins = ["stash_worker_core.testing"]`

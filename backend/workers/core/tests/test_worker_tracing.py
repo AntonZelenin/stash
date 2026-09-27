@@ -15,7 +15,7 @@ from stash_shared import tracing
 from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
 
 from conftest import DescribingHandler
-from stash_worker_core.errors import PermanentProcessingError
+from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
 from stash_worker_core.testing import (
     FakeDeadLetterQueue,
     FakeJobQueue,
@@ -183,6 +183,7 @@ async def test_a_retry_span_records_who_schedules_the_retry(engine, spans):
 
     valkey, sqs = _process_spans(spans)
     assert (valkey.attributes["outcome"], valkey.attributes["retry_mode"]) == ("retry", "backoff")
+    assert valkey.attributes["error_category"] == "TRANSIENT"
     assert valkey.attributes["retry_delay_seconds"] > 0
     # SQS: the visibility timeout decides, so there's no delay to record.
     assert (sqs.attributes["outcome"], sqs.attributes["retry_mode"]) == ("retry", "visibility_timeout")
@@ -201,8 +202,29 @@ async def test_permanent_error_is_recorded_on_the_delivery_span(engine, spans):
     [span] = _process_spans(spans)
     assert span.attributes["outcome"] == "dead_lettered"
     assert span.attributes["permanent"] is True
+    assert span.attributes["error_category"] == "PERMANENT"
     assert span.attributes["dead_letter_reason"] == "bad image"
     assert span.status.status_code == StatusCode.ERROR
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (ProcessingLimitExceeded("Image is over the 50000000-pixel limit"), "PROCESSING_LIMIT_EXCEEDED"),
+        (MalformedInputError("Could not decode image"), "MALFORMED_INPUT"),
+    ],
+)
+async def test_failure_category_is_recorded_and_never_retried(engine, spans, error, category):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id)
+    delivery, _upstream = _published_delivery(item_id)
+    queue = FakeJobQueue()
+
+    await _worker(engine, _FlakyDescriber([error]), queue=queue).process_message(delivery)
+
+    [span] = _process_spans(spans)
+    assert (span.attributes["outcome"], span.attributes["error_category"]) == ("dead_lettered", category)
+    assert queue.retried == []
 
 
 async def test_skipped_job_says_why(engine, spans):

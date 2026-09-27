@@ -35,8 +35,9 @@ And one analyzes documents:
    `DocumentParser` per content type (add formats there), `excerpt` picks
    which part of a long text is sent, then `describer`, and `handler` is
    the worker's handler. Parsers read only what they need, within
-   `ParserLimits` (bytes read, decompressed, pages, characters, time),
-   never the whole upload by default (see the `parsers` docstring).
+   `ParserLimits` (bytes read, decompressed, per ZIP member, XML elements,
+   PDF pages and page content, characters, time), never the whole upload
+   by default (see the `parsers` docstring).
 
 And one turns searchable text into vectors:
 
@@ -79,7 +80,14 @@ Every worker package (`<worker>/src/<worker>/`) has the same shape:
 Rules:
 - Never read an upload into memory unbounded: files may be up to 500 MB.
   `ObjectStore.download` takes the most a caller accepts; to read part of
-  a file, use `size` and `read_range_blocking` (or `stash_worker_core.ranged`).
+  a file, use `size` and `read_range_blocking` (or `stash_worker_core.ranged`);
+  a parser that needs a whole file gets it on local disk
+  (`stash_worker_core.storage.download_to_file`, into a
+  `tempfile.TemporaryFile`: never a name derived from the upload).
+- Bound the work an upload may cost with limits in the worker's settings,
+  separate from (and far below) the upload limits. Raise
+  `ProcessingLimitExceeded` past one, `MalformedInputError` for input that
+  can't be parsed; neither is retried.
 - A worker never imports another worker. Code two workers need goes in
   `core`; code only one needs stays in that worker, SQL included.
 - A worker's third-party dependencies go in its own `pyproject.toml`.

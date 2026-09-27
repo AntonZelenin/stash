@@ -4,14 +4,23 @@ reached after some text keeps that text (partial); before any, it fails."""
 
 import io
 import random
+import struct
+import tempfile
 import zipfile
 import zlib
 
 import pytest
-from stash_worker_core.errors import ProcessingLimitExceeded
+from stash_worker_core.errors import MalformedInputError, ProcessingLimitExceeded
 
 from document_analyzer.excerpt import SEPARATOR
-from document_analyzer.parsers import DocumentSource, ExtractedText, ParserLimits, extract_text, parser_for
+from document_analyzer.parsers import (
+    DocumentSource,
+    ExtractedText,
+    ParserLimits,
+    TextCollector,
+    extract_text,
+    parser_for,
+)
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -36,9 +45,11 @@ def _docx(paragraphs: int, *, extra: dict[str, bytes] | None = None) -> bytes:
     return _zip({"word/document.xml": f'<w:document xmlns:w="{_W}"><w:body>{body}</w:body></w:document>', **(extra or {})})
 
 
-def _pdf(page_contents: list[bytes], *, extra_objects: list[bytes] = ()) -> bytes:
+def _pdf(page_contents: list[bytes], *, extra_objects: list[bytes] = (), xobjects: str = "") -> bytes:
     """A PDF with one page per content stream (Helvetica as F1), plus any
-    `extra_objects` no page refers to."""
+    `extra_objects`, numbered from `_first_extra(len(page_contents))`, which
+    pages refer to only through `xobjects` (e.g. "/Fm1 9 0 R"), their
+    /XObject resources."""
     count = len(page_contents)
     font = 3 + 2 * count
     objects = [
@@ -49,7 +60,7 @@ def _pdf(page_contents: list[bytes], *, extra_objects: list[bytes] = ()) -> byte
     for index, content in enumerate(page_contents):
         objects.append(
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {4 + 2 * index} 0 R "
-            f"/Resources << /Font << /F1 {font} 0 R >> >> >>".encode()
+            f"/Resources << /Font << /F1 {font} 0 R >> /XObject << {xobjects} >> >> >>".encode()
         )
         objects.append(content)
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
@@ -67,6 +78,19 @@ def _pdf(page_contents: list[bytes], *, extra_objects: list[bytes] = ()) -> byte
         out.write(f"{offset:010d} 00000 n \n".encode())
     out.write(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode())
     return out.getvalue()
+
+
+def _first_extra(pages: int) -> int:
+    """The object number of `_pdf`'s first extra object."""
+    return 4 + 2 * pages
+
+
+def _form(content: bytes, *, pages: int, flate: bool = False) -> bytes:
+    """A form XObject drawing `content`, for the `extra_objects` of a `_pdf`
+    of `pages` pages, whose font it uses (pypdf skips forms without
+    resources)."""
+    header = f"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 {3 + 2 * pages} 0 R >> >> "
+    return _stream(content, flate=flate).replace(b"<< ", header.encode(), 1)
 
 
 def _stream(data: bytes, *, flate: bool = False) -> bytes:
@@ -283,3 +307,250 @@ def test_running_out_of_time_keeps_the_text_so_far():
 def test_running_out_of_time_before_any_text_fails():
     with pytest.raises(ProcessingLimitExceeded, match="time"):
         _run("application/pdf", _pdf([_page_text("Late")]), timeout_seconds=-1)
+
+
+# ---- ZIP entries: checked from the directory, before inflating ----
+
+
+def _paragraphs_xml(*texts: str, padding: str = "") -> str:
+    body = "".join(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in texts)
+    return f'<w:document xmlns:w="{_W}"><w:body>{body}{padding}</w:body></w:document>'
+
+
+def test_member_compressing_past_the_ratio_limit_stops_there_keeping_text_so_far():
+    # ~1000:1, like a zip bomb: 20 MB of spaces, well within the archive's
+    # decompression budget, inflates no further than 200x its size.
+    data = _zip({"word/document.xml": _paragraphs_xml("Title", "Intro", padding=" " * (20 * MB))})
+    compressed = zipfile.ZipFile(io.BytesIO(data)).getinfo("word/document.xml").compress_size
+    assert 20 * MB / compressed > 500
+
+    extracted, _ = _run(DOCX, data)
+
+    assert extracted.text.startswith("Title\nIntro\n")
+    assert extracted.is_partial and "200:1" in extracted.stopped_by
+
+
+def test_zip_bomb_member_with_no_text_before_the_ratio_limit_fails():
+    data = _zip({"word/document.xml": f'<w:document xmlns:w="{_W}"><w:body>' + " " * (20 * MB)})
+
+    with pytest.raises(ProcessingLimitExceeded, match="200:1"):
+        _run(DOCX, data)
+
+
+def test_small_members_may_compress_however_well():
+    # Highly repetitive, but under the 1 MB grace: read whole.
+    data = _zip({"word/document.xml": _paragraphs_xml(*["Same line"] * 20_000)})
+
+    extracted, _ = _run(DOCX, data, max_compression_ratio=2)
+
+    assert extracted.text.count("Same line") == 20_000 and not extracted.is_partial
+
+
+def test_oversized_uncompressed_member_stops_at_the_member_limit():
+    # Stored, so no ratio: ~3 MB of paragraphs, over a 1 MB member limit.
+    data = _zip({"word/document.xml": _paragraphs_xml(*(f"Paragraph {i}" for i in range(80_000)))},
+                compression=zipfile.ZIP_STORED)
+
+    extracted, source = _run(DOCX, data, max_member_bytes=1 * MB, max_text_chars=10 * MB)
+
+    assert extracted.text.startswith("Paragraph 0\n")
+    assert extracted.is_partial and f"past {1 * MB} bytes" in extracted.stopped_by
+    assert source.bytes_read < 2 * MB
+
+
+def _declaring_entries(data: bytes, entries: int) -> bytes:
+    """`data`, a ZIP, with its end-of-directory record claiming `entries`."""
+    at = data.rfind(b"PK\x05\x06")
+    record = bytearray(data[at:])
+    struct.pack_into("<2H", record, 8, entries, entries)
+    return data[:at] + bytes(record)
+
+
+def test_directory_listing_more_entries_than_declared_is_refused():
+    data = _declaring_entries(_docx(1, extra={f"junk/{i}.xml": b"" for i in range(500)}), 1)
+
+    with pytest.raises(ProcessingLimitExceeded, match="directory"):
+        _run(DOCX, data, max_archive_entries=100)
+
+
+@pytest.mark.parametrize("name", ["../evil.xml", "word/../../evil.xml", "/etc/evil.xml", "C:/evil.xml", "..\\evil.xml"])
+def test_archive_with_a_member_outside_itself_is_malformed(name):
+    data = _docx(3, extra={name: b"<x/>"})
+
+    with pytest.raises(MalformedInputError, match="outside the archive"):
+        _run(DOCX, data)
+
+
+def test_encrypted_member_is_malformed_and_never_inflated():
+    data = bytearray(_zip({"word/document.xml": _paragraphs_xml("Secret")}))
+    # Flagged encrypted, in its local header and directory entry (its bytes
+    # aren't, but they're never looked at).
+    for signature, flags_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        data[data.index(signature) + flags_at] |= 0x1
+
+    with pytest.raises(MalformedInputError, match="encrypted"):
+        _run(DOCX, bytes(data))
+
+
+def test_xml_element_limit_stops_parsing_keeping_text_so_far():
+    # Text first, then a flood of empty paragraphs: no text, all work.
+    data = _zip({"word/document.xml": _paragraphs_xml("Heading", padding="<w:p/>" * 50_000)})
+
+    extracted, _ = _run(DOCX, data, max_xml_elements=10_000)
+
+    assert extracted.text.strip() == "Heading"
+    assert extracted.is_partial and "XML elements" in extracted.stopped_by
+
+
+def test_parsing_stops_once_enough_text_is_extracted():
+    # 8 MB stored: only its beginning is read, the text limit reached.
+    data = _zip({"word/document.xml": _paragraphs_xml(*(f"Paragraph {i}" for i in range(200_000)))},
+                compression=zipfile.ZIP_STORED)
+    assert len(data) > 8 * MB
+
+    extracted, source = _run(DOCX, data, max_text_chars=10_000)
+
+    assert len(extracted.text) == 10_000 and "characters" in extracted.stopped_by
+    assert source.bytes_read < 1 * MB
+
+
+# ---- PDF: work per page, pages in all, opening ----
+
+
+def _operators(count: int) -> bytes:
+    return b"1 0 0 1 0 0 cm\n" * count
+
+
+def test_pdf_page_with_too_much_content_is_skipped_keeping_the_others():
+    # A few KB of PDF whose second page parses 1 MB of operators.
+    heavy = _stream(b"BT /F1 24 Tf 72 720 Td (Heavy) Tj ET\n" + _operators(70_000), flate=True)
+    data = _pdf([_page_text("First"), heavy, _page_text("Third")])
+    assert len(data) < 20_000
+
+    extracted, _ = _run("application/pdf", data, max_pdf_page_content_bytes=64 * 1024)
+
+    assert "First" in extracted.text and "Third" in extracted.text and "Heavy" not in extracted.text
+    assert extracted.is_partial
+
+
+def test_pdf_whose_every_page_has_too_much_content_fails():
+    heavy = _stream(b"BT /F1 24 Tf 72 720 Td (Heavy) Tj ET\n" + _operators(70_000), flate=True)
+
+    with pytest.raises(ProcessingLimitExceeded, match="content"):
+        _run("application/pdf", _pdf([heavy]), max_pdf_page_content_bytes=64 * 1024)
+
+
+def test_form_xobject_content_counts_toward_its_page():
+    # The page itself is tiny; the form it draws is not.
+    form = _first_extra(1)
+    page = _stream(b"BT /F1 24 Tf 72 720 Td (Cover) Tj ET /Fm1 Do")
+    data = _pdf([page], extra_objects=[_form(_operators(70_000), pages=1, flate=True)], xobjects=f"/Fm1 {form} 0 R")
+
+    with pytest.raises(ProcessingLimitExceeded, match="content"):
+        _run("application/pdf", data, max_pdf_page_content_bytes=64 * 1024)
+
+
+def test_form_xobject_drawn_again_and_again_counts_every_time():
+    # 1 KB of form content, drawn 200 times: 200 KB parsed for one page.
+    form = _first_extra(1)
+    page = _stream(b"BT /F1 24 Tf 72 720 Td (Pattern) Tj ET\n" + b"/Fm1 Do\n" * 200)
+    data = _pdf([page], extra_objects=[_form(_operators(70), pages=1)], xobjects=f"/Fm1 {form} 0 R")
+
+    assert "Pattern" in _run("application/pdf", data)[0].text
+    with pytest.raises(ProcessingLimitExceeded, match="content"):
+        _run("application/pdf", data, max_pdf_page_content_bytes=64 * 1024)
+
+
+def test_pdf_with_too_many_pages_in_all_is_refused():
+    with pytest.raises(ProcessingLimitExceeded, match="page tree"):
+        _run("application/pdf", _pdf([_page_text(f"Page {n}") for n in range(300)]), max_pdf_page_count=100)
+
+
+def _with_cross_references(data: bytes, entries: int) -> bytes:
+    """`data`, a PDF from `_pdf`, with its cross-reference table padded to
+    `entries` entries (all pointing at its catalog)."""
+    head, _, _ = data.rpartition(b"xref\n")
+    catalog = head.index(b"1 0 obj")
+    table = f"xref\n0 {entries + 1}\n0000000000 65535 f \n".encode() + f"{catalog:010d} 00000 n \n".encode() * entries
+    trailer = f"trailer << /Size {entries + 1} /Root 1 0 R >>\nstartxref\n{len(head)}\n%%EOF\n".encode()
+    return head + table + trailer
+
+
+def test_oversized_cross_reference_data_is_refused_while_opening():
+    # 200,000 entries: 4 MB of file, and ten times that as Python objects.
+    data = _with_cross_references(_pdf([_page_text("Hello")]), 200_000)
+
+    with pytest.raises(ProcessingLimitExceeded, match="opening the PDF"):
+        _run("application/pdf", data, max_pdf_open_bytes=1 * MB)
+
+
+def test_pdf_reads_stop_at_the_read_limit():
+    # Each page draws its own 1 MB image, which pypdf reads (never decodes)
+    # to see what it is.
+    pages = 8
+    first = _first_extra(pages)
+    image = b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 "
+    images = [image + f"/Length {MB} >>\nstream\n".encode() + bytes(MB) + b"\nendstream" for _ in range(pages)]
+    contents = [_stream(f"BT /F1 24 Tf 72 720 Td (Scan {n}) Tj ET /Im{n} Do".encode()) for n in range(pages)]
+    data = _pdf(contents, extra_objects=images, xobjects=" ".join(f"/Im{n} {first + n} 0 R" for n in range(pages)))
+
+    extracted, _ = _run("application/pdf", data, max_bytes_read=3 * MB)
+
+    assert "Scan 0" in extracted.text and "Scan 7" not in extracted.text
+    assert extracted.is_partial and "Read over" in extracted.stopped_by
+
+
+def test_pdf_font_files_count_toward_the_decompression_limit():
+    # A Type1 font without /ToUnicode: pypdf decodes its embedded font file.
+    first = _first_extra(1)
+    font = (f"<< /Type /Font /Subtype /Type1 /BaseFont /Bomb /FontDescriptor {first + 1} 0 R >>").encode()
+    descriptor = (f"<< /Type /FontDescriptor /FontName /Bomb /Flags 32 /FontFile {first + 2} 0 R >>").encode()
+    page = _stream(b"BT /F2 24 Tf 72 720 Td (Styled) Tj ET")
+    data = _pdf([page], extra_objects=[font, descriptor, _stream(bytes(8 * MB), flate=True)])
+    data = data.replace(b"/Font << /F1", f"/Font << /F2 {first} 0 R /F1".encode())
+
+    with pytest.raises(ProcessingLimitExceeded, match="Decompressed"):
+        _run("application/pdf", data, max_uncompressed_bytes=1 * MB)
+
+
+def test_time_limit_is_checked_within_a_page():
+    """A clock that advances a second per look: time runs out while the
+    only page is being extracted, which only checks within it can see
+    (between pages, it would be done with a second to spare)."""
+    ticks = iter(range(1_000_000))
+    limits = ParserLimits(timeout_seconds=5)
+    text = TextCollector(limits, clock=lambda: next(ticks))
+    page = _stream(b"BT /F1 24 Tf 72 720 Td (Slow) Tj ET\n" + _operators(20_000))
+
+    with pytest.raises(ProcessingLimitExceeded, match="time"):
+        parser_for("application/pdf").extract(DocumentSource.from_bytes(_pdf([page])), limits, text)
+
+
+def test_pypdf_hooks_are_installed():
+    """If a pypdf upgrade moves what these wrap, the budget tests above
+    fail too; this says why."""
+    import pypdf.filters
+    from pypdf.generic import ContentStream
+
+    from document_analyzer import parsers
+
+    assert pypdf.filters.decode_stream_data is parsers._counted_decode_stream_data
+    assert ContentStream._parse_content_stream is parsers._counted_parse_content_stream
+
+
+def test_pdf_temporary_file_is_removed_on_success_and_on_failure(monkeypatch):
+    opened = []
+    temporary_file = tempfile.TemporaryFile
+
+    def tracked(*args, **kwargs):
+        opened.append(temporary_file(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", tracked)
+    heavy = _stream(_operators(70_000), flate=True)
+
+    _run("application/pdf", _pdf([_page_text("Fine")]))
+    with pytest.raises(ProcessingLimitExceeded):
+        _run("application/pdf", _pdf([heavy]), max_pdf_page_content_bytes=64 * 1024)
+
+    assert len(opened) == 2 and all(file.closed for file in opened)
