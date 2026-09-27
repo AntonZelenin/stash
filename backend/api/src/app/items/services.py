@@ -29,6 +29,7 @@ from app.items.files import ContentKind
 from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
 from app.items.repos import ItemFilters, ItemRepository, ItemSort, SemanticMatch
 from app.query_normalization import QueryNormalizer
+from app.rate_limits.limiter import Charge, RateLimiter
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
 from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
@@ -36,16 +37,12 @@ from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
-_MAX_IMAGE_SIZE_BYTES = 100 * 1024 * 1024
-
 _IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
-
-_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 _LINK_SCHEMES = {"http", "https"}
 
@@ -102,7 +99,7 @@ class EmptyImageError(Exception):
 
 
 class ImageTooLargeError(Exception):
-    pass
+    """Over `max_image_upload_bytes`."""
 
 
 class UnsupportedImageTypeError(Exception):
@@ -114,7 +111,7 @@ class EmptyFileError(Exception):
 
 
 class FileTooLargeError(Exception):
-    pass
+    """Over `max_file_upload_bytes`."""
 
 
 class UploadNotFoundError(Exception):
@@ -773,12 +770,18 @@ class ItemService:
         content_type: str | None = None,
         text: str | None = None,
         tags: list[str] = (),
+        limiter: RateLimiter,
     ) -> StartedUpload:
         """Authorizes one image or file upload straight to storage; the
         bytes never go through the API.
 
         Everything the client declares is checked before a URL is issued:
-        the size, an image's type, the caption and tags. The item id and
+        the size, an image's type, the caption and tags. Then the upload is
+        charged to the user's quotas (`limiter`: uploads, bytes, and an AI
+        analysis if it will be analyzed), which raises `RateLimitExceeded`
+        if it doesn't fit; an invalid request charges nothing. It's charged
+        here, not on finalize, so no bytes are sent for an upload that can't
+        be accepted, and retrying a finalize costs nothing. The item id and
         storage key are generated here, never taken from the client, and
         the URL is signed for that key, type and size only. Nothing is
         visible yet: the upload is recorded as pending (`PendingUpload`)
@@ -793,26 +796,41 @@ class ItemService:
         caption = _clean_caption(text)
         tag_names = normalize_tag_names(list(tags))
 
+        settings = get_settings()
         upload_id = uuid.uuid4()
         if item_type == ItemType.image:
-            _check_size(size_bytes, _MAX_IMAGE_SIZE_BYTES, empty=EmptyImageError, too_large=ImageTooLargeError)
+            _check_size(
+                size_bytes, settings.max_image_upload_bytes, empty=EmptyImageError, too_large=ImageTooLargeError
+            )
             content_type = (content_type or "").split(";", 1)[0].strip().lower()
             if content_type not in _IMAGE_EXTENSIONS_BY_CONTENT_TYPE:
                 raise UnsupportedImageTypeError()
             storage_key = storage_keys.image_key(user_id, upload_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
             # Kept only to name downloads; without one, they're unnamed.
             filename = files.clean_filename(filename) if filename and filename.strip() else None
+            # Every image is described by the image analyzer.
+            analyzed = True
         elif item_type == ItemType.file:
-            _check_size(size_bytes, _MAX_FILE_SIZE_BYTES, empty=EmptyFileError, too_large=FileTooLargeError)
+            _check_size(size_bytes, settings.max_file_upload_bytes, empty=EmptyFileError, too_large=FileTooLargeError)
             filename = files.clean_filename(filename)
             expected = files.expected_format(filename)
             content_type = expected.content_type
             storage_key = storage_keys.file_key(user_id, upload_id, expected.extension)
+            # Charged as analyzed if its extension says so, even if its
+            # content later turns out generic (and isn't).
+            analyzed = expected.analyzable
         else:
             raise ValueError(f"{item_type} items aren't uploaded")
         bind_context(item_id=upload_id)
 
-        ttl = get_settings().upload_url_ttl_seconds
+        user = str(user_id)
+        await limiter.consume(
+            Charge(limiter.limits.uploads_per_user, user),
+            Charge(limiter.limits.upload_bytes_per_user, user, cost=size_bytes),
+            Charge(limiter.limits.ai_analyses_per_user, user, cost=1 if analyzed else 0),
+        )
+
+        ttl = settings.upload_url_ttl_seconds
         upload = await self._storage.generate_upload_url(
             key=storage_key, content_type=content_type, size_bytes=size_bytes, expires_in=ttl
         )
@@ -877,7 +895,12 @@ class ItemService:
             raise
 
     async def _create_image_item(self, upload: PendingUpload, stored: StoredObject) -> Item:
-        _check_size(stored.size_bytes, _MAX_IMAGE_SIZE_BYTES, empty=EmptyImageError, too_large=ImageTooLargeError)
+        _check_size(
+            stored.size_bytes,
+            get_settings().max_image_upload_bytes,
+            empty=EmptyImageError,
+            too_large=ImageTooLargeError,
+        )
         # Sniffed from the stored bytes, and must be the type the upload was
         # signed for: the one it's stored and served with, and the key's
         # extension.
@@ -926,7 +949,9 @@ class ItemService:
         `app.items.files`). An `analyzable` format is created `pending` and
         enqueued for document analysis; anything else is `completed` right
         away."""
-        _check_size(stored.size_bytes, _MAX_FILE_SIZE_BYTES, empty=EmptyFileError, too_large=FileTooLargeError)
+        _check_size(
+            stored.size_bytes, get_settings().max_file_upload_bytes, empty=EmptyFileError, too_large=FileTooLargeError
+        )
         filename = upload.filename or files.clean_filename(None)
         # May differ from the type the object was stored with (a charset
         # added, or generic if the content doesn't match the extension):

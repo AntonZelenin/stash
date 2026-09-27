@@ -30,18 +30,27 @@ class ImageAnalysisHandler:
     """
 
     def __init__(
-        self, *, storage: ObjectStore, describer: ImageDescriber, engine: AsyncEngine, outbox: OutboxPublisher
+        self,
+        *,
+        storage: ObjectStore,
+        describer: ImageDescriber,
+        engine: AsyncEngine,
+        outbox: OutboxPublisher,
+        max_image_bytes: int = 20 * 1024 * 1024,
     ):
         self._storage = storage
         self._describer = describer
         self._engine = engine
         self._outbox = outbox
+        self._max_image_bytes = max_image_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
         if job.image is None:
             raise PermanentProcessingError("Image job has no storage reference")
 
-        data = await self._storage.download(job.image.storage_key)
+        # Sent to OpenAI whole, so read whole; a thumbnail is far below
+        # the limit.
+        data = await self._storage.download(job.image.storage_key, max_bytes=self._max_image_bytes)
         chunks = await self._describer.describe(data, content_type=job.image.content_type)
         description = descriptions.from_chunks(chunks)
         completed = await complete_item(

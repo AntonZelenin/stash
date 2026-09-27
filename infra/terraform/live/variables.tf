@@ -218,6 +218,7 @@ variable "lambda_config" {
     memory_size          = optional(number)
     timeout              = optional(number)
     reserved_concurrency = optional(number)
+    ephemeral_storage    = optional(number)
     architecture         = optional(string)
     runtime              = optional(string)
   }))
@@ -292,6 +293,34 @@ variable "alarm_thresholds" {
     rds_free_storage_gib = optional(number, 2)
   })
   default = {}
+}
+
+variable "api_throttling_rate_limit" {
+  description = "Steady-state requests per second API Gateway lets through to the API, for all clients together: a coarse ceiling on what the API Lambda (and RDS behind it) can be driven to, not abuse protection, which is the application's per-IP, per-account and per-user limits (see docs/architecture.md, \"Rate limits and quotas\"). Over it, API Gateway answers 429 without invoking the function."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.api_throttling_rate_limit > 0
+    error_message = "The API throttling rate limit must be positive."
+  }
+}
+
+variable "api_throttling_burst_limit" {
+  description = "Requests API Gateway lets through at once above api_throttling_rate_limit (its token bucket's size): two seconds of the steady rate by default."
+  type        = number
+  default     = 600
+
+  validation {
+    condition     = var.api_throttling_burst_limit >= 1 && floor(var.api_throttling_burst_limit) == var.api_throttling_burst_limit
+    error_message = "The API throttling burst limit must be a whole number of at least 1."
+  }
+}
+
+variable "turnstile_enabled" {
+  description = "Whether registration requires a Cloudflare Turnstile token (TURNSTILE_ENABLED). The secret key goes into the turnstile_secret_key_secret_arn secret, out of band; the site key is the frontend's (the TURNSTILE_SITE_KEY repository variable). Off only for an environment without the widget: then accounts can be mass-created."
+  type        = bool
+  default     = true
 }
 
 variable "api_cors_allowed_origins" {

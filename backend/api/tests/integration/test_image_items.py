@@ -6,7 +6,7 @@ from stash_shared import storage_keys
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import Description, ImageMetadata, Item, ItemType, PendingUpload, TextContent
-from app.items.services import _MAX_IMAGE_SIZE_BYTES
+from app.config import get_settings
 from conftest import FakeJobQueue, FakeObjectStorage
 from helpers import finalize_upload, register_and_login, start_upload, upload_image
 
@@ -127,10 +127,11 @@ async def test_create_image_item_rejects_content_of_another_image_type(
 async def test_create_image_item_rejects_oversized_file(client: AsyncClient, storage: FakeObjectStorage):
     _, token = await register_and_login(client)
 
-    response = await start_upload(client, token, type="image", size_bytes=_MAX_IMAGE_SIZE_BYTES + 1, content_type="image/png")
+    size = get_settings().max_image_upload_bytes + 1
+    response = await start_upload(client, token, type="image", size_bytes=size, content_type="image/png")
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == "File is too large"
+    assert response.status_code == 413
+    assert response.json()["detail"] == "File is too large (max 100 MB)"
     assert storage.signed_uploads == {}
 
 

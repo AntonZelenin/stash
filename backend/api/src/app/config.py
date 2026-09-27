@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from stash_shared import secrets
 from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
@@ -99,6 +99,118 @@ class Settings(BaseSettings):
     # (0.83) and "city" find "cities" (0.6), but not unrelated words.
     search_min_text_similarity: float = 0.6
 
+    # Largest upload, checked on the declared size (the upload URL is
+    # signed for exactly that size, so storage enforces it too) and again
+    # on what arrived. The bytes go straight to S3, never through the API,
+    # which reads back only a few KB to classify them. How much of a file
+    # the workers process is limited separately (their own settings).
+    max_image_upload_bytes: int = 100 * 1024 * 1024
+    max_file_upload_bytes: int = 500 * 1024 * 1024
+
+    # Largest request bodies the API reads (JSON only: file bytes go
+    # straight to storage), per endpoint category (`app.body_size`), 413
+    # over them. Sized from the longest valid request of each, in the worst
+    # case: a JSON string character takes at most 12 bytes, as a
+    # `\uXXXX\uXXXX` surrogate pair (an emoji, from a client that escapes
+    # non-ASCII, like Python's json.dumps); 4 as raw UTF-8, 6 as a `\u00XX`
+    # escape. Field lengths are counted in characters (code points).
+    #
+    # Content (`POST /items/text`, `POST /uploads`, `PATCH /items/{id}`):
+    # the largest is `POST /uploads`: caption 100,000 x 12 = 1,200,000,
+    # filename 1,000 x 12 = 12,000, content type 255 x 12 = 3,060, 20 tags
+    # x 200 x 12 = 48,000, the rest (keys, quotes, commas, type, size)
+    # under 500: at most 1,263,560 bytes (1.2 MiB). 2 MiB leaves 66% more
+    # for whitespace and other encoders; raw UTF-8 needs at most 450 KB.
+    max_content_request_body_bytes: int = 2 * 1024 * 1024
+    # Everything else. The largest is `POST /users`: email 254 x 12 =
+    # 3,048, password 72 x 12 = 864, Turnstile token 2,048 x 12 = 24,576,
+    # plus keys: under 29 KB; then `POST /items/delete` (100 ids of 36
+    # characters, each `\u00XX`-escaped: 21,910) and `POST /search` (query
+    # 1,000 x 12 plus filters: about 17 KB). 64 KiB is over twice the
+    # largest.
+    max_request_body_bytes: int = 64 * 1024
+
+    # Rate limits and quotas (see `app.rate_limits`), counted in Postgres so
+    # they hold across API instances. Each is a comma-separated list of
+    # windows, "<count>/<window>" with the window in s, m, h or d; a request
+    # must fit in every window. "" means unlimited. `rate_limits_enabled`
+    # turns all of them off (e.g. for load tests), never partially.
+    rate_limits_enabled: bool = True
+    # Every login attempt from one IP, whatever its outcome.
+    login_limit_per_ip: str = "20/1m,100/1h,500/1d"
+    # Failed logins for one email from one IP: a user mistyping, or one
+    # attacker guessing from one address. The strict one: 5 tries, then a
+    # wait of at most 5 minutes; 10 in half an hour at most.
+    login_failure_limit_per_account_ip: str = "5/5m,10/30m"
+    # Failed logins for one email from anywhere: guessing spread over many
+    # IPs (at most 50 guesses an hour, 1,200 a day). Looser than per IP,
+    # and short: whoever knows an email can use it to block that account's
+    # logins (from every IP, the owner's too), but for 15 minutes at a
+    # time, an hour at most, never a day, and only by keeping it up, each
+    # attempt also counting against their own IPs. No window is longer
+    # than an hour, so no login is blocked for longer.
+    login_failure_limit_per_account: str = "20/15m,50/1h"
+    registration_limit_per_ip: str = "5/1h,20/1d"
+    # Registration attempts naming one email (also slows probing which
+    # emails are registered).
+    registration_limit_per_email: str = "5/1h"
+
+    # Cloudflare Turnstile on registration (`app.turnstile`): per-user
+    # quotas only hold if accounts aren't free to mass-create. Every
+    # registration must carry a token the client got from the Turnstile
+    # widget, verified with Cloudflare (siteverify) before the account is
+    # created. False only where there's no widget (local development
+    # without internet, tests). Locally, Cloudflare's test keys pass every
+    # time (see .env.example).
+    turnstile_enabled: bool = True
+    turnstile_secret_key: str = ""
+    # AWS: the Secrets Manager secret holding the secret key; replaces
+    # `turnstile_secret_key` when set. Read on the first registration.
+    turnstile_secret_key_secret_arn: str = ""
+    # Hostnames a token may have been solved on (Cloudflare reports it):
+    # the frontend's. Empty: any (local development, test keys).
+    turnstile_allowed_hostnames: list[str] = []
+    turnstile_verify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    turnstile_timeout_seconds: float = 5.0
+    token_refresh_limit_per_ip: str = "60/5m,1000/1d"
+    # Wrong current passwords on `POST /users/me/password`: a stolen access
+    # token must not become a password-guessing oracle.
+    password_change_failure_limit_per_user: str = "5/15m,20/1d"
+    # Uploads started (`POST /uploads`), whether or not they're finalized.
+    upload_limit_per_user: str = "100/5m,1000/1d"
+    # Bytes of uploads started, by their declared (signed) size.
+    upload_bytes_quota_per_user: str = f"{5 * 1024**3}/1d"
+    # Uploads that will be analyzed by OpenAI (every image, analyzable
+    # documents), charged when the upload starts.
+    ai_analysis_quota_per_user: str = "300/1h,1000/1d"
+    # Searches: each one is an LLM rewrite plus an embedding. The client
+    # searches as the user types (debounced), hence the generous burst.
+    search_limit_per_user: str = "60/1m,3000/1d"
+    # Notes/links created and items edited: each may queue an embedding.
+    item_write_limit_per_user: str = "120/5m,3000/1d"
+
+    @field_validator(
+        "login_limit_per_ip",
+        "login_failure_limit_per_account_ip",
+        "login_failure_limit_per_account",
+        "registration_limit_per_ip",
+        "registration_limit_per_email",
+        "token_refresh_limit_per_ip",
+        "password_change_failure_limit_per_user",
+        "upload_limit_per_user",
+        "upload_bytes_quota_per_user",
+        "ai_analysis_quota_per_user",
+        "search_limit_per_user",
+        "item_write_limit_per_user",
+    )
+    @classmethod
+    def _valid_limit(cls, value: str) -> str:
+        # Fail at startup, not on the first request that needs the limit.
+        from app.rate_limits.windows import parse_windows
+
+        parse_windows(value)
+        return value
+
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Self:
         # Only the database secret, which every route needs. The OpenAI key
@@ -110,6 +222,16 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def get_turnstile_secret_key() -> str:
+    """The Turnstile secret key, from its secret on AWS
+    (`turnstile_secret_key_secret_arn`), fetched on first use like the
+    OpenAI key."""
+    settings = get_settings()
+    if settings.turnstile_secret_key_secret_arn:
+        return secrets.get_secret_string(settings.turnstile_secret_key_secret_arn)
+    return settings.turnstile_secret_key
 
 
 def get_openai_api_key() -> str:

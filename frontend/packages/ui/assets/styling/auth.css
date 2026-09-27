@@ -233,3 +233,10 @@
         font-size: 28px;
     }
 }
+
+/* Cloudflare Turnstile on the sign-up form: its iframe is a fixed 300x65. */
+.turnstile {
+  display: flex;
+  justify-content: center;
+  min-height: 65px;
+}

@@ -47,6 +47,11 @@ jobs:
             echo "::endgroup::"
           done
 
+      # live/tests: plans against mocked providers (API Gateway throttling,
+      # Turnstile wiring, that migrations deploy on their own first...).
+      - name: Test
+        run: terraform -chdir=infra/terraform/live test -no-color
+
   # Terraform hashes the zips, so the plan needs them.
   lambdas:
     if: github.event_name == 'pull_request'

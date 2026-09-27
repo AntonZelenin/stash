@@ -17,7 +17,7 @@ from sqlalchemy.pool import StaticPool
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, JobQueue, ProcessingJob, RetryMode
 
-from stash_worker_core.errors import PermanentProcessingError
+from stash_worker_core.errors import PermanentProcessingError, ProcessingLimitExceeded
 
 
 @pytest.fixture
@@ -222,17 +222,41 @@ async def fetch_thumbnail_key(engine: AsyncEngine, item_id: UUID) -> str | None:
 
 
 class FakeObjectStore:
-    """In-memory stand-in for S3/MinIO. Missing keys fail the same way the
-    real store does (permanently)."""
+    """In-memory stand-in for S3/MinIO. Missing keys and oversized
+    downloads fail the same way the real store does (permanently).
+
+    `bytes_served` counts, per key, every byte a worker read (whole or in
+    ranges), so tests can check how much of an object was read."""
 
     def __init__(self, objects: dict[str, bytes] | None = None):
         self.objects: dict[str, bytes] = dict(objects or {})
         self.content_types: dict[str, str] = {}
+        self.bytes_served: dict[str, int] = {}
 
-    async def download(self, key: str) -> bytes:
+    async def download(self, key: str, *, max_bytes: int) -> bytes:
+        data = self._get(key)
+        if len(data) > max_bytes:
+            raise ProcessingLimitExceeded(f"{key} is over {max_bytes} bytes")
+        self._served(key, len(data))
+        return data
+
+    async def size(self, key: str) -> int:
+        return len(self._get(key))
+
+    def read_range_blocking(self, key: str, start: int, end: int) -> bytes:
+        data = self._get(key)
+        if not 0 <= start < end <= len(data):
+            raise ValueError(f"Invalid range {start}-{end} of {len(data)} bytes")
+        self._served(key, end - start)
+        return data[start:end]
+
+    def _get(self, key: str) -> bytes:
         if key not in self.objects:
             raise PermanentProcessingError(f"{key} not found")
         return self.objects[key]
+
+    def _served(self, key: str, count: int) -> None:
+        self.bytes_served[key] = self.bytes_served.get(key, 0) + count
 
     async def upload(self, key: str, data: bytes, *, content_type: str) -> None:
         self.objects[key] = data

@@ -1,10 +1,20 @@
 from datetime import datetime
 from enum import Enum
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.tags.names import MAX_TAGS_PER_ITEM
+from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM
+
+# Longest note/link text or caption: a long document's worth of notes.
+MAX_TEXT_LENGTH = 100_000
+# Longest filename accepted; stored names are cut to 255 characters
+# (`app.items.files.clean_filename`), keeping the extension.
+MAX_FILENAME_LENGTH = 1_000
+# A tag name as sent: trimmed and whitespace-collapsed server-side, where
+# the result must be 1-MAX_TAG_NAME_LENGTH characters.
+TagNameInput = Annotated[str, Field(max_length=4 * MAX_TAG_NAME_LENGTH)]
 
 
 class ItemType(str, Enum):
@@ -82,10 +92,10 @@ class SavedYearsResponse(BaseModel):
 
 
 class CreateTextItemRequest(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
     # Tag names to put on the new item (existing tags reused, missing ones
     # created).
-    tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+    tags: list[TagNameInput] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
     # Only used when the text mixes text and URLs (default `text`); a bare
     # URL is always a link and text without URLs always a note.
     type: TextItemType | None = None
@@ -107,9 +117,9 @@ class UpdateItemRequest(BaseModel):
 
     # A note's or link's whole text (its type is resolved again), or an
     # image's or file's caption; an empty caption removes it.
-    text: str | None = Field(default=None, max_length=100_000)
+    text: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     # Files only: the name shown and used for downloads.
-    filename: str | None = Field(default=None, max_length=1_000)
+    filename: str | None = Field(default=None, max_length=MAX_FILENAME_LENGTH)
     # Notes and links only. Used when the resulting text mixes text and
     # URLs (unset keeps the current type); otherwise the text decides.
     type: TextItemType | None = None
@@ -140,14 +150,14 @@ class StartUploadRequest(BaseModel):
     size_bytes: int = Field(ge=0)
     # Kept for display and downloads. Files: its extension picks the
     # expected format. Never part of the storage key.
-    filename: str | None = Field(default=None, max_length=1_000)
+    filename: str | None = Field(default=None, max_length=MAX_FILENAME_LENGTH)
     # Images: png, jpeg, gif or webp; must match the content. Ignored for
     # files, whose type the backend decides.
     content_type: str | None = Field(default=None, max_length=255)
     # Optional caption stored on the new item; blank is none.
-    text: str | None = Field(default=None, max_length=100_000)
+    text: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     # Tag names to put on the new item.
-    tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+    tags: list[TagNameInput] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
 
 
 class PresignedUpload(BaseModel):

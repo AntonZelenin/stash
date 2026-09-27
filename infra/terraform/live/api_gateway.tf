@@ -37,6 +37,15 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
   auto_deploy = true
+
+  # A coarse backstop for all traffic, in front of the application's own
+  # per-IP and per-user rate limits and quotas (`app.rate_limits`): bounds
+  # how fast anything can reach, and bill, the API Lambda. Over it, API
+  # Gateway answers 429 itself, without invoking the function.
+  default_route_settings {
+    throttling_rate_limit  = var.api_throttling_rate_limit
+    throttling_burst_limit = var.api_throttling_burst_limit
+  }
 }
 
 resource "aws_lambda_permission" "api_gateway" {

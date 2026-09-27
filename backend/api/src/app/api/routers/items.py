@@ -31,6 +31,8 @@ from app.api.schemas.items import (
     UploadStarted,
     PlaybackUrl,
 )
+from app.config import get_settings
+from app.body_size import BodyLimitedRoute, content_body
 from app.db import DbSession
 from app.items.files import ContentKind, kind_of
 from app.items.models import ItemType as DomainItemType
@@ -52,14 +54,17 @@ from app.items.services import (
 )
 from app.items.services import ListedItem as ListedItemResult
 from app.queue import get_outbox
+from app.rate_limits.limiter import Charge, RateLimiter, get_rate_limiter
 from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM, InvalidTagNameError
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
 
-router = APIRouter(tags=["items"])
+router = APIRouter(tags=["items"], route_class=BodyLimitedRoute)
 
 _INVALID_TAGS = f"Tag names must be 1-{MAX_TAG_NAME_LENGTH} characters, at most {MAX_TAGS_PER_ITEM} tags"
+
+_RATE_LIMITED = {429: {"description": "Too many requests, or a quota is used up; retry after `Retry-After` seconds"}}
 
 _RESPONSES = {
     401: {"description": "Unauthorized"},
@@ -71,15 +76,19 @@ _RESPONSES = {
     "/items/text",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=ItemCreated,
-    responses=_RESPONSES,
+    responses={**_RESPONSES, **_RATE_LIMITED},
 )
+@content_body
 async def create_text_item(
     payload: CreateTextItemRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ItemCreated:
+    # Each saved note is sent for embedding.
+    await limiter.consume(Charge(limiter.limits.item_writes_per_user, str(current_user.id)))
     try:
         item = await ItemService(session, storage, outbox).create_text_item(
             user_id=current_user.id, text=payload.text, tags=payload.tags, item_type=_domain_text_type(payload.type)
@@ -93,13 +102,15 @@ async def create_text_item(
     "/uploads",
     status_code=status.HTTP_201_CREATED,
     response_model=UploadStarted,
-    responses=_RESPONSES,
+    responses={**_RESPONSES, 413: {"description": "File is too large"}, **_RATE_LIMITED},
 )
+@content_body
 async def start_upload(
     payload: StartUploadRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> UploadStarted:
     """Step 1 of saving an image or file: authorizes an upload straight to
     storage. The client then sends the bytes to `upload.url` and calls
@@ -113,6 +124,7 @@ async def start_upload(
             content_type=payload.content_type,
             text=payload.text,
             tags=payload.tags,
+            limiter=limiter,
         )
     except _UPLOAD_ERRORS as exc:
         raise _invalid_upload(exc) from None
@@ -133,6 +145,7 @@ async def start_upload(
         **_RESPONSES,
         404: {"description": "Upload not found"},
         409: {"description": "File not uploaded yet"},
+        413: {"description": "File is too large"},
     },
 )
 async def finalize_upload(
@@ -170,17 +183,23 @@ _UPLOAD_ERRORS = (
 
 def _invalid_upload(exc: Exception) -> HTTPException:
     match exc:
+        case ImageTooLargeError():
+            return _too_large(get_settings().max_image_upload_bytes)
+        case FileTooLargeError():
+            return _too_large(get_settings().max_file_upload_bytes)
         case EmptyImageError() | EmptyFileError():
             detail = "File is empty"
-        case ImageTooLargeError():
-            detail = "File is too large"
-        case FileTooLargeError():
-            detail = "File is too large (max 50 MB)"
         case UnsupportedImageTypeError():
             detail = "Unsupported image type"
         case _:
             detail = _INVALID_TAGS
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
+
+
+def _too_large(max_bytes: int) -> HTTPException:
+    return HTTPException(
+        status.HTTP_413_CONTENT_TOO_LARGE, f"File is too large (max {max_bytes // (1024 * 1024)} MB)"
+    )
 
 
 def _domain_text_type(item_type: TextItemType | None) -> DomainItemType | None:
@@ -292,7 +311,8 @@ async def get_playback_url(
     responses={401: {"description": "Unauthorized"}, 422: {"description": "Invalid cursor"}},
 )
 async def list_items(
-    cursor: str | None = None,
+    # Issued cursors are well under 200 characters.
+    cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=30, ge=1, le=100),
     type: ItemType | None = None,
     kind: list[ItemKind] = Query(default=[], max_length=6),
@@ -328,8 +348,10 @@ async def list_items(
         401: {"description": "Unauthorized"},
         404: {"description": "Item not found"},
         422: {"description": "Invalid edit"},
+        **_RATE_LIMITED,
     },
 )
+@content_body
 async def update_item(
     item_id: UUID,
     payload: UpdateItemRequest,
@@ -337,7 +359,10 @@ async def update_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ListedItem:
+    # An edited text or caption is sent for embedding again.
+    await limiter.consume(Charge(limiter.limits.item_writes_per_user, str(current_user.id)))
     try:
         listed = await ItemService(session, storage, outbox).update_item(
             user_id=current_user.id,

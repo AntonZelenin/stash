@@ -8,7 +8,7 @@ The MVP supports:
 - User registration and authentication with username/email and password.
 - Saving text.
 - Uploading images.
-- Uploading any file (max 50 MB) as a `file` item. Recognized formats (PDF,
+- Uploading any file (max 500 MB) as a `file` item. Recognized formats (PDF,
   Office, ODF, iWork, EPUB, FB2, MOBI, DjVu, text/data, common video and
   audio...) keep their MIME type; other files are stored as generic downloads (see
   `backend/api/src/app/items/files.py`). `analyzable` formats get an
@@ -67,12 +67,17 @@ stage a separate worker with its own package (see
 "Package layout" above):
 
 1. Thumbnail worker (`thumbnailer` service, consumes `thumbnail_jobs`):
-   downloads the original, makes a WebP thumbnail with Pillow (max 1024px
-   on the longest side, EXIF orientation applied), stores it at
+   downloads the original (the whole file: decoding needs all of it; at
+   most the 100 MB upload limit), makes a WebP thumbnail with Pillow (max
+   1024px on the longest side, EXIF orientation applied), stores it at
    `users/{user_id}/thumbnails/{item_id}.webp`, records it in
    `item_images.thumbnail_key` (only if the item is still that user's),
    and only then publishes to `content_analysis_jobs`, pointing that job at
-   the thumbnail. Undecodable uploads fail here.
+   the thumbnail. Undecodable uploads fail here, and so do images over
+   `THUMBNAIL_MAX_PIXELS` (50 MP) as decoded, checked before decoding: a
+   JPEG decodes straight at 1/2-1/8 scale (never below the thumbnail
+   size), so a 200 MP photo costs a few megapixels, while a small file
+   declaring huge dimensions (a decompression bomb) is refused unread.
 2. Image-analyzer worker (`image_analyzer` service, consumes
    `content_analysis_jobs`): sends the thumbnail — not the original — to the
    OpenAI Responses API (`OPENAI_API_KEY`, model via `OPENAI_MODEL`), which
@@ -240,9 +245,12 @@ uploads them straight to object storage.
            ← {id: upload_id, status}   (item created, processing started)
 
 Start (`ItemService.start_upload`): the API validates the declared metadata
-first — size (images ≤ 100 MB, files ≤ 50 MB, not empty), an image's type
-(PNG/JPEG/GIF/WebP), caption and tags — and issues nothing if it's invalid.
-It then generates the item id and the storage key, under the user's prefix,
+first — size (images ≤ 100 MB, files ≤ 500 MB, not empty; a size over the
+limit is a 413), an image's type (PNG/JPEG/GIF/WebP), caption and tags — and
+issues nothing if it's invalid. It then charges the upload to the user's
+quotas (uploads, bytes, and an AI analysis for images and analyzable
+formats; see "Rate limits and quotas"): a 429, and nothing issued, if it
+doesn't fit. It then generates the item id and the storage key, under the user's prefix,
 with the extension from the declared image type or the filename's
 recognized extension (`app.items.files.expected_format`), never the
 filename itself. The upload URL is signed for that key, that content type
@@ -631,8 +639,10 @@ configuration.
 CI/CD is GitHub Actions ([deployment.md](deployment.md)). Pull requests and
 `main` are validated (tests, Terraform fmt/validate, plus a read-only plan
 on pull requests). Production is deployed only when someone starts the
-deployment workflow by hand: tests → Lambda packages → Terraform apply →
-migrations → frontend build and upload → smoke tests. AWS access is through
+deployment workflow by hand: tests → Lambda packages → the migration
+Lambda alone (a targeted Terraform apply) → migrations → Terraform apply of
+everything else → frontend build and upload → smoke tests. Schema first:
+new code never meets a schema that lacks what it uses. AWS access is through
 GitHub OIDC roles scoped to Stash's resources
 (`infra/terraform/github_oidc`), never stored keys.
 
@@ -675,6 +685,28 @@ image stages, so retries, backoff, the 5-attempt limit, dead-lettering (to
 `stash:document_analysis_jobs:dead-letter`) and ack-after-durable-outcome
 all behave identically. Unparsable, unsupported or text-less files (e.g.
 scanned PDFs: there is no OCR) fail immediately without retries.
+
+Files are uploaded up to 500 MB, but a description needs a few thousand
+characters, so how much of a file the analyzer reads, inflates and parses
+is limited on its own (`document_analyzer.parsers`, `DOCUMENT_MAX_*`
+settings), far below the upload limit:
+
+| Format | Read from storage | Other limits |
+|---|---|---|
+| Plain text (TXT, MD, CSV, JSON, YAML...) | up to 8 MB whole; larger, only the ranges the excerpts come from (a few hundred KB) | — |
+| HTML, XML, FB2, RTF | the first 8 MB (`DOCUMENT_MAX_PREFIX_BYTES`) | XML streamed, entities refused |
+| DOCX/XLSX/PPTX, ODT/ODS/ODP, EPUB, FB2.ZIP | ranges: the ZIP directory, then only the members parsed (never media), at most 64 MB (`DOCUMENT_MAX_BYTES_READ`) | 10,000 entries (checked before the directory is read); 64 MB decompressed, all members together, counted as inflated; XML streamed |
+| PDF | the whole file, to local disk (`/tmp`), never into memory, up to 512 MB (`DOCUMENT_MAX_DOWNLOAD_BYTES`) | 50 pages (half from the start, half spread over the rest); 64 MB per decompressed stream |
+
+For every format: at most 1,000,000 characters extracted, and 60 s of
+parsing (checked between pages, members, chunks and XML elements). PDFs
+are the one format read whole: objects can be anywhere, and pypdf checks
+the header of every object in the cross-reference table as it opens a file
+(to recover damaged ones), which would fetch most of the file range by
+range anyway. A limit reached after some text was extracted stops there
+and the text so far is described (as excerpts); reached before any, the
+item fails, permanently. The upload itself is never rejected for it. A
+storage error while parsing is retried like any other.
 
 The listing's pre-signed `download_url` serves the file under its original
 filename: inline for PDF, plain text and JSON, as a download for everything
@@ -934,6 +966,166 @@ revoked), so a leaked token stops working, and returns a fresh token pair
 that keeps the caller signed in. A wrong current password is a 422 on the
 `current_password` field, not a 401, which clients take to mean the
 session itself is gone.
+
+### Rate limits and quotas
+
+Endpoints that can be brute-forced, or that cost money (OpenAI, storage),
+are limited per IP, per account and per user (`app.rate_limits`): that's
+the abuse protection. A limit is one or more fixed windows, configured as a
+setting like `"5/5m,10/30m"`; a request must fit in every window. Over any limit, the API answers 429 with
+`Retry-After` (seconds until the window that blocked it ends) and one
+generic message; which limit it was is only logged (`Rate limit
+exceeded`, with `limit`).
+
+| Setting | Counts | Per | Default |
+|---|---|---|---|
+| `LOGIN_LIMIT_PER_IP` | every login attempt | IP | 20/1m, 100/1h, 500/1d |
+| `LOGIN_FAILURE_LIMIT_PER_ACCOUNT_IP` | failed logins | email + IP | 5/5m, 10/30m |
+| `LOGIN_FAILURE_LIMIT_PER_ACCOUNT` | failed logins | email | 20/15m, 50/1h |
+| `REGISTRATION_LIMIT_PER_IP` | registrations | IP | 5/1h, 20/1d |
+| `REGISTRATION_LIMIT_PER_EMAIL` | registrations (409s too) | email | 5/1h |
+| `TOKEN_REFRESH_LIMIT_PER_IP` | token refreshes | IP | 60/5m, 1000/1d |
+| `PASSWORD_CHANGE_FAILURE_LIMIT_PER_USER` | wrong current passwords | user | 5/15m, 20/1d |
+| `UPLOAD_LIMIT_PER_USER` | uploads started | user | 100/5m, 1000/1d |
+| `UPLOAD_BYTES_QUOTA_PER_USER` | declared bytes of uploads started | user | 5 GiB/1d |
+| `AI_ANALYSIS_QUOTA_PER_USER` | uploads that will be analyzed | user | 300/1h, 1000/1d |
+| `SEARCH_LIMIT_PER_USER` | searches | user | 60/1m, 3000/1d |
+| `ITEM_WRITE_LIMIT_PER_USER` | notes/links created, items edited | user | 120/5m, 3000/1d |
+
+`RATE_LIMITS_ENABLED=false` turns them all off. Also enforced, as plain
+settings: `MAX_IMAGE_UPLOAD_BYTES` (100 MB) and `MAX_FILE_UPLOAD_BYTES`
+(500 MB), on the declared size and on what arrived (413). The bytes go
+straight to S3 with the pre-signed PUT, so the API never holds them.
+Every text field has a maximum length (422): notes and captions 100,000
+characters, search queries 1,000, filenames 1,000 (stored cut to 255),
+tag names 200 as sent (50 after trimming), emails 254, passwords 72
+characters and 72 UTF-8 bytes (bcrypt's limit; 256 accepted at login),
+Turnstile tokens 2,048.
+
+Request bodies (JSON only) are limited per endpoint category
+(`app.body_size`), 413 before they're parsed, by `Content-Length` or
+counted as they stream. Each limit is sized from the category's longest
+valid request in the worst encoding: a character takes at most 12 bytes
+in a JSON string (an emoji as an escaped surrogate pair, `\ud83d\ude00`,
+from clients that escape non-ASCII), 4 as raw UTF-8.
+
+| Category | Setting | Limit | Longest valid body, worst case |
+|---|---|---|---|
+| content: `POST /items/text`, `POST /uploads`, `PATCH /items/{id}` | `MAX_CONTENT_REQUEST_BODY_BYTES` | 2 MiB | `POST /uploads`: caption 100,000 × 12 + filename 1,000 × 12 + content type 255 × 12 + 20 tags × 200 × 12 + < 500 of keys and punctuation = 1,263,560 bytes |
+| everything else | `MAX_REQUEST_BODY_BYTES` | 64 KiB | `POST /users` with a Turnstile token: 254 × 12 + 72 × 12 + 2,048 × 12 + keys < 29 KB (`POST /items/delete`, 100 escaped ids: 21,910) |
+
+2 MiB leaves 66% over the worst content body (a raw UTF-8 one is under
+450 KB), 64 KiB more than twice the worst small one. Each route's limit is
+applied by its route class (`BodyLimitedRoute`, the route class of every
+router; `content_body` marks the three content endpoints), and a
+middleware caps every request at the largest, before routing.
+
+On AWS, API Gateway also throttles all traffic together
+(`api_throttling_rate_limit`, 300 requests/s, burst 600): not abuse
+protection — it can't tell clients apart, so one client could use it all
+— but a coarse ceiling on how hard the API Lambda, and RDS behind it, can
+be driven, and so on cost. The capacity it's sized against: each API
+instance holds up to two database connections (the request's and the
+counters'), and a `db.t4g.micro` allows about 80, some of them the
+workers', so roughly 25-35 instances at once, which at 50-100 ms a request
+is some 250-700 requests/s. Raise it with the database, not instead of it.
+
+Counters live in Postgres (`rate_limit_counters`: one row per limit window
+and subject, the subject — an IP, a user id, an email — only hashed),
+since it's the one datastore every API instance (every Lambda execution
+environment) shares; nothing is counted in process memory. Charging a
+window is one conditional upsert that adds the cost only if the result
+stays within the limit, restarting the count when the stored period has
+ended. The windows of all the limits one request charges are written in
+one transaction, in key order, rolled back if any is full: concurrent
+requests can't overshoot, can't deadlock, and a rejected request is
+charged nothing (so retrying early doesn't push the reset out). Counters
+use their own connection and transaction, never the request's, which is
+rolled back on errors like a wrong password. About 1% of charges also
+delete up to 1,000 counters of periods that have ended (through the
+`expires_at` index, skipping rows a charge has locked), so the table holds
+about one row per active subject and window.
+
+Why Postgres, not Redis/Valkey: production has no managed Redis (Valkey
+is the local queue only), and adding one would be infrastructure and cost
+for this alone. At this scale Postgres does the job: a charge is one
+primary-key upsert per window in a short transaction, atomic without any
+read-then-write; requests for the same subject and limit wait on its row
+only for that statement; updates within a period don't change the indexed
+`expires_at`, so with the table's fillfactor (70) they're HOT updates
+(no index writes, dead versions reclaimed on the page). A limited request
+costs a few milliseconds and one extra connection. What it can't take is
+tens of thousands of limited requests a second, far above what the gateway
+lets through; that, or connection pressure, would be the reason to move
+the counters to Redis.
+
+Fixed windows are what make a counter one row and one statement. Their
+boundary effect: a client can use a window's whole limit at the end of one
+period and again at the start of the next, so up to about twice the limit
+passes within one window's length around a rollover (e.g. 120 searches in
+a few seconds either side of the minute, against 60/1m). A limit's longer
+windows bound that ("5/5m,10/30m" still allows at most 10 in the half
+hour), and every limit here is sized so that twice it is still harmless.
+
+Login reserves a failure (per email + IP, and per email) before checking
+the password, and refunds it when the password was right: parallel guesses
+get no more checks than the limit, and a right guess while blocked is a
+429 like a wrong one. Every attempt counts for the IP, successful ones too.
+
+The two failure limits are balanced against a lockout attack (anyone who
+knows an email can fail logins for it):
+
+- Per email + IP, strict (5/5m, 10/30m): a user mistyping, or one attacker
+  guessing, from one address. Blocks only that address, for at most 30
+  minutes.
+- Per email from anywhere, looser and short (20/15m, 50/1h): guessing
+  spread over many addresses, at most 50 guesses an hour. It does block
+  the account's logins from every address, the owner's too, but for 15
+  minutes at a time and an hour at most, and only while the attack keeps
+  going (each attempt also counting against the attacker's own addresses).
+
+No failure window is longer than an hour, so no account is blocked for
+longer, and nothing is ever locked permanently. There's no CAPTCHA at
+login; challenging after repeated failures, or exempting addresses an
+account has signed in from before, are the next steps if lockouts become a
+problem.
+
+#### Turnstile at registration
+
+Per-user quotas only hold if accounts aren't free to create by the
+thousand, so registration requires a Cloudflare Turnstile token
+(`app.turnstile`). The sign-up form renders the widget
+(`ui::turnstile`, with the site key the web app is built with) and sends
+its token as `turnstile_token`; the API verifies it with Cloudflare's
+siteverify and the secret key before anything else about the registration
+(after its rate limits, so failed challenges count and Cloudflare isn't
+asked more than they allow). The token must have succeeded, for the
+`register` action, on the frontend's hostname, and is single-use (Cloudflare
+refuses a reused or expired one). Missing, invalid, expired or reused: one
+422 on `turnstile_token`, and whether the email is registered isn't
+revealed (the 409 comes only after verification). Cloudflare unreachable
+or no secret configured: 503, never an unverified registration. Only
+registration is challenged.
+
+Settings: `TURNSTILE_ENABLED` (on by default), `TURNSTILE_SECRET_KEY` (on
+AWS `TURNSTILE_SECRET_KEY_SECRET_ARN`, read on first use like the OpenAI
+key), `TURNSTILE_ALLOWED_HOSTNAMES` (on AWS, the CloudFront domain). Local
+development uses Cloudflare's test keys, which always pass (verification
+still goes to Cloudflare); `TURNSTILE_ENABLED=false` for offline work and
+tests.
+
+Per-IP limits count the connection's peer (`app.rate_limits.limiter.client_ip`),
+never `X-Forwarded-For`. On AWS that's API Gateway's `sourceIp` (via
+Mangum); locally, uvicorn honours forwarded headers only from 127.0.0.1.
+IPv6 addresses are counted by /64. If a proxy or CDN is ever put in front
+of API Gateway, every client would share its address: per-IP limits would
+then need the proxy's client IP header, trusted only from that proxy.
+
+Quotas are charged where the cost is committed: uploads (count, bytes and
+AI analysis) when they start, before any bytes are sent, whether or not
+they're finalized; finalizing, which clients may retry, costs nothing.
+Searches are charged before OpenAI is called, notes and edits before their
+embedding is queued.
 
 ## Repository
 

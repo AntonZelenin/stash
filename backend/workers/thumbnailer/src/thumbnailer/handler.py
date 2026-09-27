@@ -17,9 +17,16 @@ logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 THUMBNAIL_CONTENT_TYPE = "image/webp"
+DEFAULT_MAX_PIXELS = 50_000_000
+
+# Pillow's own decompression-bomb guard counts the pixels an image declares,
+# before `draft` below shrinks a JPEG, so it would refuse the large photos
+# that decode at a fraction of their size. `make_thumbnail` checks the
+# pixels actually decoded instead.
+Image.MAX_IMAGE_PIXELS = None
 
 
-def make_thumbnail(data: bytes, *, max_size: int, quality: int) -> bytes:
+def make_thumbnail(data: bytes, *, max_size: int, quality: int, max_pixels: int = DEFAULT_MAX_PIXELS) -> bytes:
     """Downscales `data` to fit in `max_size` x `max_size` (never upscales),
     keeping its aspect ratio, and encodes it as WebP.
 
@@ -28,11 +35,24 @@ def make_thumbnail(data: bytes, *, max_size: int, quality: int) -> bytes:
     the metadata), keeps transparency, and uses the first frame of an
     animation. CPU-bound; call it off the event loop.
 
+    Decoding is bounded before it starts: a JPEG decodes straight at the
+    smallest scale (1/2 to 1/8) still at least `max_size`, so a 200 MP photo
+    costs a few megapixels; then whatever will be decoded must be at most
+    `max_pixels` (which bounds memory to about 4 bytes a pixel, a few
+    times over). A small file declaring huge dimensions (a decompression
+    bomb) is refused before any of it is decoded.
+
     Raises `PermanentProcessingError` for data Pillow can't decode (corrupt,
-    truncated, unsupported, or a decompression bomb).
+    truncated, unsupported) or that's over `max_pixels`.
     """
     try:
         with Image.open(io.BytesIO(data)) as source:
+            source.draft(None, (max_size, max_size))
+            width, height = source.size
+            if width * height > max_pixels:
+                raise PermanentProcessingError(
+                    f"Image is {width}x{height} decoded, over the {max_pixels}-pixel limit"
+                )
             image = ImageOps.exif_transpose(source)
             has_alpha = "A" in image.mode or "transparency" in image.info
             image = image.convert("RGBA" if has_alpha else "RGB")
@@ -72,21 +92,31 @@ class ThumbnailHandler:
         outbox: OutboxPublisher,
         max_size: int,
         quality: int,
+        max_pixels: int = DEFAULT_MAX_PIXELS,
+        max_source_bytes: int = 100 * 1024 * 1024,
     ):
         self._storage = storage
         self._engine = engine
         self._outbox = outbox
         self._max_size = max_size
         self._quality = quality
+        self._max_pixels = max_pixels
+        self._max_source_bytes = max_source_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
         if job.image is None:
             raise PermanentProcessingError("Image job has no storage reference")
 
-        original = await self._storage.download(job.image.storage_key)
+        # The whole original: decoding needs all of it. At most the API's
+        # image upload limit.
+        original = await self._storage.download(job.image.storage_key, max_bytes=self._max_source_bytes)
         with _tracer.start_as_current_span("thumbnail.generate") as span:
             thumbnail = await asyncio.to_thread(
-                make_thumbnail, original, max_size=self._max_size, quality=self._quality
+                make_thumbnail,
+                original,
+                max_size=self._max_size,
+                quality=self._quality,
+                max_pixels=self._max_pixels,
             )
             tracing.set_attributes(span, original_bytes=len(original), thumbnail_bytes=len(thumbnail))
 

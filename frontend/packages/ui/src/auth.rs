@@ -6,6 +6,7 @@ use crate::AuthSession;
 use crate::i18n::api_error_message;
 use crate::icons::{IconEye, IconEyeOff, IconLock, IconMail, IconStash};
 use crate::routes::Route;
+use crate::turnstile::{TurnstileWidget, use_turnstile};
 
 const AUTH_CSS: Asset = asset!("/assets/styling/auth.css");
 
@@ -37,6 +38,11 @@ fn split_error(err: ApiError) -> FormErrors {
                 match field_error.field.as_deref() {
                     Some("email") => result.email = Some(field_error.message),
                     Some("password") => result.password = Some(field_error.message),
+                    // The backend's one answer for a missing, expired or
+                    // reused token.
+                    Some("turnstile_token") => {
+                        general_messages.push(t!("auth-verification-failed"))
+                    }
                     _ => general_messages.push(field_error.message),
                 }
             }
@@ -55,7 +61,9 @@ fn split_error(err: ApiError) -> FormErrors {
     }
 }
 
-/// Must match the backend's `UserCreateRequest.password` limits.
+/// Must match the backend's `UserCreateRequest.password` limits. The
+/// backend also caps a password at 72 UTF-8 bytes (fewer characters in
+/// non-Latin scripts); that error comes back on the password field.
 pub(crate) const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_PASSWORD_CHARS: usize = 72;
 
@@ -311,6 +319,7 @@ fn SignupForm() -> Element {
     let mut password_error = use_signal(|| None::<String>);
     let mut confirm_password_error = use_signal(|| None::<String>);
     let mut is_submitting = use_signal(|| false);
+    let mut turnstile = use_turnstile();
 
     rsx! {
         form {
@@ -338,12 +347,22 @@ fn SignupForm() -> Element {
                 {
                     return;
                 }
+                let token = turnstile.token();
+                if turnstile.enabled() && token.is_none() {
+                    general_error.set(Some(t!("auth-verification-required")));
+                    return;
+                }
 
                 let session = session.clone();
                 spawn(async move {
                     is_submitting.set(true);
 
-                    if let Err(err) = session.register(email().trim(), &password()).await {
+                    let result = session
+                        .register(email().trim(), &password(), token.as_deref())
+                        .await;
+                    if let Err(err) = result {
+                        // The token was spent either way.
+                        turnstile.reset();
                         let errors = split_error(err);
                         general_error.set(errors.general);
                         email_error.set(errors.email);
@@ -416,6 +435,13 @@ fn SignupForm() -> Element {
             }
             if let Some(message) = confirm_password_error() {
                 p { class: "field-error", "{message}" }
+            }
+
+            if turnstile.enabled() {
+                TurnstileWidget {}
+                if turnstile.failed() {
+                    p { class: "field-error", {t!("auth-verification-unavailable")} }
+                }
             }
 
             button {

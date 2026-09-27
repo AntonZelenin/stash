@@ -47,6 +47,9 @@ aws_region  = "eu-central-1"
 #   migrations = { timeout = 600 }
 # }
 # api_cors_allowed_origins = ["http://localhost:8080"] # extra; CloudFront is always allowed
+# api_throttling_rate_limit  = 300 # requests/s through API Gateway, all clients together
+# api_throttling_burst_limit = 600
+# turnstile_enabled          = true # registration requires a Cloudflare Turnstile token
 
 # Observability. Alarms notify the alarm_topic_arn SNS topic; confirm the
 # email subscription from the message AWS sends.

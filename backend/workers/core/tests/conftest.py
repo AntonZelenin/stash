@@ -26,7 +26,7 @@ class DescribingHandler:
     async def handle(self, job: ProcessingJob) -> None:
         if job.image is None:
             raise PermanentProcessingError("Image job has no storage reference")
-        data = await self._storage.download(job.image.storage_key)
+        data = await self._storage.download(job.image.storage_key, max_bytes=1024 * 1024)
         description = await self._describer.describe(data, content_type=job.image.content_type)
         completed = await complete_item(
             self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)

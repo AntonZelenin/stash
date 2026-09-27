@@ -9,6 +9,14 @@ class Settings(WorkerSettings):
     # screenshots, while typically tens to low hundreds of KB as WebP.
     thumbnail_max_size: int = 1024
     thumbnail_quality: int = 80
+    # Most pixels decoded per image, after a JPEG's reduced-scale decoding
+    # (see `thumbnailer.handler.make_thumbnail`): bounds memory to what the
+    # function's 1 GB holds (~4 bytes a pixel, a few copies). Over it, the
+    # image fails; 50 MP is far beyond any screenshot or non-JPEG photo.
+    thumbnail_max_pixels: int = 50_000_000
+    # Largest original read: the API's image upload limit
+    # (MAX_IMAGE_UPLOAD_BYTES).
+    thumbnail_max_source_bytes: int = 100 * 1024 * 1024
 
 
 @lru_cache

@@ -39,6 +39,10 @@ locals {
       queue       = "document_analysis_jobs"
       memory_size = 512
       openai      = true
+      # PDFs are downloaded to /tmp to be parsed (up to
+      # DOCUMENT_MAX_DOWNLOAD_BYTES, 512 MB, above the 500 MB upload limit);
+      # everything else is read in ranges, within its processing limits.
+      ephemeral_storage = 1024
     }
     embedding_worker = {
       handler     = "embedding_worker.aws_lambda.handler"
@@ -77,8 +81,10 @@ locals {
       # large account quota. A worker's scale is capped by its event source
       # mapping's maximum concurrency (messaging.tf) instead.
       reserved_concurrency = coalesce(try(var.lambda_config[name].reserved_concurrency, null), -1)
-      architecture         = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
-      runtime              = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
+      # /tmp, in MB; 512 (free) unless the function needs more.
+      ephemeral_storage = coalesce(try(var.lambda_config[name].ephemeral_storage, null), try(d.ephemeral_storage, null), 512)
+      architecture      = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
+      runtime           = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
     })
   }
 
@@ -111,6 +117,11 @@ locals {
         S3_PUBLIC_ENDPOINT_URL = ""
         # The CloudFront frontend (frontend.tf) plus any extra origins.
         CORS_ALLOWED_ORIGINS = jsonencode(distinct(concat([local.frontend_origin], var.api_cors_allowed_origins)))
+        # Registration's Turnstile check (app.turnstile): tokens must have
+        # been solved on the frontend's own hostname.
+        TURNSTILE_ENABLED               = tostring(var.turnstile_enabled)
+        TURNSTILE_SECRET_KEY_SECRET_ARN = aws_secretsmanager_secret.turnstile_secret_key.arn
+        TURNSTILE_ALLOWED_HOSTNAMES     = jsonencode([aws_cloudfront_distribution.frontend.domain_name])
       } : {},
       l.queue == null ? {} : {
         MAX_DELIVERY_ATTEMPTS            = tostring(var.max_delivery_attempts)
@@ -142,6 +153,10 @@ resource "aws_lambda_function" "main" {
   memory_size                    = each.value.memory_size
   timeout                        = each.value.timeout
   reserved_concurrent_executions = each.value.reserved_concurrency
+
+  ephemeral_storage {
+    size = each.value.ephemeral_storage
+  }
 
   vpc_config {
     subnet_ids                  = [aws_subnet.app.id]

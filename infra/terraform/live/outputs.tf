@@ -108,6 +108,16 @@ output "max_delivery_attempts" {
   value       = var.max_delivery_attempts
 }
 
+output "turnstile_secret_key_secret_arn" {
+  description = "Secret to put the Cloudflare Turnstile secret key into (its value is not managed by Terraform)."
+  value       = aws_secretsmanager_secret.turnstile_secret_key.arn
+}
+
+output "frontend_hostname" {
+  description = "The frontend's hostname: add it to the Turnstile widget's allowed hostnames in Cloudflare."
+  value       = aws_cloudfront_distribution.frontend.domain_name
+}
+
 output "openai_api_key_secret_arn" {
   description = "Secret to put the OpenAI API key into (its value is not managed by Terraform)."
   value       = aws_secretsmanager_secret.openai_api_key.arn

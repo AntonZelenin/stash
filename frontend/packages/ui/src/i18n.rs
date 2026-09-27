@@ -200,6 +200,8 @@ pub(crate) fn api_error_message(err: &api::ApiError) -> String {
             .collect::<Vec<_>>()
             .join(" "),
         ApiError::Validation(_) => t!("error-invalid-request"),
+        ApiError::TooLarge => t!("error-too-large"),
+        ApiError::RateLimited => t!("error-rate-limited"),
         ApiError::Server => t!("error-server"),
     }
 }

@@ -23,5 +23,7 @@ def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | N
             outbox=build_outbox(settings, engine),
             max_size=settings.thumbnail_max_size,
             quality=settings.thumbnail_quality,
+            max_pixels=settings.thumbnail_max_pixels,
+            max_source_bytes=settings.thumbnail_max_source_bytes,
         ),
     )

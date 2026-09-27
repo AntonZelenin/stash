@@ -3,6 +3,15 @@ openapi: 3.1.0
 info:
   title: Stash API
   version: 0.1.0
+  description: >-
+    Request bodies are limited, 413 over it (file bytes never go through
+    the API): 2 MiB for the endpoints that take a note's or caption's text
+    (`POST /items/text`, `POST /uploads`, `PATCH /items/{item_id}`), enough
+    for the longest valid request in any JSON encoding; 64 KiB for every
+    other. Endpoints that can be abused or cost money are rate limited or
+    subject to per-user quotas, answered with 429 and a `Retry-After`
+    header; the limits themselves are configuration, not part of the
+    contract.
 
 paths:
   /users:
@@ -23,10 +32,20 @@ paths:
                 email:
                   type: string
                   format: email
+                  maxLength: 254
                 password:
+                  description: At most 72 UTF-8 bytes, too (fewer characters in non-Latin scripts).
                   type: string
                   minLength: 8
                   maxLength: 72
+                turnstile_token:
+                  description: >-
+                    The token from the Cloudflare Turnstile widget on the
+                    sign-up form (action `register`), verified server-side;
+                    single-use, valid for 5 minutes. Required unless the
+                    deployment has Turnstile turned off.
+                  type: string
+                  maxLength: 2048
 
       responses:
         "201":
@@ -43,10 +62,28 @@ paths:
                     format: uuid
 
         "409":
-          description: User already exists
+          description: >-
+            User already exists (only answered once the Turnstile token is
+            verified)
 
         "422":
-          description: Invalid request
+          description: >-
+            Invalid request (e.g. an email over 254 characters, or a password
+            over 72 characters or 72 UTF-8 bytes), or a missing, invalid,
+            expired or already used Turnstile token: then always the same
+            validation error, on `turnstile_token`.
+
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+        "503":
+          description: >-
+            The Turnstile token can't be verified right now (Cloudflare
+            unreachable); nothing was created. Retry with a new token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /login:
     post:
@@ -66,8 +103,10 @@ paths:
                 email:
                   type: string
                   format: email
+                  maxLength: 254
                 password:
                   type: string
+                  maxLength: 256
 
       responses:
         "200":
@@ -79,6 +118,20 @@ paths:
 
         "401":
           description: Invalid credentials
+
+        "429":
+          description: >-
+            Too many login attempts from this address, or too many failed
+            ones for this account (whether or not this one's password is
+            right). Retry after `Retry-After` seconds; accounts are never
+            locked permanently.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /refresh:
     post:
@@ -96,6 +149,7 @@ paths:
               properties:
                 refresh_token:
                   type: string
+                  maxLength: 256
 
       responses:
         "200":
@@ -107,6 +161,9 @@ paths:
 
         "401":
           description: Invalid refresh token
+
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /users/me:
     get:
@@ -161,7 +218,9 @@ paths:
               properties:
                 current_password:
                   type: string
+                  maxLength: 256
                 new_password:
+                  description: At most 72 UTF-8 bytes, too (fewer characters in non-Latin scripts).
                   type: string
                   minLength: 8
                   maxLength: 72
@@ -181,6 +240,18 @@ paths:
           description: >
             The current password is incorrect (reported as a validation error
             on `current_password`), or the new password is invalid.
+
+        "429":
+          description: >-
+            Too many wrong current passwords for this user. Retry after
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /items/text:
     post:
@@ -206,6 +277,7 @@ paths:
                 text:
                   type: string
                   minLength: 1
+                  maxLength: 100000
                 tags:
                   description: >-
                     Tag names to put on the new item (existing tags reused
@@ -215,6 +287,7 @@ paths:
                   maxItems: 20
                   items:
                     type: string
+                    maxLength: 200
                 type:
                   $ref: "#/components/schemas/TextItemType"
 
@@ -231,6 +304,9 @@ paths:
 
         "422":
           description: Invalid content
+
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /uploads:
     post:
@@ -264,7 +340,12 @@ paths:
         100 MB; the uploaded content must be that type.
 
 
-        Files: any file up to 50 MB. Analyzable formats (PDF,
+        Every upload started counts against the user's upload, byte and
+        (for images and analyzable files) AI analysis quotas, whether or
+        not it's finalized; finalizing costs nothing.
+
+
+        Files: any file up to 500 MB. Analyzable formats (PDF,
         DOCX/XLSX/PPTX, ODT/ODS/ODP, RTF, EPUB, FB2, FB2.ZIP and the
         text/data formats) are created `pending` and analyzed
         asynchronously into a searchable description; everything else is
@@ -299,10 +380,26 @@ paths:
         "401":
           description: Unauthorized
 
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+
         "422":
           description: >-
-            Invalid request: empty file, file too large, unsupported image
-            type, invalid tags, or unknown fields (such as a storage key).
+            Invalid request: empty file, unsupported image type, invalid
+            tags, or unknown fields (such as a storage key).
+
+        "429":
+          description: >-
+            Too many uploads started recently, or the user's upload, byte or
+            AI analysis quota is used up. Nothing was authorized. Retry
+            after `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /uploads/{upload_id}/finalize:
     post:
@@ -354,10 +451,17 @@ paths:
             The file isn't in storage yet. The upload stays pending: upload
             it, then finalize again.
 
+        "413":
+          description: The uploaded file is too large; the upload was discarded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
         "422":
           description: >-
-            The uploaded content is invalid (empty file, file too large, or
-            not the declared image type); the upload was discarded.
+            The uploaded content is invalid (empty file, or not the declared
+            image type); the upload was discarded.
 
   /tags:
     get:
@@ -379,6 +483,7 @@ paths:
           schema:
             type: string
             default: ""
+            maxLength: 200
         - name: limit
           in: query
           required: false
@@ -778,6 +883,9 @@ paths:
             anything but a file, a type for an image or file, or an
             unknown field.
 
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
   /items/{item_id}/playback-url:
     get:
       summary: Get a playback URL for a video or audio file
@@ -906,6 +1014,7 @@ paths:
           description: Opaque pagination cursor from a previous response's `next_cursor`.
           schema:
             type: string
+            maxLength: 512
         - name: limit
           in: query
           required: false
@@ -1029,6 +1138,7 @@ paths:
                 query:
                   type: string
                   minLength: 1
+                  maxLength: 1000
                 limit:
                   type: integer
                   minimum: 1
@@ -1091,11 +1201,50 @@ paths:
         "422":
           description: Invalid request
 
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
         "503":
           description: Search is temporarily unavailable (the query couldn't be embedded)
 
 components:
+  responses:
+    TooManyRequests:
+      description: >-
+        A rate limit or quota was reached. Retry after `Retry-After`
+        seconds; retrying sooner is rejected the same way (and doesn't
+        count).
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    PayloadTooLarge:
+      description: The file is over the size limit (images 100 MB, files 500 MB).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  headers:
+    RetryAfter:
+      description: Seconds until the request can succeed again.
+      schema:
+        type: integer
+        minimum: 1
+
   schemas:
+    Error:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+
     TokenPair:
       type: object
       required:
@@ -1168,6 +1317,7 @@ components:
           maxItems: 20
           items:
             type: string
+            maxLength: 200
 
     UploadStarted:
       type: object

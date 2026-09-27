@@ -2,7 +2,7 @@
 # does:
 #
 #                      S3 objects (users/...)          SQS                     Secrets
-#   api                sign uploads, get, delete       send: all               db, openai
+#   api                sign uploads, get, delete       send: all               db, openai, turnstile
 #   thumbnailer        get images, put|delete thumbs   send: all, consume own  db
 #   image_analyzer     get thumbnails                  send: all, consume own  db, openai
 #   document_analyzer  get files                       send: all, consume own  db, openai
@@ -121,6 +121,15 @@ data "aws_iam_policy_document" "lambda" {
       sid       = "ReadOpenAiSecret"
       actions   = ["secretsmanager:GetSecretValue"]
       resources = [aws_secretsmanager_secret.openai_api_key.arn]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = each.key == "api" ? [1] : []
+    content {
+      sid       = "ReadTurnstileSecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [aws_secretsmanager_secret.turnstile_secret_key.arn]
     }
   }
 

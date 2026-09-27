@@ -8,7 +8,7 @@ push, and nothing is ever destroyed automatically.
 |----------|---------|--------------|
 | `ci.yml` | pull request | tests, Terraform fmt/validate, Lambda packages, `terraform plan` (read-only) |
 | `ci.yml` | push to `main` | tests, Terraform fmt/validate |
-| `deploy.yml` | **manual** (`workflow_dispatch`, `main` only) | tests → packages → plan → apply → migrations → frontend → smoke tests |
+| `deploy.yml` | **manual** (`workflow_dispatch`, `main` only) | tests → packages → plan → migration Lambda → migrations → apply → frontend → smoke tests |
 | `tests.yml`, `build-lambdas.yml` | reused by the two above | |
 
 AWS access uses GitHub's OIDC tokens and two IAM roles
@@ -48,8 +48,18 @@ In this order, with your own AWS credentials (see
    | `STASH_ENVIRONMENT` | `prod` |
    | `LAMBDA_PERMISSIONS_BOUNDARY_ARN` | `arn:aws:iam::123456789012:policy/stash-prod-lambda-boundary` |
    | `TF_VARS` *(optional)* | any other `live/` variables as HCL, one per line, e.g. `alarm_email = "ops@example.com"` |
+   | `TURNSTILE_SITE_KEY` | the Cloudflare Turnstile widget's site key, e.g. `0x4AAAAAAA...` (see below); compiled into the frontend |
 
    No GitHub *secrets* are needed.
+
+   **Cloudflare Turnstile** (registration's bot check,
+   [architecture](architecture.md#turnstile-at-registration)): in the
+   Cloudflare dashboard, add a Turnstile widget (Managed mode). Its
+   hostname is the CloudFront domain (`terraform output frontend_hostname`
+   after the first deployment; add it then if you don't know it yet). The
+   site key goes into `TURNSTILE_SITE_KEY` above, the secret key into
+   Secrets Manager after the first deployment (below). Deployments fail
+   early without the site key.
 
 4. **GitHub Environment `production`** (Settings → Environments → New
    environment). Only jobs in it can assume the deploy role.
@@ -79,6 +89,17 @@ without it. Until it's set:
 
 So set it before uploading content. Nothing needs redeploying afterwards:
 the next search, and the workers' next cold start, read it.
+
+### After the first deployment: the Turnstile secret key
+
+Likewise (`stash-<env>/turnstile/secret-key`, `terraform output
+turnstile_secret_key_secret_arn`):
+
+    aws secretsmanager put-secret-value --secret-id stash-prod/turnstile/secret-key --secret-string '0x4AAAAAAA...'
+
+Until it's set, registration answers 503 (it never lets a registration
+through unverified); everything else works. The API reads it on the next
+registration, no redeploy needed.
 
 ## Pull requests and `main`
 
@@ -116,16 +137,20 @@ second one queues and never cancels the running one.
                                   embedding_worker, migrations: one job each (artifacts lambda-*)
     3. plan                       read-only role, no lock: the plan to review
        ── environment "production" (approval here, if configured) ──
-    4. terraform plan + apply     deploy role, state locked; the applied plan is printed
-                                  right before `apply` (and in the job summary)
+    4. migration Lambda           terraform plan + apply -target='aws_lambda_function.main["migrations"]':
+                                  that function and what it depends on only; printed first
     5. migrations                 the migration Lambda, invoked synchronously
-    6. frontend build             dx build --release, STASH_API_BASE_URL = Terraform's api_url
-    7. frontend upload            /assets/* (immutable, 1 year), then index.html (no-cache)
-    8. smoke tests                read-only requests against the deployed API and site
+    6. terraform plan + apply     everything else (the API, the workers...), state locked;
+                                  the applied plan is printed right before `apply`
+    7. frontend build             dx build --release, STASH_API_BASE_URL = Terraform's api_url,
+                                  STASH_TURNSTILE_SITE_KEY = the TURNSTILE_SITE_KEY variable
+    8. frontend upload            /assets/* (immutable, 1 year), then index.html (no-cache)
+    9. smoke tests                read-only requests against the deployed API and site
 
-Steps 4–7 are one job (`deploy`), so a deployment needs a single approval.
-If a step fails, nothing after it runs. For example, the frontend is never
-switched to a build whose migrations failed.
+Steps 4–8 are one job (`deploy`), so a deployment needs a single approval.
+If a step fails, nothing after it runs. For example, no new API or worker
+code is deployed when migrations fail, and the frontend is never switched
+to a build whose migrations failed.
 
 Terraform never builds anything. It deploys the zips from step 2
 (`build/lambda/<function>.zip`) and redeploys a function only when its
@@ -133,11 +158,21 @@ zip's hash changes. The builds are reproducible, so unchanged code gives
 unchanged zips. Dependencies aren't pinned, though, so a new release of
 one upstream redeploys the functions that use it.
 
-New code reaches the functions in step 4 and the schema changes in
-step 5, so for a moment new code can run against the old schema.
-Migrations must keep the previous code working, and the new code the
-previous schema (expand, then contract in a later release). Nothing in
-this setup rolls back automatically.
+The schema changes in step 5, before any new application code runs
+(step 6): new code never meets a schema that lacks something it uses,
+such as a new table. Step 4 deploys only the migration function, plus
+whatever it depends on that changed (network, RDS, secrets, IAM, queues),
+and none of the other functions or what invokes them
+(`infra/terraform/live/tests` checks that, and
+`backend/api/tests/unit/test_deployment_order.py` this order). It's the
+one use of `-target`, which Terraform warns about in the log.
+
+So the code already running meets the new schema, from step 5 until
+step 6 replaces it (and for good if step 6 fails): migrations must keep
+the previous release working. Add tables, columns (nullable or with a
+default) and indexes; drop or rename only in a later release, once no
+deployed code uses them (expand, then contract). Nothing in this setup
+rolls back automatically.
 
 ### Migrations
 
@@ -212,7 +247,7 @@ the plans.
 | tests, packages | the job's log | fix, merge, start a new deployment |
 | plan / apply | the Terraform output. `AccessDenied` means the deploy role lacks a permission: add it to `infra/terraform/github_oidc/policies.tf` and apply that by hand | *Re-run failed jobs*. A partial apply is fine: the next plan continues from the state |
 | state lock | `Error acquiring the state lock`: a run was killed mid-apply | when no deployment is running: `terraform force-unlock <lock id>` in `live/` with your credentials |
-| migrations | the printed log tail; the full log in CloudWatch `/aws/lambda/stash-<env>-migrations` | fix the migration, deploy again. The infrastructure and function code are already applied; the frontend wasn't touched |
+| migrations | the printed log tail; the full log in CloudWatch `/aws/lambda/stash-<env>-migrations` | fix the migration, deploy again. Only the migration function (and its dependencies) was applied: the API and workers still run the previous release, and the frontend wasn't touched |
 | frontend build/upload | the job's log | *Re-run failed jobs* |
 | smoke tests | which check failed; the API's log group `/aws/lambda/stash-<env>-api`, the dashboard (`terraform output dashboard_url`) | fix, or *Re-run failed jobs* for a transient failure |
 

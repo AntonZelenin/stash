@@ -75,3 +75,18 @@ def test_an_unreadable_openai_secret_fails_only_when_needed(secrets_manager, mon
 
     with pytest.raises(LookupError):
         config.get_openai_api_key()
+
+
+def test_the_turnstile_secret_comes_from_its_secret_when_one_is_set(monkeypatch):
+    monkeypatch.setattr(secrets, "get_secret_string", lambda arn: f"value of {arn}")
+    monkeypatch.setattr(config, "get_settings", lambda: Settings(turnstile_secret_key="plain"))
+    assert config.get_turnstile_secret_key() == "plain"
+
+    monkeypatch.setattr(
+        config, "get_settings", lambda: Settings(turnstile_secret_key="plain", turnstile_secret_key_secret_arn="arn:x")
+    )
+    assert config.get_turnstile_secret_key() == "value of arn:x"
+
+
+def test_turnstile_is_on_by_default():
+    assert Settings().turnstile_enabled is True

@@ -24,10 +24,14 @@ impl ApiClient {
         }
     }
 
+    /// `turnstile_token`: from the sign-up form's Turnstile widget. A
+    /// missing, expired or reused one comes back as a validation error on
+    /// `turnstile_token`.
     pub async fn register(
         &self,
         email: &str,
         password: &str,
+        turnstile_token: Option<&str>,
     ) -> Result<RegisterResponse, ApiError> {
         let response = self
             .http
@@ -35,6 +39,7 @@ impl ApiClient {
             .json(&RegisterRequest {
                 email: email.to_string(),
                 password: password.to_string(),
+                turnstile_token: turnstile_token.map(str::to_string),
             })
             .send()
             .await
@@ -46,7 +51,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -68,7 +73,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -86,7 +91,7 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -115,7 +120,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -152,7 +157,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -177,7 +182,7 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -204,7 +209,7 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -235,7 +240,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -258,7 +263,7 @@ impl ApiClient {
         match response.status().as_u16() {
             204 => Ok(()),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -283,7 +288,7 @@ impl ApiClient {
         match response.status().as_u16() {
             204 => Ok(()),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -308,7 +313,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -347,7 +352,7 @@ impl ApiClient {
                 .map_err(|_| ApiError::Server),
             404 => Ok(None),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -375,7 +380,7 @@ impl ApiClient {
                 .map_err(|_| ApiError::Server),
             404 => Ok(None),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -389,7 +394,7 @@ impl ApiClient {
         match response.status().as_u16() {
             204 | 404 => Ok(()),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -424,7 +429,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -450,7 +455,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -503,7 +508,7 @@ impl ApiClient {
             404 | 409 | 422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -519,7 +524,7 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -533,7 +538,7 @@ impl ApiClient {
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -552,7 +557,7 @@ impl ApiClient {
                 .map(|body| body.years)
                 .map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 
@@ -603,7 +608,7 @@ impl ApiClient {
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,
             )),
-            _ => Err(ApiError::Server),
+            status => Err(ApiError::from_status(status)),
         }
     }
 }

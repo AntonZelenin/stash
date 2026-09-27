@@ -143,12 +143,15 @@ One function per service, all in the app subnet (VPC, dual-stack):
 | `api`               | `app.aws_lambda.handler`              | 512 MB  | 30 s    | the account's quota   |
 | `thumbnailer`       | `thumbnailer.aws_lambda.handler`      | 1024 MB | 60 s    | its SQS mapping: 5    |
 | `image_analyzer`    | `image_analyzer.aws_lambda.handler`   | 256 MB  | 120 s   | its SQS mapping: 3    |
-| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB  | 180 s   | its SQS mapping: 2    |
+| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB, 1 GB `/tmp` | 180 s | its SQS mapping: 2 |
 | `embedding_worker`  | `embedding_worker.aws_lambda.handler` | 256 MB  | 120 s   | its SQS mapping: 3    |
 | `migrations`        | `app.aws_lambda_migrations.handler`   | 512 MB  | 300 s   | one deployment at a time |
 
 - Override per function with `lambda_config`. A worker's timeout comes
   from its queue (see Messaging).
+- `/tmp` (`ephemeral_storage`) is the free 512 MB, except the document
+  analyzer's 1 GB: it downloads a PDF there to parse it (up to 512 MB,
+  above the 500 MB upload limit); every other format it reads in ranges.
 - No function reserves concurrency, so deploying needs no particular
   account concurrency quota. A reservation would take its share of the
   account's regional concurrency whether used or not, and AWS only allows
@@ -163,9 +166,11 @@ One function per service, all in the app subnet (VPC, dual-stack):
   be throttled, and their messages come back for another delivery
   attempt. Asking AWS for the usual 1000 avoids that.
 - `migrations` runs `alembic upgrade head` in the VPC (RDS is private). It
-  has no trigger: the deployment invokes it synchronously after `apply`
-  (output `migrations_function_name`; see
-  [docs/deployment.md](../../../docs/deployment.md#migrations)). Its package
+  has no trigger: the deployment applies it first, on its own
+  (`-target='aws_lambda_function.main["migrations"]'`), invokes it
+  synchronously, and only then applies everything else, so new code never
+  runs against an unmigrated schema (see
+  [docs/deployment.md](../../../docs/deployment.md#order)). Its package
   is the API's plus `migrations/alembic.ini` and `migrations/alembic/`.
   It reads only the database secret.
 - `lambda_permissions_boundary_arn`: the permissions boundary of every
@@ -187,6 +192,15 @@ One function per service, all in the app subnet (VPC, dual-stack):
   it:
 
       aws secretsmanager put-secret-value --secret-id "$(terraform output -raw openai_api_key_secret_arn)" --secret-string 'sk-...'
+
+  The API also gets `TURNSTILE_SECRET_KEY_SECRET_ARN`, the Cloudflare
+  Turnstile secret key registration is verified with, read on the first
+  registration; until it has a value, registration answers 503. Tokens
+  are accepted only from the CloudFront domain (`TURNSTILE_ALLOWED_HOSTNAMES`,
+  output `frontend_hostname`). `turnstile_enabled = false` turns the check
+  off (then accounts can be mass-created).
+
+      aws secretsmanager put-secret-value --secret-id "$(terraform output -raw turnstile_secret_key_secret_arn)" --secret-string '0x4AAAAAAA...'
 
 - IAM per function: see the matrix at the top of `iam.tf`.
 - `AWS_USE_DUALSTACK_ENDPOINT=true` makes boto3 reach S3 and SQS over IPv6;
@@ -210,6 +224,20 @@ custom domain yet.
   capped at 30.
 - Only API Gateway may invoke the function (`aws_lambda_permission`,
   scoped to this API).
+- Throttling: the `$default` stage lets through at most
+  `api_throttling_rate_limit` requests/s (300) with bursts of
+  `api_throttling_burst_limit` (600), all clients together; over it, API
+  Gateway answers 429 without invoking the function. It's a ceiling on
+  load and cost, not abuse protection (it can't tell clients apart; HTTP
+  APIs have no per-client throttling, and WAF can't be attached to them):
+  that's the application's per-IP, per-account and per-user limits. Sized
+  against what's behind it: each API instance holds up to two RDS
+  connections and a `db.t4g.micro` allows about 80, so some 25-35
+  instances, 250-700 requests/s at 50-100 ms each. Raise it with the
+  database.
+- `tests/`: `terraform test` (plans against mocked providers, no
+  credentials) checks the throttling, the Turnstile wiring and that the
+  migration function can be deployed on its own.
 
 ## Frontend
 
@@ -239,12 +267,13 @@ access blocked, SSE-S3, TLS only) through a CloudFront distribution
   ...).
 
 Terraform doesn't build or upload the site. The deployment workflow
-(`.github/workflows/deploy.yml`) does, after `apply` and the migrations,
+(`.github/workflows/deploy.yml`) does, after the migrations and `apply`,
 and sets `.wasm` files' type explicitly. By hand:
 
     cd frontend/packages/web
     rm -rf ../../target/dx/web/release/web/public
     STASH_API_BASE_URL="$(terraform -chdir=../../../infra/terraform/live output -raw api_url)" \
+    STASH_TURNSTILE_SITE_KEY='0x4AAAAAAA...' \
       dx build --platform web --release
     cd ../../target/dx/web/release/web/public
     BUCKET="$(terraform -chdir=<live> output -raw frontend_bucket_name)"

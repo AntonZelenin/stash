@@ -104,6 +104,12 @@ services:
       SEARCH_MIN_TEXT_SIMILARITY: ${SEARCH_MIN_TEXT_SIMILARITY:-0.6}
       # Rewrites search queries into English before they're embedded.
       SEARCH_QUERY_NORMALIZATION_MODEL: ${SEARCH_QUERY_NORMALIZATION_MODEL:-gpt-5-nano}
+      # Rate limits and quotas: production values unless turned off here.
+      RATE_LIMITS_ENABLED: ${RATE_LIMITS_ENABLED:-true}
+      # Turnstile on registration, with Cloudflare's always-passing test
+      # secret (see .env.example).
+      TURNSTILE_ENABLED: ${TURNSTILE_ENABLED:-true}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
     ports:
       - "${API_PORT:-8000}:8000"
     healthcheck:
@@ -263,6 +269,10 @@ services:
       # for the wrong OS/ABI.
       - ./frontend:/app
       - frontend_target:/app/target
+    environment:
+      # Compiled in (packages/web/src/config.rs); unset: Cloudflare's test
+      # site key. Empty: no Turnstile widget (see .env.example).
+      STASH_TURNSTILE_SITE_KEY: ${STASH_TURNSTILE_SITE_KEY-1x00000000000000000000AA}
     depends_on:
       api:
         condition: service_healthy

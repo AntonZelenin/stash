@@ -18,6 +18,8 @@ error-network = Could not reach the server
 error-unauthorized = Invalid credentials
 error-conflict = That email is already registered
 error-invalid-request = Invalid request
+error-too-large = The file is too large
+error-rate-limited = Too many requests. Please wait a little and try again.
 error-server = Something went wrong
 
 ## Login and signup
@@ -44,6 +46,9 @@ auth-password-too-long = Password must be at most { $max } { $max ->
        *[other] characters
     }
 auth-passwords-mismatch = Passwords don't match
+auth-verification-required = Complete the verification below first.
+auth-verification-failed = Verification failed. Please try again.
+auth-verification-unavailable = The verification didn't load. Check your connection and reload the page.
 
 ## Top bar and account menu
 

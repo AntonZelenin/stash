@@ -25,7 +25,8 @@ Modules:
 - `openai_client` — OpenAI client setup shared by the workers that call
   OpenAI, and which OpenAI errors are permanent
   (`errors.PermanentProcessingError`) vs. transient (anything else).
-- `storage` — small S3 object store (download/upload/delete).
+- `storage` — small S3 object store: bounded download, size, ranged reads, upload, delete.
+- `ranged` — `RangeReader`, a seekable file over part of a stored object (fetches only what's read, within a byte limit).
 - `config.WorkerSettings` — the settings every worker has (DB, queue, S3,
   retries, observability); each worker subclasses it with its own.
 - `runtime` — wiring every worker's `stage`/entrypoints use

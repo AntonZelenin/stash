@@ -52,8 +52,15 @@ impl AuthSession {
     }
 
     /// Registers the account, then immediately logs it in.
-    pub async fn register(&self, email: &str, password: &str) -> Result<(), ApiError> {
-        self.client.register(email, password).await?;
+    pub async fn register(
+        &self,
+        email: &str,
+        password: &str,
+        turnstile_token: Option<&str>,
+    ) -> Result<(), ApiError> {
+        self.client
+            .register(email, password, turnstile_token)
+            .await?;
         self.login(email, password).await
     }
 

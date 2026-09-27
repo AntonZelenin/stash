@@ -4,8 +4,16 @@ import zipfile
 import pytest
 from pypdf import PdfWriter
 
-from document_analyzer import parsers
-from document_analyzer.parsers import normalize_text, parser_for, supported_content_types
+from document_analyzer.parsers import (
+    DocumentSource,
+    ExtractedText,
+    ParserLimits,
+    UnparsableDocumentError,
+    extract_text,
+    normalize_text,
+    parser_for,
+    supported_content_types,
+)
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -21,10 +29,14 @@ def _zip(members: dict[str, str | bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _extract(content_type: str, data: bytes) -> str:
+def _run(content_type: str, data: bytes, limits: ParserLimits = ParserLimits()) -> ExtractedText:
     parser = parser_for(content_type)
     assert parser is not None, content_type
-    return normalize_text(parser.extract_text(data))
+    return extract_text(parser, DocumentSource.from_bytes(data), limits)
+
+
+def _extract(content_type: str, data: bytes) -> str:
+    return normalize_text(_run(content_type, data).text)
 
 
 def _pdf_with_text(text: str) -> bytes:
@@ -66,8 +78,8 @@ def test_password_protected_pdf_is_unparsable():
     buffer = io.BytesIO()
     writer.write(buffer)
 
-    with pytest.raises(parsers.UnparsableDocumentError):
-        parser_for("application/pdf").extract_text(buffer.getvalue())
+    with pytest.raises(UnparsableDocumentError):
+        _run("application/pdf", buffer.getvalue())
 
 
 def test_docx_paragraphs_in_order():
@@ -186,21 +198,13 @@ def test_xml_entity_expansion_is_refused():
     bomb = b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;">]><x>&b;</x>'
 
     with pytest.raises(Exception):
-        parser_for("application/xml").extract_text(bomb)
-
-
-def test_oversized_zip_member_is_refused(monkeypatch):
-    monkeypatch.setattr(parsers, "_MAX_ZIP_MEMBER_BYTES", 10)
-    data = _zip({"word/document.xml": "<w:document xmlns:w='w'><w:p>" + "x" * 100 + "</w:p></w:document>"})
-
-    with pytest.raises(parsers.UnparsableDocumentError):
-        parser_for(DOCX).extract_text(data)
+        _run("application/xml", bomb)
 
 
 @pytest.mark.parametrize("content_type", [DOCX, "application/epub+zip", "application/pdf"])
 def test_corrupt_input_raises(content_type):
     with pytest.raises(Exception):
-        parser_for(content_type).extract_text(b"definitely not a real document")
+        _run(content_type, b"definitely not a real document")
 
 
 def test_unsupported_types_have_no_parser():

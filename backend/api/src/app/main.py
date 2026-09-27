@@ -1,11 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from stash_shared import metrics, tracing
-from stash_shared.log import configure_logging
+from stash_shared.log import configure_logging, get_logger
 
 from app.api.routers import auth, items, search, tags, users
+from app.body_size import MaxBodySizeMiddleware
 from app.config import get_settings
 from app.db import engine
+from app.rate_limits.limiter import RateLimitExceeded
 from app.request_logging import RequestLoggingMiddleware
 
 configure_logging(
@@ -40,6 +43,13 @@ app = FastAPI(
     ],
 )
 
+# The backstop behind each route's own body limit (`app.body_size`): the
+# largest one, for every request. Innermost of the middlewares below, so its
+# 413s still get CORS headers.
+app.add_middleware(
+    MaxBodySizeMiddleware,
+    max_bytes=max(get_settings().max_request_body_bytes, get_settings().max_content_request_body_bytes),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_allowed_origins,
@@ -58,6 +68,21 @@ if tracing.is_enabled():
     # request log line carries its trace id. Not the healthcheck (polled
     # every few seconds), and not the per-message send/receive spans.
     FastAPIInstrumentor.instrument_app(app, excluded_urls="/health", exclude_spans=["receive", "send"])
+
+logger = get_logger(__name__)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded(_request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Every rate limit and quota answers the same way: which limit, and
+    how much of it is left, stay in the logs, never in the response."""
+    logger.info("Rate limit exceeded", limit=exc.limit_name, retry_after_seconds=exc.retry_after_seconds)
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Please try again later."},
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
+
 
 app.include_router(users.router)
 app.include_router(auth.router)

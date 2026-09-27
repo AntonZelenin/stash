@@ -16,6 +16,8 @@ error-network = Не вдалося з’єднатися із сервером
 error-unauthorized = Неправильні облікові дані
 error-conflict = Цю електронну пошту вже зареєстровано
 error-invalid-request = Некоректний запит
+error-too-large = Файл завеликий
+error-rate-limited = Забагато запитів. Зачекайте трохи й спробуйте знову.
 error-server = Щось пішло не так
 
 ## Login and signup
@@ -43,6 +45,9 @@ auth-password-too-long = Пароль має містити не більше { 
        *[other] символів
     }
 auth-passwords-mismatch = Паролі не збігаються
+auth-verification-required = Спершу пройдіть перевірку нижче.
+auth-verification-failed = Перевірка не вдалася. Спробуйте ще раз.
+auth-verification-unavailable = Перевірка не завантажилася. Перевірте з'єднання та перезавантажте сторінку.
 
 ## Top bar and account menu
 

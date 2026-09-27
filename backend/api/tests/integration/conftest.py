@@ -1,5 +1,7 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import fields
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
@@ -34,8 +36,11 @@ from app.embeddings import get_embedder
 from app.outbox import outbox_events
 from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.queue import get_queue_resolver
+from app.rate_limits.limiter import Limit, RateLimiter, RateLimits, get_rate_limiter
+from app.rate_limits.models import RateLimitCounter
 from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
 from app.storage.minio import get_object_storage
+from app.turnstile import TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
 
 _TEST_TABLES = [
@@ -269,6 +274,129 @@ def query_normalizer() -> FakeQueryNormalizer:
     app.dependency_overrides.pop(get_query_normalizer, None)
 
 
+_NO_LIMITS = RateLimits(**{field.name: Limit(field.name, ()) for field in fields(RateLimits)})
+
+
+class FakeClock:
+    """The rate limiter's clock, moved by tests. Starts at the beginning of
+    a day, so every window starts a fresh period with it."""
+
+    def __init__(self):
+        self.now = float(1_800_000_000 - 1_800_000_000 % 86_400)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+def no_rate_limits() -> RateLimiter:
+    """Rate limits are off unless a test turns some on (`rate_limits`)."""
+    limiter = RateLimiter(engine=None, limits=_NO_LIMITS, enabled=False)
+    app.dependency_overrides[get_rate_limiter] = lambda: limiter
+    yield limiter
+    app.dependency_overrides.pop(get_rate_limiter, None)
+
+
+@pytest.fixture
+async def rate_limits(tmp_path, clock: FakeClock, no_rate_limits) -> AsyncGenerator[Callable[..., RateLimiter]]:
+    """`rate_limits(login_per_ip="3/1m", ...)` turns on the named limits
+    (`RateLimits` fields) with those windows, the rest unlimited, counted
+    in a database of their own (a file, so concurrent requests contend for
+    it as on Postgres) on `clock`."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rate_limits.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(RateLimitCounter.metadata.create_all, tables=[RateLimitCounter.__table__])
+
+    def enable(**specs: str) -> RateLimiter:
+        limits = RateLimits(
+            **{field.name: Limit.parse(field.name, specs.pop(field.name, "")) for field in fields(RateLimits)}
+        )
+        assert not specs, f"unknown limits: {sorted(specs)}"
+        limiter = RateLimiter(engine=engine, limits=limits, clock=clock, prune_probability=0)
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+        return limiter
+
+    yield enable
+    await engine.dispose()
+
+
+@pytest.fixture
+def no_turnstile() -> TurnstileVerifier:
+    """Registration needs no Turnstile token unless a test turns it on
+    (`turnstile`)."""
+    verifier = TurnstileVerifier(
+        enabled=False, verify_url="", timeout_seconds=1, allowed_hostnames=[], secret_key=lambda: ""
+    )
+    app.dependency_overrides[get_turnstile_verifier] = lambda: verifier
+    yield verifier
+    app.dependency_overrides.pop(get_turnstile_verifier, None)
+
+
+class FakeSiteverify:
+    """Cloudflare's siteverify API, answering for tokens a test issues:
+    `issue()` a token solved on our hostname for registration (spent once
+    verified, like Cloudflare's), `issue(hostname=..., action=...)` one
+    solved elsewhere, `expire(token)` one that timed out. Any other token is
+    invalid. `down` makes it unreachable, `requests` is what it was sent."""
+
+    SECRET = "test-turnstile-secret"
+    HOSTNAME = "stash.example"
+
+    def __init__(self):
+        self._tokens: dict[str, dict] = {}
+        self.requests: list[dict[str, str]] = []
+        self.down = False
+
+    def issue(self, *, hostname: str = HOSTNAME, action: str = "register") -> str:
+        token = f"token-{len(self._tokens)}"
+        self._tokens[token] = {"hostname": hostname, "action": action, "spent": False, "expired": False}
+        return token
+
+    def expire(self, token: str) -> None:
+        self._tokens[token]["expired"] = True
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if self.down:
+            raise httpx.ConnectError("unreachable", request=request)
+        form = dict(httpx.QueryParams(request.content.decode()))
+        self.requests.append(form)
+        if form.get("secret") != self.SECRET:
+            return httpx.Response(200, json={"success": False, "error-codes": ["invalid-input-secret"]})
+        token = self._tokens.get(form.get("response", ""))
+        if token is None:
+            return httpx.Response(200, json={"success": False, "error-codes": ["invalid-input-response"]})
+        if token["spent"] or token["expired"]:
+            return httpx.Response(200, json={"success": False, "error-codes": ["timeout-or-duplicate"]})
+        token["spent"] = True
+        return httpx.Response(
+            200, json={"success": True, "hostname": token["hostname"], "action": token["action"], "error-codes": []}
+        )
+
+
+@pytest.fixture
+def turnstile(no_turnstile) -> FakeSiteverify:
+    """Turnstile on for registration, verified against `FakeSiteverify`."""
+    siteverify = FakeSiteverify()
+    verifier = TurnstileVerifier(
+        enabled=True,
+        verify_url="https://challenges.example/siteverify",
+        timeout_seconds=1,
+        allowed_hostnames=[FakeSiteverify.HOSTNAME],
+        secret_key=lambda: FakeSiteverify.SECRET,
+        transport=httpx.MockTransport(siteverify.handle),
+    )
+    app.dependency_overrides[get_turnstile_verifier] = lambda: verifier
+    return siteverify
+
+
 @pytest.fixture
 async def client(
     session: AsyncSession,
@@ -278,7 +406,25 @@ async def client(
     embedding_queue: FakeJobQueue,
     embedder: FakeEmbedder,
     query_normalizer: FakeQueryNormalizer,
+    no_rate_limits: RateLimiter,
+    no_turnstile: TurnstileVerifier,
 ) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture
+async def client_from(client: AsyncClient) -> AsyncGenerator[Callable[[str], AsyncClient]]:
+    """`client_from("198.51.100.7")`: a client whose requests come from
+    that IP (the default `client` connects from 127.0.0.1)."""
+    clients: list[AsyncClient] = []
+
+    def make(ip: str) -> AsyncClient:
+        other = AsyncClient(transport=ASGITransport(app=app, client=(ip, 123)), base_url="http://test")
+        clients.append(other)
+        return other
+
+    yield make
+    for other in clients:
+        await other.aclose()

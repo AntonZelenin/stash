@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use api::ApiClient;
 use dioxus::prelude::*;
-use ui::{AuthSession, Route, use_init_localization};
+use ui::{AuthSession, Route, TurnstileSiteKey, use_init_localization};
 
 mod config;
-use config::API_BASE_URL;
+use config::{API_BASE_URL, TURNSTILE_SITE_KEY};
 
 mod language_store;
 use language_store::{LocalStorageLanguageStore, browser_languages};
@@ -29,6 +29,7 @@ fn App() -> Element {
             Arc::new(LocalStorageTokenStore),
         )
     });
+    use_context_provider(|| TurnstileSiteKey(TURNSTILE_SITE_KEY));
 
     rsx! {
         document::Title { "Stash" }

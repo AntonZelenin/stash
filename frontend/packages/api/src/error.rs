@@ -22,8 +22,24 @@ pub enum ApiError {
     /// 422: the request did not pass validation, broken down per field
     /// where the backend told us which field it was about.
     Validation(Vec<FieldError>),
+    /// 413: the file (or request) is over the backend's size limit.
+    TooLarge,
+    /// 429: a rate limit or quota was hit; the request can be made again
+    /// later, not right away.
+    RateLimited,
     /// Any other non-2xx response.
     Server,
+}
+
+impl ApiError {
+    /// The error for a status an endpoint has no specific handling for.
+    pub fn from_status(status: u16) -> Self {
+        match status {
+            413 => ApiError::TooLarge,
+            429 => ApiError::RateLimited,
+            _ => ApiError::Server,
+        }
+    }
 }
 
 impl fmt::Display for ApiError {
@@ -37,6 +53,8 @@ impl fmt::Display for ApiError {
                 write!(f, "{}", messages.join(" "))
             }
             ApiError::Validation(_) => write!(f, "Invalid request"),
+            ApiError::TooLarge => write!(f, "The file is too large"),
+            ApiError::RateLimited => write!(f, "Too many requests, try again later"),
             ApiError::Server => write!(f, "Something went wrong"),
         }
     }

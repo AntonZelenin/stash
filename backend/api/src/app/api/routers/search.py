@@ -4,16 +4,18 @@ from stash_shared.embeddings import Embedder
 
 from app.api.routers.items import item_filters, to_listed_item
 from app.api.schemas.search import SearchRequest, SearchResponse
+from app.body_size import BodyLimitedRoute
 from app.db import DbSession
 from app.dependencies import get_current_user
 from app.embeddings import get_embedder
 from app.items.services import ItemService, SearchUnavailableError
 from app.query_normalization import QueryNormalizer, get_query_normalizer
+from app.rate_limits.limiter import Charge, RateLimiter, get_rate_limiter
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 from app.users.models import User
 
-router = APIRouter(tags=["search"])
+router = APIRouter(tags=["search"], route_class=BodyLimitedRoute)
 
 
 @router.post(
@@ -23,6 +25,7 @@ router = APIRouter(tags=["search"])
     responses={
         401: {"description": "Unauthorized"},
         422: {"description": "Invalid request"},
+        429: {"description": "Too many searches; retry after `Retry-After` seconds"},
         503: {"description": "Search is temporarily unavailable"},
     },
 )
@@ -33,7 +36,10 @@ async def search_items(
     storage: ObjectStorage = Depends(get_object_storage),
     embedder: Embedder = Depends(get_embedder),
     normalizer: QueryNormalizer = Depends(get_query_normalizer),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> SearchResponse:
+    # Each search calls OpenAI twice (query rewrite, embedding).
+    await limiter.consume(Charge(limiter.limits.searches_per_user, str(current_user.id)))
     try:
         results = await ItemService(session, storage).search_items(
             user_id=current_user.id,

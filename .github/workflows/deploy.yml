@@ -5,11 +5,17 @@
 #   → Lambda packages (one job each)
 #   → terraform plan (read-only role; review it here)
 #   → [environment "production": approval, if required]
-#   → terraform plan + apply (the plan applied is printed first)
+#   → terraform apply of the migration Lambda only (and what it needs)
 #   → migrations (the migration Lambda, in the VPC, synchronously)
+#   → terraform plan + apply of everything else: the new API and workers
 #   → frontend build with the Terraform API URL
 #   → frontend upload: hashed /assets first, index.html last
 #   → smoke tests
+#
+# Schema first, then code: new code never runs against a schema that
+# doesn't have what it needs yet. The code already running meets the new
+# schema meanwhile, so migrations must keep it working (expand now,
+# contract in a later release; docs/deployment.md).
 #
 # Every step is idempotent, so a failed run is fixed by re-running it.
 name: Deploy production
@@ -119,6 +125,17 @@ jobs:
       frontend_url: ${{ steps.tf.outputs.frontend_url }}
       wasm_path: ${{ steps.upload.outputs.wasm_path }}
     steps:
+      # Checked before anything changes: a frontend built without it would
+      # have no Turnstile widget, and the API would refuse every sign-up.
+      - name: Frontend configuration
+        env:
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+        run: |
+          if [ -z "$TURNSTILE_SITE_KEY" ]; then
+            echo "::error::Repository variable TURNSTILE_SITE_KEY is not set (see docs/deployment.md, one-time setup)."
+            exit 1
+          fi
+
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
@@ -139,8 +156,74 @@ jobs:
 
       - uses: ./.github/actions/terraform-live
 
-      # Planned again under the state lock: this plan, printed in full, is
-      # exactly what the next step applies.
+      # 1. Only the migration Lambda, with the new code's migrations, and
+      # whatever it depends on (network, RDS, secrets, IAM, queues...), all
+      # of which the code already running keeps working with. No other
+      # function, nothing that invokes one: the API and workers keep
+      # running the previous release. Planned under the state lock, printed,
+      # and exactly that plan applied. Terraform warns about -target: this
+      # ordering is the one thing it's used for here.
+      - name: Terraform plan (migrations)
+        working-directory: infra/terraform/live
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -out=migrations.tfplan \
+            -target='aws_lambda_function.main["migrations"]' | tee migrations-plan.txt
+          {
+            echo "### Terraform plan (applied first: migrations)"
+            echo '```'
+            head -c 30000 migrations-plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply (migrations)
+        working-directory: infra/terraform/live
+        run: terraform apply -input=false -no-color migrations.tfplan
+
+      # Read from the state, not outputs: a targeted apply doesn't update
+      # them (and on the very first deployment there are none yet).
+      - name: Migration function
+        id: migrations
+        working-directory: infra/terraform/live
+        run: |
+          set -euo pipefail
+          name="$(terraform show -json | jq -r '
+            .values.root_module.resources[]
+            | select(.address == "aws_lambda_function.main[\"migrations\"]")
+            | .values.function_name')"
+          [ -n "$name" ] && [ "$name" != null ]
+          echo "function=$name" | tee -a "$GITHUB_OUTPUT"
+
+      # 2. RDS is private: `alembic upgrade head` runs in the VPC, in the
+      # migration Lambda, invoked synchronously. Exactly one attempt
+      # (AWS_MAX_ATTEMPTS=1): the CLI must not retry an invocation on its own.
+      # If it fails, nothing after it is deployed: the previous release
+      # keeps running, on a schema it still works with.
+      - name: Database migrations
+        env:
+          FUNCTION: ${{ steps.migrations.outputs.function }}
+          AWS_MAX_ATTEMPTS: "1"
+        run: |
+          set -euo pipefail
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+          aws lambda invoke \
+            --function-name "$FUNCTION" \
+            --payload '{}' --cli-binary-format raw-in-base64-out \
+            --log-type Tail \
+            --cli-read-timeout 900 \
+            migration-result.json > invocation.json
+          echo "::group::Migration log (last 4 KB; full log: CloudWatch /aws/lambda/$FUNCTION)"
+          jq -r '.LogResult // empty' invocation.json | base64 -d || true
+          echo "::endgroup::"
+          cat migration-result.json; echo
+          if jq -e '.FunctionError' invocation.json > /dev/null; then
+            echo "::error::Migrations failed; nothing after them was deployed."
+            exit 1
+          fi
+
+      # 3. Everything else, now that the schema is migrated: the new API and
+      # workers among it. Planned again under the state lock: this plan,
+      # printed in full, is exactly what the next step applies.
       - name: Terraform plan
         working-directory: infra/terraform/live
         run: |
@@ -167,33 +250,7 @@ jobs:
             echo "frontend_url=$(terraform output -raw frontend_url)"
             echo "frontend_bucket=$(terraform output -raw frontend_bucket_name)"
             echo "frontend_distribution_id=$(terraform output -raw frontend_distribution_id)"
-            echo "migrations_function=$(terraform output -raw migrations_function_name)"
           } | tee -a "$GITHUB_OUTPUT"
-
-      # RDS is private: `alembic upgrade head` runs in the VPC, in the
-      # migration Lambda, invoked synchronously. Exactly one attempt
-      # (AWS_MAX_ATTEMPTS=1): the CLI must not retry an invocation on its own.
-      - name: Database migrations
-        env:
-          FUNCTION: ${{ steps.tf.outputs.migrations_function }}
-          AWS_MAX_ATTEMPTS: "1"
-        run: |
-          set -euo pipefail
-          aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-          aws lambda invoke \
-            --function-name "$FUNCTION" \
-            --payload '{}' --cli-binary-format raw-in-base64-out \
-            --log-type Tail \
-            --cli-read-timeout 900 \
-            migration-result.json > invocation.json
-          echo "::group::Migration log (last 4 KB; full log: CloudWatch /aws/lambda/$FUNCTION)"
-          jq -r '.LogResult // empty' invocation.json | base64 -d || true
-          echo "::endgroup::"
-          cat migration-result.json; echo
-          if jq -e '.FunctionError' invocation.json > /dev/null; then
-            echo "::error::Migrations failed; nothing after them was deployed."
-            exit 1
-          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -210,11 +267,13 @@ jobs:
       - name: Install the Dioxus CLI
         run: cargo binstall -y --locked "dioxus-cli@${DIOXUS_CLI_VERSION}"
 
-      # The API URL is compiled into the wasm (frontend/packages/web/src/config.rs).
+      # The API URL and the Turnstile site key are compiled into the wasm
+      # (frontend/packages/web/src/config.rs).
       - name: Build the frontend
         working-directory: frontend/packages/web
         env:
           STASH_API_BASE_URL: ${{ steps.tf.outputs.api_url }}
+          STASH_TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
         run: dx build --platform web --release
 
       # Hashed /assets first, cached for good, so the new index.html never

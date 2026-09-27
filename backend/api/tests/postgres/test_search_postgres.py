@@ -6,20 +6,15 @@ and the `vector` extension, e.g. the docker compose one:
 `postgresql+asyncpg://stash:stash@localhost:5432/postgres`), migrates it
 to head and drops it afterwards. Skipped when that's not set."""
 
-import asyncio
 import logging
 import math
 import os
-import subprocess
-import sys
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 
-import asyncpg
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
@@ -30,10 +25,7 @@ from app.items.services import ItemService
 from app.query_normalization import QueryNormalizer
 from app.users.models import User
 
-_ADMIN_URL = os.environ.get("STASH_TEST_POSTGRES_URL")
-_API_DIR = Path(__file__).resolve().parents[2]
-
-pytestmark = pytest.mark.skipif(not _ADMIN_URL, reason="STASH_TEST_POSTGRES_URL is not set")
+pytestmark = pytest.mark.skipif(not os.environ.get("STASH_TEST_POSTGRES_URL"), reason="STASH_TEST_POSTGRES_URL is not set")
 
 
 def _unit(**components: float) -> list[float]:
@@ -56,34 +48,6 @@ def _at_distance(distance: float, *, towards: str, away: str) -> list[float]:
 
 def _to_text(vector: list[float]) -> str:
     return "[" + ",".join(repr(value) for value in vector) + "]"
-
-
-async def _execute_as_admin(statement: str) -> None:
-    # CREATE/DROP DATABASE can't run in a transaction: plain asyncpg.
-    url = make_url(_ADMIN_URL).set(drivername="postgresql")
-    conn = await asyncpg.connect(url.render_as_string(hide_password=False))
-    try:
-        await conn.execute(statement)
-    finally:
-        await conn.close()
-
-
-@pytest.fixture(scope="module")
-def database_url() -> URL:
-    name = f"stash_test_{uuid.uuid4().hex[:12]}"
-    asyncio.run(_execute_as_admin(f'CREATE DATABASE "{name}"'))
-    url = make_url(_ADMIN_URL).set(database=name)
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
-            cwd=_API_DIR,
-            env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
-            check=True,
-            capture_output=True,
-        )
-        yield url
-    finally:
-        asyncio.run(_execute_as_admin(f'DROP DATABASE "{name}" WITH (FORCE)'))
 
 
 @pytest.fixture

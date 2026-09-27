@@ -34,7 +34,9 @@ And one analyzes documents:
    describes what each document is and is about. `parsers` has one
    `DocumentParser` per content type (add formats there), `excerpt` picks
    which part of a long text is sent, then `describer`, and `handler` is
-   the worker's handler.
+   the worker's handler. Parsers read only what they need, within
+   `ParserLimits` (bytes read, decompressed, pages, characters, time),
+   never the whole upload by default (see the `parsers` docstring).
 
 And one turns searchable text into vectors:
 
@@ -71,6 +73,9 @@ Every worker package (`<worker>/src/<worker>/`) has the same shape:
 - Its own helpers and SQL next to them (`describer`, `parsers`, `items`...).
 
 Rules:
+- Never read an upload into memory unbounded: files may be up to 500 MB.
+  `ObjectStore.download` takes the most a caller accepts; to read part of
+  a file, use `size` and `read_range_blocking` (or `stash_worker_core.ranged`).
 - A worker never imports another worker. Code two workers need goes in
   `core`; code only one needs stays in that worker, SQL included.
 - A worker's third-party dependencies go in its own `pyproject.toml`.

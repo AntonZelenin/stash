@@ -255,6 +255,8 @@ class ExpectedFormat:
     extension: str
     # Without a charset: that depends on the content.
     content_type: str
+    # Will be analyzed if its content turns out to match (`classify`).
+    analyzable: bool = False
 
 
 def expected_format(filename: str) -> ExpectedFormat:
@@ -265,7 +267,9 @@ def expected_format(filename: str) -> ExpectedFormat:
     for extension in _candidate_extensions(filename):
         file_format = FORMATS.get(extension)
         if file_format is not None:
-            return ExpectedFormat(extension=extension, content_type=file_format.content_type)
+            return ExpectedFormat(
+                extension=extension, content_type=file_format.content_type, analyzable=file_format.analyzable
+            )
     return ExpectedFormat(extension="", content_type=GENERIC_CONTENT_TYPE)
 
 

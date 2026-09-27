@@ -15,6 +15,7 @@ from stash_worker_core.worker import Worker
 
 from document_analyzer.excerpt import SEPARATOR
 from document_analyzer.handler import DocumentAnalysisHandler
+from document_analyzer.parsers import ParserLimits
 
 _KEY = "files/doc.txt"
 
@@ -65,7 +66,15 @@ def dead_letters() -> FakeDeadLetterQueue:
 
 
 def _worker(
-    engine, storage, describer, queue, dead_letters, *, max_chars: int = 24_000, embedding_queue=None
+    engine,
+    storage,
+    describer,
+    queue,
+    dead_letters,
+    *,
+    max_chars: int = 24_000,
+    embedding_queue=None,
+    limits: ParserLimits = ParserLimits(),
 ) -> Worker:
     return Worker(
         queue=queue,
@@ -77,6 +86,7 @@ def _worker(
             engine=engine,
             max_chars=max_chars,
             outbox=outbox_for(engine, {EMBEDDING_JOBS: embedding_queue} if embedding_queue is not None else None),
+            limits=limits,
         ),
         item_type=ItemType.file,
         max_attempts=5,
@@ -186,3 +196,71 @@ async def test_image_job_on_document_queue_is_ignored(engine, storage, describer
     assert describer.calls == []
     assert await fetch_status(engine, item_id) == "pending"
     assert len(queue.acked) == 1
+
+
+async def test_large_file_is_described_from_excerpts_without_downloading_it(engine, describer, queue, dead_letters):
+    item_id = uuid.uuid4()
+    await _insert_file_item(engine, item_id)
+    data = "\n".join(f"line {i} of a big export" for i in range(2_000_000)).encode()
+    storage = FakeObjectStore({_KEY: data})
+
+    await _worker(engine, storage, describer, queue, dead_letters).process_message(_delivery(_job(item_id)))
+
+    [call] = describer.calls
+    assert call["is_partial"] is True
+    assert call["text"].startswith("line 0 of a big export")
+    assert storage.bytes_served[_KEY] < len(data) // 100
+    assert await fetch_status(engine, item_id) == "completed"
+
+
+async def test_text_up_to_a_processing_limit_is_described_as_partial(engine, describer, queue, dead_letters):
+    item_id = uuid.uuid4()
+    await _insert_file_item(engine, item_id)
+    storage = FakeObjectStore({_KEY: b"<html><body>" + b"<p>Release notes</p>" * 1_000 + b"</body></html>"})
+
+    await _worker(engine, storage, describer, queue, dead_letters, limits=ParserLimits(max_text_chars=100)).process_message(
+        _delivery(_job(item_id, content_type="text/html"))
+    )
+
+    [call] = describer.calls
+    assert call["is_partial"] is True and "Release notes" in call["text"]
+    assert await fetch_status(engine, item_id) == "completed"
+
+
+async def test_processing_limit_before_any_text_fails_without_retry(engine, describer, queue, dead_letters):
+    item_id = uuid.uuid4()
+    await _insert_file_item(engine, item_id)
+    storage = FakeObjectStore({_KEY: b"%PDF-1.4 " + b"x" * 2_000})
+
+    await _worker(
+        engine, storage, describer, queue, dead_letters, limits=ParserLimits(max_download_bytes=1_000)
+    ).process_message(_delivery(_job(item_id, content_type="application/pdf")))
+
+    assert describer.calls == []
+    assert await fetch_status(engine, item_id) == "failed"
+    assert queue.retried == []
+    [letter] = dead_letters.letters
+    assert "download limit" in letter.reason
+
+
+class _FlakyStore(FakeObjectStore):
+    """Fails every ranged read, as S3 might under throttling."""
+
+    def read_range_blocking(self, key: str, start: int, end: int) -> bytes:
+        raise ConnectionError("storage unavailable")
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/pdf", "application/epub+zip"])
+async def test_storage_failure_while_parsing_is_retried(engine, describer, queue, dead_letters, content_type):
+    item_id = uuid.uuid4()
+    await _insert_file_item(engine, item_id)
+    storage = _FlakyStore({_KEY: b"PK\x03\x04 whatever"})
+
+    await _worker(engine, storage, describer, queue, dead_letters).process_message(
+        _delivery(_job(item_id, content_type=content_type))
+    )
+
+    assert describer.calls == []
+    assert len(queue.retried) == 1
+    assert dead_letters.letters == []
+    assert await fetch_status(engine, item_id) == "processing"

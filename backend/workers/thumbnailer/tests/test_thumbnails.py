@@ -79,6 +79,32 @@ def test_keeps_transparency():
     assert thumbnail.getpixel((0, 0))[3] == 0
 
 
+def test_large_jpeg_is_decoded_at_reduced_scale():
+    """A photo past Pillow's default bomb guard (89 MP) still gets a
+    thumbnail, decoded at 1/8 scale."""
+    original = _encode(Image.new("RGB", (12_000, 9_000), "navy"), "JPEG")
+
+    thumbnail = _decode(make_thumbnail(original, max_size=1024, quality=80, max_pixels=5_000_000))
+
+    assert thumbnail.size == (1024, 768)
+
+
+def test_decoding_over_the_pixel_limit_is_refused_before_decoding():
+    # A tiny file declaring 20000x20000 pixels (a decompression bomb).
+    original = _encode(Image.new("1", (20_000, 20_000)), "PNG")
+    assert len(original) < 100_000
+
+    with pytest.raises(PermanentProcessingError, match="pixel limit"):
+        make_thumbnail(original, max_size=1024, quality=80, max_pixels=50_000_000)
+
+
+def test_jpeg_too_large_even_at_reduced_scale_is_refused():
+    original = _encode(Image.new("L", (16_000, 16_000)), "JPEG")
+
+    with pytest.raises(PermanentProcessingError, match="pixel limit"):
+        make_thumbnail(original, max_size=1024, quality=80, max_pixels=1_000_000)
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -251,3 +277,25 @@ async def test_corrupt_upload_fails_item_at_thumbnail_stage(engine, analysis_que
     assert len(dead_letters.letters) == 1
     assert thumbnail_queue.retried == []
     assert analysis_queue.published == []
+
+
+async def test_original_over_the_size_limit_fails_without_being_read(engine, analysis_queue):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, storage_key=_ORIGINAL_KEY)
+    storage = FakeObjectStore({_ORIGINAL_KEY: _encode(Image.new("RGB", (64, 64)))})
+    worker = Worker(
+        queue=FakeJobQueue(),
+        dead_letters=FakeDeadLetterQueue(),
+        engine=engine,
+        handler=ThumbnailHandler(
+            storage=storage, engine=engine, outbox=outbox_for(engine), max_size=1024, quality=80, max_source_bytes=50
+        ),
+        max_attempts=5,
+        retry_base_delay_seconds=0,
+        retry_max_delay_seconds=0,
+    )
+
+    await worker.process_message(Delivery("1-0", "1-0", 1, "{}", _job(item_id)))
+
+    assert await fetch_status(engine, item_id) == "failed"
+    assert storage.bytes_served == {}

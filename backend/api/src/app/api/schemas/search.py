@@ -5,8 +5,13 @@ from pydantic import AwareDatetime, BaseModel, Field
 from app.api.schemas.items import ItemKind, ItemType, ListedItem
 
 
+# Longest search query: far more than anyone types, while bounding what's
+# sent to the query-rewriting model and the embedding API.
+MAX_SEARCH_QUERY_LENGTH = 1_000
+
+
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = Field(default=20, ge=1, le=100)
     # Same filters as `GET /items`: only this type, only items of any of
     # these kinds, and only items carrying all of these tags.

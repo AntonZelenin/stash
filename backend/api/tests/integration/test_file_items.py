@@ -4,13 +4,13 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.items import services
+from app.config import Settings, get_settings
 from app.items.models import Description, FileMetadata, Item, ItemType, TextContent
 from stash_shared.queue.base import FileRef
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import register_and_login, start_upload, upload_file
+from helpers import finalize_upload, register_and_login, start_upload, upload_file
 
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 _DOCX_BYTES = b"PK\x03\x04" + b"\x00" * 64  # zip container header, as a .docx starts
@@ -203,18 +203,80 @@ async def test_rejects_empty_file(client: AsyncClient, storage: FakeObjectStorag
 
 async def test_rejects_file_over_size_limit(client: AsyncClient, storage: FakeObjectStorage, monkeypatch):
     # Lowered so the test needn't allocate 50 MB; the check is the same.
-    monkeypatch.setattr(services, "_MAX_FILE_SIZE_BYTES", len(_PDF_BYTES) - 1)
+    monkeypatch.setattr(get_settings(), "max_file_upload_bytes", 1024 * 1024)
     _, token = await register_and_login(client)
 
-    response = await upload_file(client, storage, token, "big.pdf", _PDF_BYTES)
+    response = await upload_file(client, storage, token, "big.pdf", _PDF_BYTES + b"x" * 1024 * 1024)
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == "File is too large (max 50 MB)"
+    assert response.status_code == 413
+    assert response.json()["detail"] == "File is too large (max 1 MB)"
     assert storage.signed_uploads == {}
 
 
-def test_size_limit_is_50_mb():
-    assert services._MAX_FILE_SIZE_BYTES == 50 * 1024 * 1024
+async def test_rejects_stored_file_over_size_limit_on_finalize(
+    client: AsyncClient, storage: FakeObjectStorage, monkeypatch
+):
+    """What arrived is checked too, not only what was declared."""
+    _, token = await register_and_login(client)
+    started = await start_upload(client, token, type="file", filename="big.pdf", size_bytes=len(_PDF_BYTES))
+    presigned = started.json()["upload"]
+    storage.put(presigned["url"], presigned["headers"], _PDF_BYTES)
+    monkeypatch.setattr(get_settings(), "max_file_upload_bytes", len(_PDF_BYTES) - 1)
+
+    response = await client.post(
+        f"/uploads/{started.json()['upload_id']}/finalize", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 413
+    assert storage.uploads == {}
+
+
+def test_size_limit_is_500_mb():
+    assert Settings().max_file_upload_bytes == 500 * 1024 * 1024
+
+
+class _SparseUpload(bytes):
+    """What S3 holds after a large upload, without the test allocating it:
+    its first bytes, and the size it reports."""
+
+    def __new__(cls, head: bytes, size: int):
+        instance = super().__new__(cls, head)
+        instance.size = size
+        return instance
+
+    def __len__(self) -> int:
+        return self.size
+
+
+async def test_file_of_500_mb_uploads_straight_to_storage(client: AsyncClient, storage: FakeObjectStorage):
+    _, token = await register_and_login(client)
+    size = 500 * 1024 * 1024
+
+    started = await start_upload(client, token, type="file", filename="backup.pdf", size_bytes=size)
+    presigned = started.json()["upload"]
+    # The client sends the bytes to storage itself, with the signed URL,
+    # which accepts exactly the declared size.
+    storage.put(presigned["url"], presigned["headers"], _SparseUpload(_PDF_BYTES, size))
+    finalized = await finalize_upload(client, token, started.json()["upload_id"])
+
+    assert started.status_code == 201
+    assert presigned["method"] == "PUT" and presigned["url"].startswith("https://fake-storage.test/upload/")
+    assert list(storage.signed_uploads.values()) == [("application/pdf", size)]
+    assert finalized.status_code == 202
+    listed = await client.get(f"/items/{started.json()['upload_id']}", headers={"Authorization": f"Bearer {token}"})
+    assert listed.json()["file"]["size_bytes"] == size
+
+
+async def test_file_over_500_mb_is_refused_before_an_upload_url_is_issued(
+    client: AsyncClient, storage: FakeObjectStorage
+):
+    _, token = await register_and_login(client)
+
+    response = await start_upload(client, token, type="file", filename="backup.pdf", size_bytes=500 * 1024 * 1024 + 1)
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "File is too large (max 500 MB)"
+    assert storage.signed_uploads == {}
 
 
 async def test_path_in_filename_is_dropped(client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage):

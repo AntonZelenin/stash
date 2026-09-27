@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct RegisterRequest {
     pub email: String,
     pub password: String,
+    /// From the Turnstile widget; left out when the app has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turnstile_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -361,6 +364,21 @@ mod tests {
             size_bytes: 1,
             kind: kind.to_string(),
         }
+    }
+
+    #[test]
+    fn registration_sends_a_turnstile_token_only_if_there_is_one() {
+        let request = |token: Option<&str>| {
+            serde_json::to_value(RegisterRequest {
+                email: "a@example.com".to_string(),
+                password: "correct-horse".to_string(),
+                turnstile_token: token.map(str::to_string),
+            })
+            .unwrap()
+        };
+
+        assert_eq!(request(Some("tok"))["turnstile_token"], "tok");
+        assert!(request(None).get("turnstile_token").is_none());
     }
 
     #[test]

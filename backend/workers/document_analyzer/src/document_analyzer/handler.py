@@ -1,4 +1,6 @@
 import asyncio
+import dataclasses
+import functools
 
 from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -13,7 +15,7 @@ from stash_worker_core.storage import ObjectStore
 
 from document_analyzer.describer import DocumentDescriber
 from document_analyzer.excerpt import select_excerpt
-from document_analyzer.parsers import normalize_text, parser_for
+from document_analyzer.parsers import DocumentSource, ParserLimits, extract_text, normalize_text, parser_for
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -25,10 +27,18 @@ class DocumentAnalysisHandler:
     `max_chars`) to the describer, and completes the item with the result as
     its description (after any caption, like images).
 
+    The file is never downloaded whole: parsers read only the parts they
+    need, within `limits` (see `document_analyzer.parsers`), so a 500 MB
+    upload costs no more than its first pages or members. A limit reached
+    after some text was extracted just ends extraction: that text is
+    described, as a partial document.
+
     Permanent, so dead-lettered without retries: an unsupported format, a
-    file that can't be parsed (corrupt, encrypted...), or one with no
-    extractable text (e.g. a scanned PDF — there's no OCR). Parsing is
-    deterministic, so retrying those could only fail the same way.
+    file that can't be parsed (corrupt, encrypted...), one with no
+    extractable text (e.g. a scanned PDF — there's no OCR), or one that hits
+    a processing limit before yielding any text. Parsing is deterministic,
+    so retrying those could only fail the same way. Failing to read from
+    storage is transient, even in the middle of parsing.
 
     Safe to re-run: `complete_item` only writes if the item isn't finished
     yet, so a redelivered job costs at most a repeated OpenAI call.
@@ -46,12 +56,14 @@ class DocumentAnalysisHandler:
         engine: AsyncEngine,
         max_chars: int,
         outbox: OutboxPublisher,
+        limits: ParserLimits = ParserLimits(),
     ):
         self._storage = storage
         self._describer = describer
         self._engine = engine
         self._max_chars = max_chars
         self._outbox = outbox
+        self._limits = dataclasses.replace(limits, excerpt_chars=max_chars)
 
     async def handle(self, job: ProcessingJob) -> None:
         if job.file is None:
@@ -60,34 +72,43 @@ class DocumentAnalysisHandler:
         if parser is None:
             raise PermanentProcessingError(f"No parser for {job.file.content_type!r}")
 
-        data = await self._storage.download(job.file.storage_key)
+        key = job.file.storage_key
+        source = DocumentSource(functools.partial(self._storage.read_range_blocking, key), await self._storage.size(key))
         with _tracer.start_as_current_span("document.extract_text") as span:
             tracing.set_attributes(
-                span, parser=type(parser).__name__, content_type=job.file.content_type, size_bytes=len(data)
+                span, parser=type(parser).__name__, content_type=job.file.content_type, size_bytes=source.size
             )
             try:
-                raw_text = await asyncio.to_thread(parser.extract_text, data)
+                extracted = await asyncio.to_thread(extract_text, parser, source, self._limits)
+            except PermanentProcessingError:
+                raise
             except Exception as exc:
+                if source.storage_error is not None:
+                    raise source.storage_error from exc
                 raise PermanentProcessingError(f"Could not extract text: {exc!r}") from exc
-            text = normalize_text(raw_text)
-            span.set_attribute("text_chars", len(text))
+            if source.storage_error is not None:
+                # Caught by the parser, which then made do without it.
+                raise source.storage_error
+            text = normalize_text(extracted.text)
+            tracing.set_attributes(span, text_chars=len(text), bytes_read=source.bytes_read)
         if not text:
             raise PermanentProcessingError("Document has no extractable text")
 
         excerpt = select_excerpt(text, self._max_chars)
+        is_partial = excerpt.is_partial or extracted.is_partial
         logger.info(
             "Document text extracted",
-            storage_key=job.file.storage_key,
+            storage_key=key,
             content_type=job.file.content_type,
             parser=type(parser).__name__,
-            size_bytes=len(data),
+            size_bytes=source.size,
+            bytes_read=source.bytes_read,
             text_chars=len(text),
             excerpt_chars=len(excerpt.text),
-            is_partial=excerpt.is_partial,
+            is_partial=is_partial,
+            stopped_by=extracted.stopped_by,
         )
-        description = await self._describer.describe(
-            filename=job.file.filename, text=excerpt.text, is_partial=excerpt.is_partial
-        )
+        description = await self._describer.describe(filename=job.file.filename, text=excerpt.text, is_partial=is_partial)
         completed = await complete_item(
             self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)
         )

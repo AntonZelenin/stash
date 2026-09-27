@@ -6,6 +6,7 @@ from stash_worker_core.worker import Worker
 from document_analyzer.config import Settings
 from document_analyzer.describer import OpenAIDocumentDescriber
 from document_analyzer.handler import DocumentAnalysisHandler
+from document_analyzer.parsers import ParserLimits
 
 SERVICE = "document_analyzer"
 QUEUE = DOCUMENT_ANALYSIS_JOBS
@@ -30,5 +31,20 @@ def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | N
             engine=engine,
             max_chars=settings.document_analysis_max_chars,
             outbox=build_outbox(settings, engine),
+            limits=parser_limits(settings),
         ),
+    )
+
+
+def parser_limits(settings: Settings) -> ParserLimits:
+    return ParserLimits(
+        max_prefix_bytes=settings.document_max_prefix_bytes,
+        max_bytes_read=settings.document_max_bytes_read,
+        max_download_bytes=settings.document_max_download_bytes,
+        max_uncompressed_bytes=settings.document_max_uncompressed_bytes,
+        max_archive_entries=settings.document_max_archive_entries,
+        max_pdf_pages=settings.document_max_pdf_pages,
+        max_text_chars=settings.document_max_text_chars,
+        timeout_seconds=settings.document_parse_timeout_seconds,
+        excerpt_chars=settings.document_analysis_max_chars,
     )

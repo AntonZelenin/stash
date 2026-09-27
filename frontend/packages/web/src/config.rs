@@ -10,10 +10,34 @@
 //!   compile without it. Debug builds (`dx serve`) default to
 //!   `DEV_API_BASE_URL`, the local docker-compose API.
 //!
-//! Cargo rebuilds the crate when the variable changes.
+//! - `STASH_TURNSTILE_SITE_KEY`: the Cloudflare Turnstile site key for the
+//!   sign-up form. Required for release builds too. Debug builds default to
+//!   `DEV_TURNSTILE_SITE_KEY`, Cloudflare's test key that always passes,
+//!   matching the local API's test secret (`.env.example`). Empty: no
+//!   widget, for an API with `TURNSTILE_ENABLED=false`.
+//!
+//! Cargo rebuilds the crate when a variable changes.
 
 /// The backend API's base URL.
 pub const API_BASE_URL: &str = api_base_url();
+
+/// The Turnstile site key, if the sign-up form has a widget.
+pub const TURNSTILE_SITE_KEY: Option<&str> = turnstile_site_key();
+
+/// Cloudflare's test site key: always passes, visibly marked as a test.
+const DEV_TURNSTILE_SITE_KEY: &str = "1x00000000000000000000AA";
+
+const fn turnstile_site_key() -> Option<&'static str> {
+    match option_env!("STASH_TURNSTILE_SITE_KEY") {
+        Some(key) if key.is_empty() => None,
+        Some(key) => Some(key),
+        None if cfg!(debug_assertions) => Some(DEV_TURNSTILE_SITE_KEY),
+        None => panic!(
+            "STASH_TURNSTILE_SITE_KEY is not set: release builds need the Cloudflare Turnstile \
+             site key for the sign-up form (or an empty value for no widget)"
+        ),
+    }
+}
 
 /// The API published by the local dev/docker-compose setup
 /// (`docker-compose.yml`'s `API_PORT`, default 8000).
@@ -121,5 +145,13 @@ mod tests {
     #[test]
     fn dev_default_is_valid() {
         assert_eq!(validate_base_url(DEV_API_BASE_URL), Ok(()));
+    }
+
+    #[test]
+    fn debug_builds_have_the_test_turnstile_key() {
+        // Unless the build set one explicitly.
+        if option_env!("STASH_TURNSTILE_SITE_KEY").is_none() {
+            assert_eq!(TURNSTILE_SITE_KEY, Some(DEV_TURNSTILE_SITE_KEY));
+        }
     }
 }
