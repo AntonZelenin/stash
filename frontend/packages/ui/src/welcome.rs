@@ -141,9 +141,6 @@ fn limit_rows(limits: &UserLimits, language: Language) -> Vec<(String, String)> 
             format_limit_bytes(bytes, language),
         ));
     }
-    if let Some(analyses) = limits.ai_analyses_per_day {
-        rows.push((t!("welcome-limit-ai-analyses"), count(analyses)));
-    }
     rows
 }
 
@@ -233,7 +230,6 @@ mod tests {
             ("Max text length", "100,000 characters"),
             ("Uploads per day", "1,000"),
             ("Upload volume per day", "5 GB"),
-            ("AI analyses per day", "1,000"),
         ]
         .map(|(label, value)| (label.to_string(), value.to_string()));
 
@@ -248,7 +244,6 @@ mod tests {
             ("Максимальна довжина тексту", "100\u{a0}000 символів"),
             ("Завантажень на день", "1\u{a0}000"),
             ("Обсяг завантажень на день", "5 ГБ"),
-            ("Аналізів ШІ на день", "1\u{a0}000"),
         ]
         .map(|(label, value)| (label.to_string(), value.to_string()));
 
@@ -276,7 +271,6 @@ mod tests {
         let limits = UserLimits {
             uploads_per_day: None,
             upload_bytes_per_day: None,
-            ai_analyses_per_day: None,
             ..limits()
         };
 

@@ -33,7 +33,6 @@ auth-signing-up = Signing up...
 auth-email = Email
 auth-password = Password
 auth-confirm-password = Confirm password
-auth-forgot-password = Forgot password?
 auth-email-missing = Enter your email
 auth-email-invalid = Enter a valid email address
 auth-password-missing = Enter your password
@@ -237,5 +236,4 @@ welcome-limit-text-length-value = { $formatted } { $count ->
     }
 welcome-limit-uploads = Uploads per day
 welcome-limit-upload-volume = Upload volume per day
-welcome-limit-ai-analyses = AI analyses per day
-welcome-limits-note = Text length applies to notes, links and captions. Every image and readable document you upload is analysed by AI so you can find it by what's in it. Daily limits reset at 00:00 UTC.
+welcome-limits-note = Text length applies to notes, links and captions. Daily limits reset at 00:00 UTC.

@@ -201,19 +201,6 @@
     filter: brightness(1.05);
 }
 
-.link-forgot {
-    display: block;
-    margin-top: 20px;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 14px;
-    text-decoration: none;
-}
-
-.link-forgot:hover {
-    text-decoration: underline;
-}
-
 /* Scoped to the page: `document::Link` never unloads a stylesheet, so
    auth.css stays applied after login, and bare `.icon` rules would restyle
    every icon on the home page. */

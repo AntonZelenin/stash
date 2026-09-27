@@ -295,13 +295,6 @@ fn LoginForm() -> Element {
                 disabled: is_submitting(),
                 if is_submitting() { {t!("auth-logging-in")} } else { {t!("auth-login")} }
             }
-
-            a {
-                class: "link-forgot",
-                href: "#",
-                onclick: move |evt| evt.prevent_default(),
-                {t!("auth-forgot-password")}
-            }
         }
     }
 }

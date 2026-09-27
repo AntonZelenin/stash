@@ -31,7 +31,6 @@ auth-signing-up = Реєстрація...
 auth-email = Електронна пошта
 auth-password = Пароль
 auth-confirm-password = Підтвердьте пароль
-auth-forgot-password = Забули пароль?
 auth-email-missing = Введіть електронну пошту
 auth-email-invalid = Введіть дійсну адресу електронної пошти
 auth-password-missing = Введіть пароль
@@ -238,5 +237,4 @@ welcome-limit-text-length-value = { $formatted } { $count ->
     }
 welcome-limit-uploads = Завантажень на день
 welcome-limit-upload-volume = Обсяг завантажень на день
-welcome-limit-ai-analyses = Аналізів ШІ на день
-welcome-limits-note = Обмеження довжини тексту стосується нотаток, посилань і підписів. Кожне зображення та документ, який вдається прочитати, аналізує ШІ, щоб ви могли знайти їх за вмістом. Денні ліміти оновлюються о 00:00 UTC.
+welcome-limits-note = Обмеження довжини тексту стосується нотаток, посилань і підписів. Денні ліміти оновлюються о 00:00 UTC.
