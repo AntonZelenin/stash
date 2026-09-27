@@ -198,7 +198,6 @@ item-next = Наступний елемент
 size-bytes = { $size } Б
 size-kilobytes = { $size } КБ
 size-megabytes = { $size } МБ
-size-gigabytes = { $size } ГБ
 
 ## Settings
 
@@ -219,22 +218,3 @@ settings-confirm-new-password = Підтвердьте новий пароль
 settings-change-password = Змінити пароль
 settings-language-description = Мова, якою показано Stash. Ваш вибір запам’ятовується на цьому пристрої.
 settings-language-label = Мова
-
-## First-login welcome (numbers and sizes are already formatted for the language)
-
-welcome-title = Ласкаво просимо до Stash
-welcome-body-save = Зберігайте нотатки, посилання, медіа та файли в одному місці.
-welcome-body-search = Stash аналізує ваш контент і допомагає знаходити його за допомогою пошуку природною мовою — навіть якщо ви не пам’ятаєте, що саме зберегли.
-welcome-start = Почати користуватися Stash
-welcome-limits-title = Поточні ліміти
-welcome-limit-file-size = Максимальний розмір файлу
-welcome-limit-image-size = Максимальний розмір зображення
-welcome-limit-text-length = Максимальна довжина тексту
-welcome-limit-text-length-value = { $formatted } { $count ->
-        [one] символ
-        [few] символи
-       *[many] символів
-    }
-welcome-limit-uploads = Завантажень на день
-welcome-limit-upload-volume = Обсяг завантажень на день
-welcome-limits-note = Обмеження довжини тексту стосується нотаток, посилань і підписів. Денні ліміти оновлюються о 00:00 UTC.

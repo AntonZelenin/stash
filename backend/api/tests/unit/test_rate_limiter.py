@@ -306,11 +306,3 @@ def test_client_ip_unmaps_ipv4_in_ipv6():
 
 def test_client_ip_without_a_peer():
     assert client_ip(_request(None)) == "unknown"
-
-
-def test_per_day_is_the_limit_of_the_one_day_window():
-    assert Limit.parse("x", "300/1h,1000/1d").per_day == 1000
-    assert Limit.parse("x", "5/24h").per_day == 5
-    # No window of exactly a day: nothing to report.
-    assert Limit.parse("x", "100/5m,500/2d").per_day is None
-    assert Limit.parse("x", "").per_day is None

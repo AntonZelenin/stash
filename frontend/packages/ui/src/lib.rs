@@ -28,7 +28,6 @@ mod text_kind;
 mod viewer_nav;
 
 mod settings;
-mod welcome;
 
 mod home;
 pub use home::Home;

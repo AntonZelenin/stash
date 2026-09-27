@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.log import get_logger
@@ -29,10 +27,3 @@ class UserService:
             raise EmailAlreadyRegisteredError(email) from None
         logger.info("User registered", user_id=user.id)
         return user
-
-    async def complete_onboarding(self, user: User) -> None:
-        """Records that `user` dismissed the first-login welcome. Keeps the
-        first time if they already had."""
-        if user.onboarding_completed_at is None:
-            user.onboarding_completed_at = datetime.now(UTC)
-            logger.info("Onboarding completed", user_id=user.id)

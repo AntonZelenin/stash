@@ -2,20 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.auth import TokenPairResponse
-from app.api.schemas.items import MAX_TEXT_LENGTH
 from app.api.schemas.users import (
     ChangePasswordRequest,
     CurrentUserResponse,
     UserCreateRequest,
     UserCreateResponse,
-    UserLimits,
 )
 from app.auth.services import AuthService, IncorrectPasswordError
 from app.body_size import BodyLimitedRoute
-from app.config import get_settings
 from app.db import DbSession
 from app.dependencies import get_current_user
-from app.rate_limits.limiter import Charge, Limit, RateLimiter, client_ip, get_rate_limiter
+from app.rate_limits.limiter import Charge, RateLimiter, client_ip, get_rate_limiter
 from app.turnstile import TurnstileUnavailableError, TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
 from app.users.services import EmailAlreadyRegisteredError, UserService
@@ -76,47 +73,8 @@ async def create_user(
     response_model=CurrentUserResponse,
     responses={401: {"description": "Unauthorized"}},
 )
-async def get_me(
-    current_user: User = Depends(get_current_user),
-    limiter: RateLimiter = Depends(get_rate_limiter),
-) -> CurrentUserResponse:
-    return CurrentUserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        onboarding_completed=current_user.onboarding_completed_at is not None,
-        limits=_user_limits(limiter),
-    )
-
-
-def _user_limits(limiter: RateLimiter) -> UserLimits:
-    """What `limiter` and the settings actually enforce, so clients never
-    show numbers of their own. Only what users run into saving things:
-    nothing about logins, registration or the infrastructure."""
-    settings = get_settings()
-
-    def per_day(limit: Limit) -> int | None:
-        return limit.per_day if limiter.enabled else None
-
-    return UserLimits(
-        max_file_bytes=settings.max_file_upload_bytes,
-        max_image_bytes=settings.max_image_upload_bytes,
-        max_text_length=MAX_TEXT_LENGTH,
-        uploads_per_day=per_day(limiter.limits.uploads_per_user),
-        upload_bytes_per_day=per_day(limiter.limits.upload_bytes_per_user),
-        ai_analyses_per_day=per_day(limiter.limits.ai_analyses_per_user),
-    )
-
-
-@router.put(
-    "/users/me/onboarding-completed",
-    status_code=status.HTTP_204_NO_CONTENT,
-    responses={401: {"description": "Unauthorized"}},
-)
-async def complete_onboarding(
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = DbSession,
-) -> None:
-    await UserService(session).complete_onboarding(current_user)
+async def get_me(current_user: User = Depends(get_current_user)) -> CurrentUserResponse:
+    return CurrentUserResponse(id=current_user.id, email=current_user.email)
 
 
 @router.post(

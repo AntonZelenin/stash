@@ -133,23 +133,6 @@ pub struct ItemCreated {
 pub struct CurrentUser {
     pub id: String,
     pub email: String,
-    /// False until the user dismisses the first-login welcome.
-    pub onboarding_completed: bool,
-    pub limits: UserLimits,
-}
-
-/// The limits a user runs into when saving things, as the server enforces
-/// them right now. Daily quotas are `None` when there's no daily limit.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct UserLimits {
-    pub max_file_bytes: u64,
-    pub max_image_bytes: u64,
-    /// Notes, links and captions, in characters.
-    pub max_text_length: u64,
-    pub uploads_per_day: Option<u64>,
-    pub upload_bytes_per_day: Option<u64>,
-    /// Uploads analyzed by AI: every image, and documents it can read.
-    pub ai_analyses_per_day: Option<u64>,
 }
 
 /// How many items the user has: of each type and each kind (every one
@@ -421,34 +404,6 @@ mod tests {
         for kind in ["video", "document", "book", "other", ""] {
             assert!(!file(kind).is_audio(), "{kind:?}");
         }
-    }
-
-    #[test]
-    fn current_user_parses_onboarding_state_and_limits() {
-        let parsed: CurrentUser = serde_json::from_str(
-            r#"{
-                "id": "u1",
-                "email": "a@example.com",
-                "onboarding_completed": false,
-                "limits": {
-                    "max_file_bytes": 524288000,
-                    "max_image_bytes": 104857600,
-                    "max_text_length": 100000,
-                    "uploads_per_day": 1000,
-                    "upload_bytes_per_day": 5368709120,
-                    "ai_analyses_per_day": null
-                }
-            }"#,
-        )
-        .unwrap();
-
-        assert!(!parsed.onboarding_completed);
-        assert_eq!(parsed.limits.max_file_bytes, 500 * 1024 * 1024);
-        assert_eq!(
-            parsed.limits.upload_bytes_per_day,
-            Some(5 * 1024 * 1024 * 1024)
-        );
-        assert_eq!(parsed.limits.ai_analyses_per_day, None);
     }
 
     #[test]

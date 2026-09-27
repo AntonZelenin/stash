@@ -72,7 +72,6 @@ _COUNTERS = RateLimitCounter.__table__
 # time, so no request pays for a large delete.
 _PRUNE_PROBABILITY = 0.01
 _PRUNE_BATCH = 1_000
-_DAY_SECONDS = 86_400
 
 
 class RateLimitExceeded(Exception):
@@ -96,11 +95,6 @@ class Limit:
     @classmethod
     def parse(cls, name: str, spec: str) -> "Limit":
         return cls(name=name, windows=parse_windows(spec))
-
-    @property
-    def per_day(self) -> int | None:
-        """The limit of its one-day window, if it has one."""
-        return next((window.limit for window in self.windows if window.seconds == _DAY_SECONDS), None)
 
 
 @dataclass(frozen=True)
@@ -178,8 +172,8 @@ class RateLimiter:
         connection of its own. `enabled=False` allows everything and
         touches nothing. `clock`: Unix time in seconds (tests move it)."""
         self.limits = limits
-        self.enabled = enabled
         self._engine = engine
+        self._enabled = enabled
         self._clock = clock
         self._prune_probability = prune_probability
 
@@ -187,7 +181,7 @@ class RateLimiter:
         """Charges every one of `charges`, or none of them: raises
         `RateLimitExceeded` if any window of any of them would go over its
         limit."""
-        if not self.enabled:
+        if not self._enabled:
             return
         now = self._clock()
         counters = self._counters(charges, now)
@@ -211,7 +205,7 @@ class RateLimiter:
         reserved before the password turned out right). Only from the
         periods they were charged in: once a period ended, there's nothing
         to take back. Never below zero."""
-        if not self.enabled:
+        if not self._enabled:
             return
         counters = self._counters(charges, self._clock())
         if not counters:

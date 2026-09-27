@@ -18,7 +18,6 @@ use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_ta
 use crate::routes::Route;
 use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
-use crate::welcome::{Welcome, pending_welcome};
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// The capture box: files pasted while it has focus are staged.
@@ -465,8 +464,8 @@ pub fn Home() -> Element {
         _ => None,
     };
 
-    // The signed-in account: the avatar's letters (blank until it has
-    // loaded, or if it couldn't be), and whether to welcome them.
+    // The avatar's letters; blank until the account has loaded (or if it
+    // couldn't be).
     let current_user = use_resource({
         let session = session.clone();
         move || {
@@ -474,25 +473,9 @@ pub fn Home() -> Element {
             async move { session.current_user().await }
         }
     });
-    // Closed at once on dismissal; the server records it in the background.
-    // Should that fail, it's simply shown again next time.
-    let mut welcome_dismissed = use_signal(|| false);
-    let (initials, welcome) = match &*current_user.read() {
-        Some(Ok(user)) => (
-            email_initials(&user.email),
-            pending_welcome(Some(user), welcome_dismissed()),
-        ),
-        _ => (String::new(), None),
-    };
-    let dismiss_welcome = {
-        let session = session.clone();
-        move |()| {
-            welcome_dismissed.set(true);
-            let session = session.clone();
-            spawn(async move {
-                let _ = session.complete_onboarding().await;
-            });
-        }
+    let initials = match &*current_user.read() {
+        Some(Ok(user)) => email_initials(&user.email),
+        _ => String::new(),
     };
 
     // Ctrl+F / ⌘F focuses the search box. One document-level listener,
@@ -603,10 +586,6 @@ pub fn Home() -> Element {
                 // Unknown until the counts load: enabled meanwhile.
                 can_surprise: counts.is_none_or(|counts| counts.types.total() > 0),
                 on_surprise: surprise_me,
-            }
-
-            if let Some(limits) = welcome {
-                Welcome { limits, on_close: dismiss_welcome }
             }
 
             if let Some(item) = surprise() {
