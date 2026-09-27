@@ -10,8 +10,6 @@ from stash_shared.queue import codec
 from stash_shared.queue.base import (
     DeadLetter,
     Delivery,
-    FileRef,
-    ImageRef,
     ItemType,
     PlatformDeadLetterQueue,
     ProcessingJob,
@@ -30,7 +28,6 @@ def _job() -> ProcessingJob:
         item_id=ITEM_ID,
         user_id=USER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
 
 
@@ -223,7 +220,6 @@ class _FakeSqs:
             item_id=ITEM_ID,
             user_id=USER_ID,
             item_type=ItemType.file,
-            file=FileRef(storage_key="files/report.pdf", content_type="application/pdf", filename="Report.pdf"),
         ),
         ProcessingJob(item_id=ITEM_ID, user_id=USER_ID, item_type=ItemType.text),
     ],

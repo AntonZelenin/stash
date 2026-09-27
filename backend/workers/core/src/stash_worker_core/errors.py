@@ -50,6 +50,23 @@ class ProcessingLimitExceeded(PermanentProcessingError):
     category = ErrorCategory.PROCESSING_LIMIT_EXCEEDED
 
 
+class InputErrorWithheld(Exception):
+    """Stands in for an exception a parser or decoder raised on an upload
+    (see `content_safe_cause`)."""
+
+
+def content_safe_cause(exc: BaseException) -> BaseException:
+    """What to chain (`raise ... from content_safe_cause(exc)`) instead of
+    an exception a parser or decoder raised on an upload: its message may
+    quote the file (pypdf quotes the bytes it choked on, `int()` the text it
+    couldn't read...), and a chained exception is logged and traced with
+    its message. Keeps its type's name and its stack trace (where in the
+    parser it failed), not its message nor what it was chained to."""
+    stand_in = InputErrorWithheld(f"{type(exc).__module__}.{type(exc).__qualname__} (message withheld)")
+    stand_in.__suppress_context__ = True
+    return stand_in.with_traceback(exc.__traceback__)
+
+
 def error_category(exc: BaseException) -> ErrorCategory:
     """The category of a processing failure: a `PermanentProcessingError`'s
     own, anything else is transient."""

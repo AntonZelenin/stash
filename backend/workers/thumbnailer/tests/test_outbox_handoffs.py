@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from stash_shared import storage_keys
 from stash_shared.queue import codec
-from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ItemType, ProcessingJob
 from stash_worker_core.testing import (
     OWNER_ID,
     FakeDeadLetterQueue,
@@ -44,7 +44,6 @@ def _image_job(item_id: uuid.UUID) -> ProcessingJob:
         item_id=item_id,
         user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key=_ORIGINAL_KEY, content_type="image/png"),
     )
 
 
@@ -81,7 +80,7 @@ async def test_thumbnail_and_its_analysis_job_are_committed_together(engine, sto
     assert event.queue == CONTENT_ANALYSIS_JOBS
     assert event.published_at is not None
     [job] = analysis_queue.published
-    assert job.image.storage_key == thumbnail_key(item_id)
+    assert job == ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.image)
 
 
 async def test_thumbnail_is_not_recorded_if_its_analysis_job_cannot_be_added(engine, storage, monkeypatch):

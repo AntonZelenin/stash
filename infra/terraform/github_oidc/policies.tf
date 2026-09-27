@@ -9,7 +9,7 @@
 #   Lambda, SQS, SNS,
 #   Logs, CloudWatch  <prefix>-* names
 #   Secrets Manager   <prefix>/* secrets; values only of <prefix>/rds/* (the
-#                     DB secret Terraform writes), never the OpenAI key
+#                     DB secrets Terraform writes), never the OpenAI key
 #   IAM               roles <prefix>-* carrying the Lambda boundary
 #                     (boundary.tf), passed only to Lambda
 #   RDS               instance and subnet group <prefix>
@@ -284,7 +284,8 @@ data "aws_iam_policy_document" "deploy_network_data" {
     resources = [local.secrets]
   }
 
-  # Only the DB secret's value is Terraform's; the OpenAI key is set by hand.
+  # Only the DB secrets' values (master, api, worker) are Terraform's; the
+  # OpenAI key is set by hand.
   statement {
     sid       = "WriteDatabaseSecret"
     actions   = ["secretsmanager:PutSecretValue"]

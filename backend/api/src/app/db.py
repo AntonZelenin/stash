@@ -11,7 +11,9 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(get_settings().database_url)
+# hide_parameters: bound values (note text, emails, password hashes...) stay
+# out of error messages, and so out of logs and traces.
+engine = create_async_engine(get_settings().database_url, hide_parameters=True)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 

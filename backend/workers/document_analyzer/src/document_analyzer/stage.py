@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, ItemType, JobQueue
+from stash_shared.queue.base import DOCUMENT_ANALYSIS_JOBS, EMBEDDING_JOBS, ItemType, JobQueue
 from stash_worker_core.runtime import build_object_store, build_outbox, build_stage_worker, require_openai_key
 from stash_worker_core.worker import Worker
 
@@ -30,7 +30,7 @@ def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | N
             ),
             engine=engine,
             max_chars=settings.document_analysis_max_chars,
-            outbox=build_outbox(settings, engine),
+            outbox=build_outbox(settings, engine, publishes=[EMBEDDING_JOBS]),
             limits=parser_limits(settings),
         ),
     )

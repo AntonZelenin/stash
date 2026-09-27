@@ -131,8 +131,15 @@ queue name (`stash_shared.queue.base`), each with its own DLQ:
   records to the queue and burn delivery attempts.
 - Main queues keep messages 4 days, DLQs 14 (a moved message keeps its
   original enqueue time). Long polling is 20 s. Encryption is SSE-SQS.
-- `SQS_QUEUE_URLS` for the API and workers: `jsonencode(local.sqs_queue_urls)`
-  inside this configuration, or the `sqs_queue_urls_json` output.
+- `SQS_QUEUE_URLS`: each function gets the URLs of the queues it consumes
+  or publishes to only (`local.lambda_queues`; the API all of them). All of
+  them: the `sqs_queue_urls_json` output.
+- Each main queue's resource policy (`aws_sqs_queue_policy.main`) denies
+  `SendMessage` to every principal but the functions that publish to it
+  (`local.queue_producers`: the API, and the stage before it) and
+  receiving/deleting/hiding messages to every principal but its worker,
+  administrators included. Add operators (to redrive a DLQ or inspect
+  messages) with `sqs_operator_principal_arns`.
 
 ## Lambdas
 
@@ -172,7 +179,8 @@ One function per service, all in the app subnet (VPC, dual-stack):
   runs against an unmigrated schema (see
   [docs/deployment.md](../../../docs/deployment.md#order)). Its package
   is the API's plus `migrations/alembic.ini` and `migrations/alembic/`.
-  It reads only the database secret.
+  It connects as the RDS master user, and after migrating provisions the
+  runtime database roles from their secrets (see Secrets).
 - `lambda_permissions_boundary_arn`: the permissions boundary of every
   execution role, from [../github_oidc](../github_oidc/README.md). CI sets it
   (the deploy role may only manage roles that carry it). Set the same value
@@ -184,8 +192,18 @@ One function per service, all in the app subnet (VPC, dual-stack):
 
   Each function's zip holds only its own packages, so a change to one
   worker redeploys only that worker.
-- Secrets: the functions get `DATABASE_SECRET_ARN` and (API and OpenAI
-  workers) `OPENAI_API_KEY_SECRET_ARN`. The database secret and the
+- Database logins (`database.tf`): `<prefix>/rds/master` (the master
+  user) is the migration function's only; the API connects with
+  `<prefix>/rds/api` (role `stash_api`) and every worker with
+  `<prefix>/rds/worker` (role `stash_worker`), whose roles and privileges
+  the migration function provisions (`backend/api/src/app/db_roles.py`).
+  Each role reads only its own secret, except that while
+  `lambda_master_database_secret_access` is `true` (the default, for the
+  rollout) the API and workers may also read the master's: set it to
+  `false` once a deployment with the roles has completed
+  ([docs/deployment.md](../../../docs/deployment.md#rollout-of-the-runtime-database-roles)).
+- Secrets: each function gets `DATABASE_SECRET_ARN` (its own login's) and
+  (API and OpenAI workers) `OPENAI_API_KEY_SECRET_ARN`. The database secret and the
   workers' OpenAI key are read at cold start. The API reads its OpenAI key
   only when a search first needs it: without it, only search fails (503).
   Put the OpenAI key into its secret once, after the first apply creates

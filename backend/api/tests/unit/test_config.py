@@ -90,3 +90,17 @@ def test_the_turnstile_secret_comes_from_its_secret_when_one_is_set(monkeypatch)
 
 def test_turnstile_is_on_by_default():
     assert Settings().turnstile_enabled is True
+
+
+def test_search_chunk_text_logging_is_off_by_default():
+    assert Settings().search_log_chunk_text is False
+
+
+@pytest.mark.parametrize("environment", ["dev", "stage", "prod", "PROD"])
+def test_search_chunk_text_logging_is_refused_outside_local(environment):
+    with pytest.raises(ValueError, match="SEARCH_LOG_CHUNK_TEXT"):
+        Settings(environment=environment, search_log_chunk_text=True)
+
+
+def test_search_chunk_text_logging_can_be_enabled_locally():
+    assert Settings(environment="local", search_log_chunk_text=True).search_log_chunk_text is True

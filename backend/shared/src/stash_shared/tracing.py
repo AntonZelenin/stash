@@ -27,14 +27,23 @@ The trace crosses queues: `JobQueue.publish` injects the current context
 continues it (`extract_context`), so a request and every stage it triggers
 are one trace. Log records carry the active span's `trace_id`/`span_id` (see
 `stash_shared.log`).
+
+Every span is scrubbed on its way out (`RedactingSpanExporter`), whoever
+created it: attributes, recorded exceptions and status descriptions lose
+credentials, tokens and URL query strings (see `stash_shared.redaction`).
+Attributes still never carry user content in the first place.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from opentelemetry import propagate, trace
 from opentelemetry.context import Context
+from opentelemetry.sdk.trace import Event, ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import Span, Status, StatusCode
+
+from stash_shared import redaction
 
 _OTLP_TRACES_PATH = "/v1/traces"
 
@@ -62,7 +71,9 @@ def configure_tracing(*, service: str, environment: str, enabled: bool, otlp_end
         resource=Resource.create({"service.name": service, "deployment.environment.name": environment.lower()})
     )
     provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint.rstrip("/") + _OTLP_TRACES_PATH))
+        BatchSpanProcessor(
+            RedactingSpanExporter(OTLPSpanExporter(endpoint=otlp_endpoint.rstrip("/") + _OTLP_TRACES_PATH))
+        )
     )
     trace.set_tracer_provider(provider)
     # Every service talks to S3 through boto3.
@@ -97,6 +108,48 @@ def instrument_sqlalchemy(engine: Any) -> None:
     from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
     SQLAlchemyInstrumentor().instrument(engine=getattr(engine, "sync_engine", engine))
+
+
+class RedactingSpanExporter(SpanExporter):
+    """Exports through `exporter` copies of the spans scrubbed by
+    `stash_shared.redaction`: attributes (request URLs without their query
+    string), event attributes (a recorded exception's message and stack
+    trace) and the status description."""
+
+    def __init__(self, exporter: SpanExporter):
+        self._exporter = exporter
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._exporter.export([redacted_span(span) for span in spans])
+
+    def shutdown(self) -> None:
+        self._exporter.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._exporter.force_flush(timeout_millis)
+
+
+def redacted_span(span: ReadableSpan) -> ReadableSpan:
+    status = span.status
+    if status.description:
+        status = Status(status.status_code, redaction.redact_text(status.description))
+    return ReadableSpan(
+        name=span.name,
+        context=span.context,
+        parent=span.parent,
+        resource=span.resource,
+        attributes=redaction.redact_span_attributes(span.attributes),
+        events=[
+            Event(event.name, redaction.redact_span_attributes(event.attributes), event.timestamp)
+            for event in span.events
+        ],
+        links=span.links,
+        kind=span.kind,
+        status=status,
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=span.instrumentation_scope,
+    )
 
 
 # ---- propagation across queues ------------------------------------------------

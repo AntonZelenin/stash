@@ -17,8 +17,11 @@ per-delivery callable, returns the partial batch response).
 Also holds `stash_shared.outbox`: the transactional outbox every job goes
 through. `add_event` records a job in `outbox_events` in the caller's
 transaction (connection or ORM session), and `OutboxPublisher.flush`
-publishes all unpublished events through a `JobQueue` resolved by queue
-name. It's at-least-once, so consumers must stay idempotent. It uses plain
+publishes all unpublished events (with `publishes=`, only those of the
+given queues: the workers') through a `JobQueue` resolved by queue name.
+Jobs (`ProcessingJob`) are identifiers only; never add a storage key,
+filename or other data a worker should read from the database. It's
+at-least-once, so consumers must stay idempotent. It uses plain
 SQL only; the table itself is created by the API's Alembic migrations.
 
 Also holds `stash_shared.embeddings`: the OpenAI embedder used both by the
@@ -33,6 +36,13 @@ service uses (`get_logger(__name__)`, `log_context`/`bind_context`,
 implementation per environment. Never use `logging.getLogger` in
 application code. See "Logging" in the architecture doc for the field names
 and what must never be logged.
+
+Also holds `stash_shared.redaction`: the scrubbing every log record and
+exported span goes through (sensitive field names, credentials, tokens,
+URL query strings...), applied by `log`'s formatters and `tracing`'s
+`RedactingSpanExporter`, never by call sites. It's a backstop for secrets,
+not a licence to log user content: it can't recognise that. Give a new
+kind of secret a pattern there, with a test.
 
 Also holds `stash_shared.tracing`: OpenTelemetry setup (`configure_tracing`,
 once per process; `instrument_sqlalchemy` for a service's engine) and the

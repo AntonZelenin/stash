@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # (pg_trgm `word_similarity`, 0-1): 0.6 lets "город" find "городу"
     # (0.83) and "city" find "cities" (0.6), but not unrelated words.
     search_min_text_similarity: float = 0.6
+    # TEMPORARY search diagnostics (`Semantic search candidate` log lines):
+    # also log each candidate's best-matching chunk text. That's user
+    # content (a note, a caption, text read from an image), so it's off by
+    # default and refused anywhere but `environment=local`.
+    search_log_chunk_text: bool = False
 
     # Largest upload, checked on the declared size (the upload URL is
     # signed for exactly that size, so storage enforces it too) and again
@@ -210,6 +215,12 @@ class Settings(BaseSettings):
 
         parse_windows(value)
         return value
+
+    @model_validator(mode="after")
+    def _content_logging_only_locally(self) -> Self:
+        if self.search_log_chunk_text and self.environment.lower() != "local":
+            raise ValueError("SEARCH_LOG_CHUNK_TEXT logs user content: only allowed with ENVIRONMENT=local")
+        return self
 
     @model_validator(mode="after")
     def _resolve_secrets(self) -> Self:

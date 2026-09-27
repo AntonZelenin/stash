@@ -208,12 +208,22 @@ the `stash-<env>-migrations` Lambda (`app.aws_lambda_migrations.handler`):
 - Package `migrations.zip`: the API's code and dependencies, plus
   `migrations/alembic.ini` and `migrations/alembic/` (the same migrations
   as locally).
-- Runs in the app subnet with the other functions. It reads
-  `DATABASE_SECRET_ARN` like the API, and its role can only read that
-  secret and write its logs.
-- Runs `alembic upgrade head` and returns `{"status": "ok", "revision": <head>}`.
-  A failing migration raises. The workflow reads `FunctionError` and fails
-  the deployment.
+- Runs in the app subnet with the other functions. It connects as the RDS
+  master user (`DATABASE_SECRET_ARN` = `stash-<env>/rds/master`), the only
+  function that can; its role reads that secret and the two runtime
+  logins' below, and writes its logs.
+- Runs `alembic upgrade head`, then provisions the runtime database roles
+  (`app.db_roles`): `stash_api` (the API) and `stash_worker` (every
+  worker), with the passwords Terraform generated in `stash-<env>/rds/api`
+  and `stash-<env>/rds/worker` (`DATABASE_API_SECRET_ARN`,
+  `DATABASE_WORKER_SECRET_ARN`). It creates a missing role, sets its
+  password and replaces its privileges with the ones `app.db_roles` lists,
+  in one transaction. Returns `{"status": "ok", "revision": <head>,
+  "roles_provisioned": true}`. A failing migration or provisioning raises.
+  The workflow reads `FunctionError` and fails the deployment.
+- Neither runtime role can change the schema: a migration that adds a
+  table gets its grants from the same run (the API's automatically; a
+  table the workers use must be added to `WORKER_PRIVILEGES`).
 - Has no trigger: not API Gateway, not SQS. Deployments run one at a time
   (`concurrency: deploy-production`), so two migrations never overlap. Timeout 300 s (`lambda_config.migrations.timeout`,
   up to 900).
@@ -227,7 +237,37 @@ hand:
       --log-type Tail --query LogResult --output text out.json | base64 -d; cat out.json
 
 `alembic upgrade head` is idempotent: running it again with nothing
-pending does nothing.
+pending does nothing. So is provisioning.
+
+#### Rollout of the runtime database roles
+
+The deployment that introduces them needs nothing by hand: step 4 creates
+the two login secrets, step 5 creates the roles, step 6 switches the API
+and the workers to them. But step 4 also updates every function's IAM
+policy while the previous release still runs, connecting as the master
+user, so `lambda_master_database_secret_access` (default `true`) keeps
+letting them read the master secret meanwhile. Once a deployment with the
+roles has completed:
+
+1. Check the API and workers connect as their own roles (no
+   `permission denied` or `password authentication failed` in their logs;
+   an image and a document upload reach `completed`).
+2. Set `lambda_master_database_secret_access = false` (in `TF_VARS`) and
+   deploy again. From then on only the migration function can read the
+   master secret.
+
+If a runtime role turns out to lack a privilege, fix `WORKER_PRIVILEGES`
+(or the API's grants) in `app.db_roles` and deploy: step 5 re-grants
+before any code changes.
+
+#### Queue access
+
+Each worker queue's resource policy denies sending to anyone but the
+functions that feed it and receiving to anyone but its worker
+(`infra/terraform/live/messaging.tf`): an administrator too. To redrive a
+DLQ from the console or inspect a queue's messages, add the role you use
+to `sqs_operator_principal_arns` and deploy first (a DLQ redrive sends to
+the source queue as the caller).
 
 ### Frontend
 

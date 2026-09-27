@@ -12,11 +12,12 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 from stash_shared import tracing
-from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ItemType, ProcessingJob
 
 from conftest import DescribingHandler
 from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
 from stash_worker_core.testing import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -77,9 +78,8 @@ def _published_delivery(item_id: uuid.UUID, attempt: int = 1) -> tuple[Delivery,
         trace_context = tracing.inject_context()
     job = ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
     delivery = Delivery(
         message_id="7-0",

@@ -125,6 +125,9 @@ class OpenAIImageDescriber(ImageDescriber):
                         }
                     ],
                     text={"format": _OUTPUT_FORMAT},
+                    # The image is the user's: OpenAI keeps no stored copy
+                    # of the response (nothing here reads one back).
+                    store=False,
                 )
                 call.update(response_status=response.status, output_chars=len(response.output_text or ""))
         except PERMANENT_OPENAI_ERRORS as exc:

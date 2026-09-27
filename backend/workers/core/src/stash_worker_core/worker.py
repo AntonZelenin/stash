@@ -11,7 +11,7 @@ from stash_shared.log import get_logger, log_context
 from stash_shared.queue.base import DeadLetter, DeadLetterQueue, Delivery, ItemType, JobQueue, ProcessingJob, RetryMode
 
 from stash_worker_core.errors import ErrorCategory, PermanentProcessingError, error_category
-from stash_worker_core.items import fail_item, get_item_status, start_attempt
+from stash_worker_core.items import fail_item, get_item, get_item_status, start_attempt
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -60,6 +60,13 @@ class Worker:
     `job.item_id` (the queue payload is never treated as the source of truth
     for the item's status); `processing` spans all stages, and only the last
     stage's handler marks the item `completed`.
+
+    The queue is not a trust boundary: before anything else, a job's item is
+    loaded, and the job is dropped (acked, the item untouched) unless the
+    item exists and is the job's `user_id`'s and `item_type`. So the handler
+    only ever runs for a job that names its item correctly, and a job can't
+    make a worker start, fail or process another user's item. What to read
+    is still the handler's to look up in the item's rows, never the job's.
 
     Every attempt is one queue delivery; nothing is retried in-process, and
     the attempt number is the queue's own delivery count
@@ -262,12 +269,24 @@ class Worker:
             await self._queue.ack(delivery)
             return
 
-        status = await get_item_status(self._engine, job.item_id)
-        if status is None:
+        item = await get_item(self._engine, job.item_id)
+        if item is None:
             logger.warning("Item not found; dropping job")
             _set_outcome("skipped", skip_reason="item_not_found")
             await self._queue.ack(delivery)
             return
+        if item.user_id != job.user_id or item.item_type != job.item_type.value:
+            # Not a job the application published for this item (item ids
+            # are never reused, nor do items change owner or type): forged,
+            # or corrupted. Dropped without touching the item, so a job
+            # naming someone else's item can't start, fail or process it.
+            logger.warning(
+                "Job does not match its item's owner or type; dropping it", stored_item_type=item.item_type
+            )
+            _set_outcome("skipped", skip_reason="item_mismatch")
+            await self._queue.ack(delivery)
+            return
+        status = item.status
         if self._manages_item_status and status in (_STATUS_COMPLETED, _STATUS_FAILED):
             # A duplicate/redelivery of a job whose outcome is already
             # durable (e.g. the worker crashed between commit and ack). A

@@ -52,11 +52,13 @@ And one turns searchable text into vectors:
 
 Each worker looks up the item's status in Postgres by id and drives
 `pending -> processing -> completed`/`failed` (for images, `processing` spans
-both image workers). Never trusts the queue payload as the source of truth for item
-state — always re-reads from Postgres. That includes which object to read: the
+both image workers). Never trusts the queue payload: a job is identifiers
+only (`item_id`, `user_id`, `item_type`), and the `Worker` drops it, leaving
+the item untouched, unless the item exists and is that user's and type.
+Everything else comes from Postgres. That includes which object to read: the
 original's key and the ETag of its validated content come from the item's row
-(`item_images`/`item_files`, joined on the job's user), never from the job's
-`image`/`file`, which are informational only. Originals are read pinned to that
+(`item_images`/`item_files`, joined on the job's user). Never add a key,
+filename or processing parameter to a job. Originals are read pinned to that
 ETag (`ObjectStore` reads take `etag`), so other bytes at the key fail the item
 instead of being processed; legacy items (no ETag) are read unpinned.
 
@@ -88,9 +90,23 @@ Rules:
   separate from (and far below) the upload limits. Raise
   `ProcessingLimitExceeded` past one, `MalformedInputError` for input that
   can't be parsed; neither is retried.
+- Never put user content in an exception message (it's logged, traced and
+  kept in dead letters). When wrapping an exception a parser or decoder
+  raised on an upload, name its type only and chain it with
+  `raise ... from content_safe_cause(exc)` (`stash_worker_core.errors`):
+  its message may quote the file.
+- Every OpenAI Responses call sets `store=False`, and `logged_call` gets
+  sizes, never the prompt or the answer.
 - A worker never imports another worker. Code two workers need goes in
   `core`; code only one needs stays in that worker, SQL included.
 - A worker's third-party dependencies go in its own `pyproject.toml`.
+- On AWS every worker connects as the `stash_worker` database role, which
+  has only the privileges `backend/api/src/app/db_roles.py`
+  (`WORKER_PRIVILEGES`) lists. SQL that touches another table or column
+  needs it added there, in the same change.
+- A worker's outbox publishes only the queues it hands jobs on to
+  (`build_outbox(..., publishes=...)`), matching what its IAM role and the
+  queues' policies let it send to (`infra/terraform/live/iam.tf`).
 - Workers talk to each other only through queue jobs (via the outbox) and
   the database. Changing a job payload (`stash_shared.queue.base`) or a
   table they share means keeping producer and consumer compatible, since

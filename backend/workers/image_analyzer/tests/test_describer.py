@@ -133,3 +133,21 @@ async def test_asks_for_the_text_first_and_the_image_at_full_resolution(monkeypa
     schema = request["text"]["format"]["schema"]
     assert list(schema["properties"]) == ["visible_text", "chunks"]
     assert request["input"][0]["content"][1]["detail"] == "high"
+
+
+async def test_openai_keeps_no_stored_copy_and_nothing_logs_the_image_or_answer(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    requests = []
+    answer = json.dumps({"visible_text": ["Dr. Petrenko, oncology"], "chunks": ["hospital waiting room"]})
+    describer = _describer_answering(monkeypatch, answer, requests)
+
+    await describer.describe(b"private image bytes", content_type="image/webp")
+
+    [request] = requests
+    assert request["store"] is False
+    logged = " ".join(f"{record.getMessage()} {getattr(record, 'stash_fields', {})}" for record in caplog.records)
+    assert "base64" not in logged
+    assert "Petrenko" not in logged
+    assert "hospital" not in logged
+    [call] = [record for record in caplog.records if record.getMessage() == "External call succeeded"]
+    assert call.stash_fields["input_bytes"] == len(b"private image bytes")

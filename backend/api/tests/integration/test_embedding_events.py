@@ -1,6 +1,8 @@
+import json
 from uuid import UUID
 
 from httpx import AsyncClient
+from stash_shared.queue import codec
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from conftest import FakeJobQueue, FakeObjectStorage
@@ -27,7 +29,7 @@ async def test_text_item_is_sent_for_embedding(client: AsyncClient, embedding_qu
     assert str(job.user_id) == user_id
     assert job.item_type == QueueItemType.text
     # Only the item id: the worker reads the text from the database.
-    assert job.image is None and job.file is None
+    assert set(json.loads(codec.encode_job(job))) == {"item_id", "user_id", "item_type"}
 
 
 async def test_link_item_is_sent_for_embedding(client: AsyncClient, embedding_queue: FakeJobQueue):

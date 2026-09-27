@@ -204,3 +204,86 @@ def test_environment_only_labels_records_and_platform_picks_the_format(output, e
     log.get_logger("stash.test").info("structured")
     [entry] = _json_lines(json_buffer)
     assert entry["environment"] == environment
+
+
+# ---- redaction ------------------------------------------------------------------
+
+_PRESIGNED = "https://stash.s3.amazonaws.com/uploads/u/1?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=deadbeef"
+_SECRETS = ("AKIAEXAMPLE", "deadbeef", "Bearer abc123", "r3fr3sh", "hunter2")
+
+
+def _log_everything_sensitive(logger_name: str = "stash.test") -> None:
+    logger = log.get_logger(logger_name)
+    logger.info(
+        f"Upload URL issued: {_PRESIGNED}",
+        authorization="Bearer abc123",
+        cookie="refresh_token=r3fr3sh",
+        refresh_token="r3fr3sh",
+        password="hunter2",
+        url=_PRESIGNED,
+        item_id=ITEM_ID,
+    )
+    try:
+        raise RuntimeError(f"PUT {_PRESIGNED} failed: {{'password': 'hunter2'}}")
+    except RuntimeError:
+        logger.exception("Storage call failed", item_id=ITEM_ID)
+
+
+@pytest.mark.parametrize("platform", ["digitalocean", "local"])
+def test_secrets_are_redacted_from_messages_fields_and_stack_traces(output, platform):
+    buffer = output(platform)
+
+    _log_everything_sensitive()
+
+    written = buffer.getvalue()
+    for secret in _SECRETS:
+        assert secret not in written
+    # What's safe stays: ids, the URL's host and path, the exception type.
+    assert str(ITEM_ID) in written
+    assert "https://stash.s3.amazonaws.com/uploads/u/1?[REDACTED]" in written
+    assert "RuntimeError" in written
+
+
+def test_redacted_json_fields_keep_their_keys(output):
+    buffer = output("digitalocean")
+
+    log.get_logger("stash.test").info("Tokens refreshed", refresh_token="r3fr3sh", user_id="u1")
+
+    [entry] = _json_lines(buffer)
+    assert (entry["refresh_token"], entry["user_id"]) == ("[REDACTED]", "u1")
+
+
+def test_third_party_records_are_redacted_too(output):
+    buffer = output("digitalocean")
+
+    logging.getLogger("some.library").warning("Request to %s with Authorization: Bearer abc123", _PRESIGNED)
+
+    [entry] = _json_lines(buffer)
+    for secret in _SECRETS:
+        assert secret not in entry["message"]
+
+
+def test_chatty_libraries_stay_quiet_even_at_debug(output):
+    """They log request bodies (openai: the prompt), headers and pre-signed
+    URLs at DEBUG/INFO."""
+    buffer = output("digitalocean", level="DEBUG")
+
+    for name in ("openai", "httpx", "httpcore", "botocore", "urllib3"):
+        logging.getLogger(name).debug("Request options: {'json_data': {'input': 'my private note'}}")
+        logging.getLogger(name).info("HTTP Request: POST https://api.openai.com/v1/responses")
+
+    assert buffer.getvalue() == ""
+
+
+def test_powertools_output_is_redacted(output, capsys):
+    pytest.importorskip("aws_lambda_powertools")
+    output("aws", environment="prod")
+    capsys.readouterr()
+
+    _log_everything_sensitive()
+
+    written = capsys.readouterr().out
+    assert "Storage call failed" in written
+    for secret in _SECRETS:
+        assert secret not in written
+    assert str(ITEM_ID) in written

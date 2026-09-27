@@ -334,3 +334,30 @@ variable "api_cors_allowed_origins" {
   type        = list(string)
   default     = []
 }
+
+variable "lambda_master_database_secret_access" {
+  description = <<-EOT
+    Rollout transition for the runtime database roles (database.tf): also
+    lets the API and workers read the RDS master user's secret. A
+    deployment's first, targeted apply updates every function's IAM policy
+    but none of their code or settings, so the release still running
+    connects as the master user until the full apply switches it to its
+    own login: without this, its cold starts would fail in between. Set to
+    false once a deployment with the runtime roles has completed; from then
+    on only the migration function can read the master secret.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "sqs_operator_principal_arns" {
+  description = <<-EOT
+    IAM principals (role or user ARNs) that may send to and receive from
+    the worker queues besides the functions themselves, e.g. the operator
+    role used to redrive a DLQ (StartMessageMoveTask sends to the source
+    queue as its caller) or inspect messages. Every other principal is
+    denied by the queues' resource policies (messaging.tf).
+  EOT
+  type        = list(string)
+  default     = []
+}

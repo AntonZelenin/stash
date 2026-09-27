@@ -1,3 +1,4 @@
+import json
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -9,13 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from stash_shared import outbox, tracing
+from stash_shared.queue import codec
 from stash_shared.outbox import OutboxPublisher, add_event
 from stash_shared.queue.base import (
     CONTENT_ANALYSIS_JOBS,
     EMBEDDING_JOBS,
     THUMBNAIL_JOBS,
     Delivery,
-    ImageRef,
     ItemType,
     JobQueue,
     ProcessingJob,
@@ -88,7 +89,6 @@ def _job(item_id: UUID | None = None) -> ProcessingJob:
         item_id=item_id or uuid4(),
         user_id=USER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
 
 
@@ -287,3 +287,75 @@ async def test_event_is_published_in_the_trace_it_was_created_in(engine, queues,
     expected = tracing.extract_context(TRACE_CONTEXT)
     [trace_id] = queues(THUMBNAIL_JOBS).published_trace_ids
     assert trace_id == trace.get_current_span(expected).get_span_context().trace_id
+
+
+# ---- publishers limited to their own queues -----------------------------------
+
+
+async def test_a_limited_publisher_leaves_other_queues_events_alone(engine, queues):
+    """A worker publishes only the queues it hands jobs on to: others'
+    events stay unpublished, never attempted, for a process that may
+    publish them (the API)."""
+    own, other = _job(), _job()
+    await _add(engine, EMBEDDING_JOBS, own)
+    await _add(engine, THUMBNAIL_JOBS, other)
+
+    published = await OutboxPublisher(engine, queues, publishes=[EMBEDDING_JOBS]).flush()
+
+    assert published == 1
+    assert queues(EMBEDDING_JOBS).published == [own]
+    assert THUMBNAIL_JOBS not in queues.by_name
+    assert {event.queue: event.published_at is not None for event in await _events(engine)} == {
+        EMBEDDING_JOBS: True,
+        THUMBNAIL_JOBS: False,
+    }
+
+    assert await OutboxPublisher(engine, queues).flush() == 1
+    assert queues(THUMBNAIL_JOBS).published == [other]
+
+
+async def test_a_limited_publisher_is_not_held_up_by_a_full_batch_of_other_queues(engine, queues):
+    for _ in range(3):
+        await _add(engine, THUMBNAIL_JOBS, _job())
+    own = _job()
+    await _add(engine, EMBEDDING_JOBS, own)
+
+    assert await OutboxPublisher(engine, queues, batch_size=2, publishes=[EMBEDDING_JOBS]).flush() == 1
+    assert queues(EMBEDDING_JOBS).published == [own]
+
+
+# ---- the job payload ----------------------------------------------------------
+
+
+def test_jobs_carry_identifiers_only():
+    job = _job()
+
+    assert json.loads(codec.encode_job(job)) == {
+        "item_id": str(job.item_id),
+        "user_id": str(USER_ID),
+        "item_type": "image",
+    }
+
+
+def test_an_undecodable_payload_is_logged_by_its_length_only(caplog):
+    raw = json.dumps({"item_id": "not-a-uuid", "text": "my private note"})
+
+    assert codec.decode_job(raw, message_id="1-0") is None
+
+    [record] = [record for record in caplog.records if record.getMessage() == "Could not decode job payload"]
+    assert record.stash_fields["payload_chars"] == len(raw)
+    assert "my private note" not in f"{record.getMessage()} {record.stash_fields}"
+
+
+def test_older_payloads_still_decode_without_their_object_references():
+    """Jobs published before payloads were identifiers only carried the
+    item's storage key (and a file's name): still valid, those parts
+    dropped."""
+    job = _job()
+    legacy = {
+        **json.loads(codec.encode_job(job)),
+        "image": {"storage_key": "users/x/images/y.png", "content_type": "image/png"},
+        "file": {"storage_key": "users/x/files/y", "content_type": "text/plain", "filename": "y.txt"},
+    }
+
+    assert codec.decode_job(json.dumps(legacy), message_id="1") == job

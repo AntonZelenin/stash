@@ -32,6 +32,12 @@ id...) to every record logged while they're active, including records from
 third-party libraries, so deep code doesn't need them passed down. Inside
 an OpenTelemetry span, records also carry its `trace_id` and `span_id`
 (see `stash_shared.tracing`), with no work from the caller.
+
+Every record is scrubbed as it's written, whichever implementation writes
+it and whoever logged it (message, fields, stack trace): credentials,
+tokens, cookies, pre-signed URL query strings... are replaced (see
+`stash_shared.redaction`). That's a backstop: user content is never logged
+in the first place.
 """
 
 import json
@@ -50,7 +56,7 @@ from uuid import UUID
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-from stash_shared import metrics, tracing
+from stash_shared import metrics, redaction, tracing
 
 # Field names used across services. Not enforced — a log carries whichever
 # apply — but use these spellings rather than inventing synonyms.
@@ -310,8 +316,15 @@ class _PowertoolsBackend(_Backend):
 
     def __init__(self, *, service: str, platform: str, environment: str, level: int):
         from aws_lambda_powertools import Logger as PowertoolsLogger
+        from aws_lambda_powertools.logging.formatter import LambdaPowertoolsFormatter
 
-        self._logger = PowertoolsLogger(service=service, level=level)
+        class RedactingFormatter(LambdaPowertoolsFormatter):
+            # The whole record, as Powertools is about to write it: its
+            # stack trace (`exception`, `stack_trace`) included.
+            def serialize(self, log: dict) -> str:
+                return super().serialize(log=redaction.redact_fields(log))
+
+        self._logger = PowertoolsLogger(service=service, level=level, logger_formatter=RedactingFormatter())
         self._logger.append_keys(platform=platform, environment=environment)
 
     def log(self, name: str, level: int, message: str, exc_info: Any, fields: dict[str, Any]) -> None:
@@ -383,17 +396,18 @@ class _JsonFormatter(logging.Formatter):
             entry.setdefault(key, value)
         if record.exc_info:
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info)).rstrip()
-        return json.dumps(entry, ensure_ascii=False, default=str)
+        return json.dumps(redaction.redact_fields(entry), ensure_ascii=False, default=str)
 
 
 class _ConsoleFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        line = f"{_timestamp(record)} {record.levelname:<7} {record.name}: {record.getMessage()}"
-        fields = _record_fields(record)
+        message = redaction.redact_text(record.getMessage())
+        line = f"{_timestamp(record)} {record.levelname:<7} {record.name}: {message}"
+        fields = redaction.redact_fields(_record_fields(record))
         if fields:
             line += " " + " ".join(f"{key}={_console_value(value)}" for key, value in fields.items())
         if record.exc_info:
-            line += "\n" + "".join(traceback.format_exception(*record.exc_info)).rstrip()
+            line += "\n" + redaction.redact_text("".join(traceback.format_exception(*record.exc_info)).rstrip())
         return line
 
 

@@ -106,6 +106,8 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       SEARCH_MAX_COSINE_DISTANCE: ${SEARCH_MAX_COSINE_DISTANCE:-0.6}
       SEARCH_MIN_TEXT_SIMILARITY: ${SEARCH_MIN_TEXT_SIMILARITY:-0.6}
+      # Search tuning: also log each candidate's best chunk text (user content). Local only.
+      SEARCH_LOG_CHUNK_TEXT: ${SEARCH_LOG_CHUNK_TEXT:-false}
       # Rewrites search queries into English before they're embedded.
       SEARCH_QUERY_NORMALIZATION_MODEL: ${SEARCH_QUERY_NORMALIZATION_MODEL:-gpt-5-nano}
       # Rate limits and quotas: production values unless turned off here.

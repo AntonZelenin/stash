@@ -2,12 +2,13 @@
 job points at (the thumbnail, put there by the thumbnailer) and completes
 the item, handing it on to embeddings via the transactional outbox."""
 
+import json
 import uuid
 
 import pytest
 from sqlalchemy import text
 from stash_shared.queue import codec
-from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ItemType, ProcessingJob
 from stash_worker_core import items
 from stash_worker_core.testing import (
     OWNER_ID,
@@ -43,7 +44,6 @@ def _job(item_id: uuid.UUID) -> ProcessingJob:
         item_id=item_id,
         user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key=_THUMBNAIL_KEY, content_type="image/webp"),
     )
 
 
@@ -69,13 +69,18 @@ def embedding_queue() -> FakeJobQueue:
 
 
 @pytest.fixture
-def worker(engine, describer, queue, embedding_queue) -> Worker:
+def storage() -> FakeObjectStore:
+    return FakeObjectStore({_THUMBNAIL_KEY: _THUMBNAIL})
+
+
+@pytest.fixture
+def worker(engine, storage, describer, queue, embedding_queue) -> Worker:
     return Worker(
         queue=queue,
         dead_letters=FakeDeadLetterQueue(),
         engine=engine,
         handler=ImageAnalysisHandler(
-            storage=FakeObjectStore({_THUMBNAIL_KEY: _THUMBNAIL}),
+            storage=storage,
             describer=describer,
             engine=engine,
             outbox=outbox_for(engine, {EMBEDDING_JOBS: embedding_queue}),
@@ -158,21 +163,29 @@ async def test_a_duplicate_job_completes_the_item_once(worker, engine, describer
         assert (await conn.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one() == 1
 
 
-async def test_describes_the_recorded_thumbnail_not_the_one_the_job_names(worker, engine, describer):
-    """A job's `image` is informational: a stale or forged key in it is
-    never read."""
+async def test_describes_the_recorded_thumbnail_not_the_one_the_payload_names(worker, engine, storage, describer):
+    """A key in a job's payload (older producers sent one; a forged
+    message might) is never read."""
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
-    job = ProcessingJob(
-        item_id=item_id,
-        user_id=OWNER_ID,
-        item_type=ItemType.image,
-        image=ImageRef(storage_key=f"users/{uuid.uuid4()}/images/someone-elses.png", content_type="image/png"),
+    other_key = f"users/{uuid.uuid4()}/images/someone-elses.png"
+    storage.objects[other_key] = b"someone else's image"
+    raw = json.dumps(
+        {
+            "item_id": str(item_id),
+            "user_id": str(OWNER_ID),
+            "item_type": "image",
+            "image": {"storage_key": other_key, "content_type": "image/png"},
+        }
+    )
+    job = codec.decode_job(raw, message_id="1-0")
+
+    await worker.process_message(
+        Delivery(message_id="1-0", receipt="1-0", delivery_count=1, raw_payload=raw, job=job)
     )
 
-    await worker.process_message(_delivery(job))
-
     assert describer.received == [(_THUMBNAIL, "image/webp")]
+    assert other_key not in storage.bytes_served
     assert await fetch_status(engine, item_id) == "completed"
 
 
@@ -183,5 +196,6 @@ async def test_job_of_another_user_is_not_processed(worker, engine, describer):
 
     await worker.process_message(_delivery(job))
 
+    # Dropped, and the owner's item left as it was: not failed.
     assert describer.received == []
-    assert await fetch_status(engine, item_id) == "failed"
+    assert await fetch_status(engine, item_id) == "processing"

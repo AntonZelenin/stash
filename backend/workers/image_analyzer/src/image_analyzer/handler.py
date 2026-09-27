@@ -46,7 +46,7 @@ class ImageAnalysisHandler:
         self._max_image_bytes = max_image_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
-        # From the database, never the job's `image` (informational only).
+        # From the database, never from the job (which only names the item).
         key = await get_thumbnail_key(self._engine, job.item_id, user_id=job.user_id)
         if key is None:
             raise PermanentProcessingError("Item has no recorded thumbnail of the job's user")

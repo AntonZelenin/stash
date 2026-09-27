@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import uuid
 import warnings
@@ -7,7 +8,8 @@ import pytest
 from PIL import Image
 from sqlalchemy import text
 from stash_shared import storage_keys
-from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue import codec
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ItemType, ProcessingJob
 from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
 from stash_worker_core.storage import DOWNLOAD_CHUNK_BYTES
 from stash_worker_core.testing import (
@@ -196,13 +198,22 @@ def test_only_the_first_frame_of_an_animation_is_used():
 # ---- ThumbnailHandler ----
 
 
-def _job(item_id: uuid.UUID, *, user_id: uuid.UUID = OWNER_ID, original_key: str = _ORIGINAL_KEY) -> ProcessingJob:
-    return ProcessingJob(
-        item_id=item_id,
-        user_id=user_id,
-        item_type=ItemType.image,
-        image=ImageRef(storage_key=original_key, content_type="image/png"),
-    )
+def _job(item_id: uuid.UUID, *, user_id: uuid.UUID = OWNER_ID) -> ProcessingJob:
+    return ProcessingJob(item_id=item_id, user_id=user_id, item_type=ItemType.image)
+
+
+def _job_naming(item_id: uuid.UUID, key: str) -> ProcessingJob:
+    """A job decoded from a payload that also names an object, as older
+    producers' did (and a forged message might)."""
+    payload = {
+        "item_id": str(item_id),
+        "user_id": str(OWNER_ID),
+        "item_type": "image",
+        "image": {"storage_key": key, "content_type": "image/png"},
+    }
+    job = codec.decode_job(json.dumps(payload), message_id="1-0")
+    assert job == _job(item_id)
+    return job
 
 
 @pytest.fixture
@@ -236,10 +247,11 @@ async def test_stores_thumbnail_records_it_then_hands_off_to_analysis(engine, st
     assert _decode(storage.objects[key]).size == (1024, 768)
     assert storage.content_types[key] == "image/webp"
     assert await fetch_thumbnail_key(engine, item_id) == key
-    # The analysis job points at the thumbnail, not the original.
+    # The analysis job names the item only: the analyzer reads the
+    # thumbnail's key from the row just recorded.
     [job] = analysis_queue.published
-    assert job.item_id == item_id
-    assert job.image == ImageRef(storage_key=key, content_type="image/webp")
+    assert job == _job(item_id)
+    assert "storage_key" not in codec.encode_job(job)
 
 
 async def test_thumbnail_is_stored_under_its_owners_prefix(engine, storage, handler):
@@ -259,7 +271,7 @@ async def test_legacy_original_key_gets_a_user_scoped_thumbnail(engine, storage,
     storage.objects[legacy_key] = storage.objects[_ORIGINAL_KEY]
     await insert_item(engine, item_id, status="processing", storage_key=legacy_key)
 
-    await handler.handle(_job(item_id, original_key=legacy_key))
+    await handler.handle(_job_naming(item_id, legacy_key))
 
     assert await fetch_thumbnail_key(engine, item_id) == thumbnail_key(item_id)
     assert thumbnail_key(item_id) in storage.objects
@@ -492,14 +504,14 @@ async def test_original_over_the_size_limit_fails_without_being_read(engine, ana
 async def test_reads_the_original_the_database_records_not_the_one_the_job_names(
     engine, storage, analysis_queue, handler
 ):
-    """A job's `image` is informational: a stale or forged key in it is
-    never read."""
+    """A key in a job's payload (older producers sent one; a forged
+    message might) is never read."""
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
     other_key = f"users/{uuid.uuid4()}/images/someone-elses.png"
     storage.objects[other_key] = _encode(Image.new("RGB", (10, 10), "red"))
 
-    await handler.handle(_job(item_id, original_key=other_key))
+    await handler.handle(_job_naming(item_id, other_key))
 
     assert other_key not in storage.bytes_served
     assert storage.bytes_served[_ORIGINAL_KEY] == len(storage.objects[_ORIGINAL_KEY])
@@ -536,3 +548,29 @@ async def test_original_with_its_validated_etag_is_processed(engine, storage, an
     await handler.handle(_job(item_id))
 
     assert await fetch_thumbnail_key(engine, item_id) == thumbnail_key(item_id)
+
+
+def test_a_decoder_error_quoting_the_file_is_chained_without_its_message(monkeypatch):
+    """A decoder's message may quote the file (e.g. text chunks it choked
+    on): the error keeps its type and where it was raised, not its message."""
+    import traceback
+
+    from stash_worker_core.errors import InputErrorWithheld
+
+    from thumbnailer import handler
+
+    content = "caption: Olena's hospital discharge letter"
+
+    def decode_embedded_text(*args, **kwargs):
+        raise ValueError(f"bad iTXt chunk: {content!r}")
+
+    monkeypatch.setattr(handler.Image, "open", decode_embedded_text)
+
+    with pytest.raises(MalformedInputError) as raised:
+        make_thumbnail(b"\x89PNG", max_size=1024, quality=80)
+
+    assert str(raised.value) == "Could not decode image: ValueError"
+    assert isinstance(raised.value.__cause__, InputErrorWithheld)
+    stack_trace = "".join(traceback.format_exception(raised.value))
+    assert "decode_embedded_text" in stack_trace
+    assert "hospital" not in stack_trace

@@ -7,10 +7,10 @@ import logging
 import uuid
 
 import pytest
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import Delivery, ItemType, ProcessingJob
 
 from stash_worker_core import worker as worker_module
-from stash_worker_core.testing import FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
+from stash_worker_core.testing import OWNER_ID, FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
 from stash_worker_core.worker import Worker
 
 _FAILED_LOG = "Job handling failed; it will be redelivered after the visibility timeout"
@@ -51,9 +51,8 @@ class _ScriptedQueue(FakeJobQueue):
 def _delivery(item_id: uuid.UUID, *, receipt: str = "receipt-1") -> Delivery:
     job = ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
     return Delivery(message_id=f"id-{receipt}", receipt=receipt, delivery_count=1, raw_payload="{}", job=job)
 

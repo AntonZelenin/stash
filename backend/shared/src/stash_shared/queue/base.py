@@ -9,14 +9,14 @@ from uuid import UUID
 # The image-processing pipeline's queues, in order:
 #   API -> THUMBNAIL_JOBS -> thumbnail worker
 #       -> CONTENT_ANALYSIS_JOBS -> image-analyzer worker
-# Both carry a `ProcessingJob`; its `image` points at whatever that stage
-# should read (the original upload, then the thumbnail).
+# Both carry a `ProcessingJob` naming the image item; each stage reads what
+# the item's row records (the original, then the thumbnail).
 THUMBNAIL_JOBS = "thumbnail_jobs"
 CONTENT_ANALYSIS_JOBS = "content_analysis_jobs"
 
 # Analyzable uploaded files (documents, books, text):
 #   API -> DOCUMENT_ANALYSIS_JOBS -> document-analyzer worker
-# Carries a `ProcessingJob` whose `file` points at the stored upload.
+# Carries a `ProcessingJob` naming the file item.
 DOCUMENT_ANALYSIS_JOBS = "document_analysis_jobs"
 
 # Items whose searchable text (their `item_descriptions` row) changed:
@@ -39,44 +39,24 @@ class ItemType(str, Enum):
 
 
 @dataclass(frozen=True)
-class ImageRef:
-    """Where an image item's bytes live in object storage, for logs and
-    tracing only: workers never read what a job says is there. They look
-    the object (and the ETag it must still have) up in Postgres
-    by the job's item and user. Still sent, for workers deployed before
-    that; don't rely on it, and it can be dropped once none are left."""
-
-    storage_key: str
-    content_type: str
-
-
-@dataclass(frozen=True)
-class FileRef:
-    """Where a file item's bytes live in object storage, what they are, and
-    the name the user uploaded them under. Informational only, like
-    `ImageRef`: the document analyzer reads all of it from Postgres."""
-
-    storage_key: str
-    content_type: str
-    filename: str
-
-
-@dataclass(frozen=True)
 class ProcessingJob:
     """A unit of work published after an item is persisted, telling the
-    processing workers what to process.
+    processing workers which item to process: identifiers only.
 
-    Carries only enough to look the item up (plus, for images and files,
-    an informational `image`/`file`). The worker treats Postgres, not this
-    payload, as the source of truth for the item's status and for which
-    object to read.
+    Nothing in it is trusted beyond naming the item. The worker loads the
+    item by `item_id` and drops the job unless the item is still
+    `user_id`'s and of `item_type` (so a forged or stale job can't touch
+    another user's item); everything else (status, which object to read
+    and its ETag, filenames, content types) comes from Postgres.
+
+    Jobs published before this carried an `image`/`file` with the item's
+    storage key (and a file's name): decoding ignores them, so those still
+    queued stay valid.
     """
 
     item_id: UUID
     user_id: UUID
     item_type: ItemType
-    image: ImageRef | None = None
-    file: FileRef | None = None
 
 
 @dataclass(frozen=True)

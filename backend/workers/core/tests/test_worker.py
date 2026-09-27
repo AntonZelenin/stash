@@ -2,12 +2,13 @@ import uuid
 
 import pytest
 from sqlalchemy import text
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, PlatformDeadLetterQueue, ProcessingJob
+from stash_shared.queue.base import Delivery, ItemType, PlatformDeadLetterQueue, ProcessingJob
 
 from conftest import DescribingHandler
 from stash_worker_core.errors import PermanentProcessingError
 from stash_worker_core.items import complete_item
 from stash_worker_core.testing import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -38,12 +39,11 @@ class _FakeDescriber:
         return self.description
 
 
-def _image_job(item_id: uuid.UUID, *, storage_key: str = "images/cat.png") -> ProcessingJob:
+def _image_job(item_id: uuid.UUID) -> ProcessingJob:
     return ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key=storage_key, content_type="image/png"),
     )
 
 
@@ -114,7 +114,7 @@ async def test_caption_is_kept_alongside_generated_description(worker, engine):
 async def test_stray_non_image_job_is_acked_without_touching_item(worker, engine, queue, dead_letters, describer):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, item_type="text", status="completed")
-    job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.text)
+    job = ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.text)
 
     await worker.process_message(_delivery(job))
 
@@ -188,9 +188,9 @@ async def test_permanent_error_dead_letters_on_first_attempt(worker, engine, que
 
 async def test_missing_storage_object_is_permanent(worker, engine, queue, dead_letters, describer):
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id)
+    await insert_item(engine, item_id, storage_key="images/gone.png")
 
-    await worker.process_message(_delivery(_image_job(item_id, storage_key="images/gone.png")))
+    await worker.process_message(_delivery(_image_job(item_id)))
 
     assert await fetch_status(engine, item_id) == "failed"
     assert describer.calls == 0
@@ -404,7 +404,7 @@ async def test_complete_item_is_idempotent(engine):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
 
-    embedding_job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image)
+    embedding_job = ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.image)
 
     assert await complete_item(engine, item_id, description="first", embedding_job=embedding_job) is True
     assert await complete_item(engine, item_id, description="second", embedding_job=embedding_job) is False
@@ -422,3 +422,84 @@ def test_backoff_delay_is_exponential_with_bounded_jitter(delivery_count, low, h
     for _ in range(50):
         delay = backoff_delay(delivery_count, base_seconds=2.0, max_seconds=120.0)
         assert low <= delay <= high
+
+
+# ---- the job is checked against its item before anything else ----
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+async def test_job_naming_another_users_item_is_dropped_without_touching_it(
+    worker, engine, queue, dead_letters, describer, status
+):
+    """A forged (or corrupted) job: the item exists but isn't the job's
+    user's. Not started, not failed, not processed, not dead-lettered."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status=status)
+    async with engine.connect() as conn:
+        before = (
+            await conn.execute(text("SELECT status_updated_at FROM items WHERE id = :id"), {"id": str(item_id)})
+        ).scalar_one()
+    forged = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image)
+
+    await worker.process_message(_delivery(forged))
+
+    assert await fetch_status(engine, item_id) == status
+    async with engine.connect() as conn:
+        after = (
+            await conn.execute(text("SELECT status_updated_at FROM items WHERE id = :id"), {"id": str(item_id)})
+        ).scalar_one()
+    assert after == before
+    assert describer.calls == 0
+    assert dead_letters.letters == []
+    assert len(queue.acked) == 1
+
+
+async def test_job_claiming_another_item_type_is_dropped_without_touching_it(
+    worker, engine, queue, dead_letters, describer
+):
+    """The item's type comes from its row: a job calling a file item an
+    image doesn't get it processed as one (or failed for not being one)."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, item_type="file", file=("users/u/files/i/o.pdf", "application/pdf", "a.pdf"))
+
+    await worker.process_message(_delivery(ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.image)))
+
+    assert await fetch_status(engine, item_id) == "pending"
+    assert describer.calls == 0
+    assert dead_letters.letters == []
+    assert len(queue.acked) == 1
+
+
+async def test_job_for_a_deleted_item_is_dropped(worker, engine, queue, dead_letters, describer):
+    await worker.process_message(_delivery(_image_job(uuid.uuid4())))
+
+    assert describer.calls == 0
+    assert dead_letters.letters == []
+    assert len(queue.acked) == 1
+
+
+async def test_stage_without_status_still_checks_the_owner(engine, queue, dead_letters):
+    """The embedding stage runs for any item type and never changes status,
+    but a job naming someone else's item is dropped all the same."""
+    handled = []
+
+    class _Recording:
+        async def handle(self, job):
+            handled.append(job)
+
+    worker = Worker(
+        queue=queue,
+        dead_letters=dead_letters,
+        engine=engine,
+        handler=_Recording(),
+        item_type=None,
+        manages_item_status=False,
+    )
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, item_type="text", status="completed")
+
+    await worker.process_message(_delivery(ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.text)))
+    await worker.process_message(_delivery(ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.text)))
+
+    assert [job.user_id for job in handled] == [OWNER_ID]
+    assert len(queue.acked) == 2

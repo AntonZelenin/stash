@@ -9,7 +9,12 @@ from stash_shared.log import get_logger
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import ProcessingJob
 from stash_worker_core.completion import embedding_job_for, log_completion
-from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
+from stash_worker_core.errors import (
+    MalformedInputError,
+    PermanentProcessingError,
+    ProcessingLimitExceeded,
+    content_safe_cause,
+)
 from stash_worker_core.items import complete_item
 from stash_worker_core.storage import ObjectStore
 
@@ -68,8 +73,8 @@ class DocumentAnalysisHandler:
         self._limits = dataclasses.replace(limits, excerpt_chars=max_chars)
 
     async def handle(self, job: ProcessingJob) -> None:
-        # From the database, never the job's `file` (informational only):
-        # the item's canonical original, every read of it pinned to the
+        # From the database, never from the job (which only names the
+        # item): the item's canonical original, every read of it pinned to the
         # content the API validated.
         stored = await get_file(self._engine, job.item_id, user_id=job.user_id)
         if stored is None:
@@ -93,12 +98,12 @@ class DocumentAnalysisHandler:
                 # Storage first: a parser may have turned a failed read into
                 # anything, a limit or a parse error included.
                 if source.storage_error is not None:
-                    raise source.storage_error from exc
+                    raise source.storage_error from content_safe_cause(exc)
                 if isinstance(exc, PermanentProcessingError):
                     raise
                 if isinstance(exc, MemoryError):
                     raise ProcessingLimitExceeded("Text extraction ran out of memory") from exc
-                raise MalformedInputError(f"Could not extract text: {exc!r}") from exc
+                raise MalformedInputError(f"Could not extract text: {type(exc).__name__}") from content_safe_cause(exc)
             if source.storage_error is not None:
                 # Caught by the parser, which then made do without it.
                 raise source.storage_error

@@ -10,14 +10,14 @@ import uuid
 from sqlalchemy.ext.asyncio import create_async_engine
 from stash_shared import metrics, tracing
 from stash_shared.queue import codec
-from stash_shared.queue.base import ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import ItemType, ProcessingJob
 from stash_shared.queue.sqs_lambda import LambdaSqsQueue, process_sqs_batch
 
 from stash_worker_core import aws_lambda
 from stash_worker_core import worker as worker_module
 from stash_worker_core.config import WorkerSettings
 from stash_worker_core.errors import PermanentProcessingError
-from stash_worker_core.testing import FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
+from stash_worker_core.testing import OWNER_ID, FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
 from stash_worker_core.worker import Worker
 
 
@@ -40,9 +40,8 @@ class _ScriptedHandler:
 def _job(item_id: uuid.UUID) -> ProcessingJob:
     return ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
 
 
@@ -203,14 +202,14 @@ async def test_a_message_that_cannot_be_settled_is_reported_failed(engine, caplo
     await insert_item(engine, unreachable)
     await insert_item(engine, ok)
     stage = _Stage(engine, _ScriptedHandler())
-    get_item_status = worker_module.get_item_status
+    get_item = worker_module.get_item
 
-    async def status_or_outage(engine, item_id):
+    async def item_or_outage(engine, item_id):
         if item_id == unreachable:
             raise ConnectionError("Postgres unreachable")
-        return await get_item_status(engine, item_id)
+        return await get_item(engine, item_id)
 
-    monkeypatch.setattr(worker_module, "get_item_status", status_or_outage)
+    monkeypatch.setattr(worker_module, "get_item", item_or_outage)
 
     response = await stage.run(_record(unreachable), _record(ok))
 

@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 import pytest
@@ -6,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.items.models import Description, FileMetadata, Item, ItemType, TextContent
-from stash_shared.queue.base import FileRef
+from stash_shared.queue import codec
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from conftest import FakeJobQueue, FakeObjectStorage
@@ -39,12 +40,9 @@ async def test_upload_pdf_stores_file_and_metadata(
     [job] = document_queue.published
     assert str(job.item_id) == response.json()["id"]
     assert job.item_type == QueueItemType.file
-    assert job.image is None
-    assert job.file == FileRef(
-        storage_key=canonical_file_key(storage, user_id, job.item_id, _PDF_BYTES, ".pdf"),
-        content_type="application/pdf",
-        filename="Quarterly Report.pdf",
-    )
+    # Identifiers only: no key (the worker reads it from the item's row) and
+    # no filename (user content) in a queue message.
+    assert json.loads(codec.encode_job(job)) == {"item_id": str(job.item_id), "user_id": user_id, "item_type": "file"}
 
     item = await session.get(Item, UUID(response.json()["id"]))
     assert item.type == ItemType.file

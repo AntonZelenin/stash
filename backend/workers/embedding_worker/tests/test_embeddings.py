@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import text
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 from stash_shared.queue.base import Delivery, ItemType, ProcessingJob
-from stash_worker_core.testing import FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
+from stash_worker_core.testing import OWNER_ID, FakeDeadLetterQueue, FakeJobQueue, fetch_status, insert_item
 from stash_worker_core.worker import Worker
 
 from embedding_worker.handler import EmbeddingHandler
@@ -78,7 +78,7 @@ def saved_chunks(monkeypatch) -> list[list[EmbeddedChunk]]:
 
 
 def _delivery(item_id, item_type=ItemType.text, delivery_count: int = 1) -> Delivery:
-    job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=item_type)
+    job = ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=item_type)
     return Delivery(message_id="1-0", receipt="1-0", delivery_count=delivery_count, raw_payload="{}", job=job)
 
 

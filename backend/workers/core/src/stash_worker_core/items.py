@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -32,6 +33,30 @@ def _now() -> datetime:
 def _sql(statement: str):
     params = [p for p in _TIMESTAMP_PARAMS if f":{p.key}" in statement]
     return text(statement).bindparams(*params)
+
+
+@dataclass(frozen=True)
+class StoredItem:
+    """What the database says about a job's item: the authority a job is
+    checked against (see `Worker`)."""
+
+    user_id: UUID
+    item_type: str
+    status: str
+
+
+async def get_item(engine: AsyncEngine, item_id: UUID) -> StoredItem | None:
+    """The item as stored, or None if it doesn't exist (any more)."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT user_id, type, status FROM items WHERE id = :item_id"), {"item_id": str(item_id)}
+            )
+        ).first()
+    if row is None:
+        return None
+    # SQLite (tests) hands back the uuid as a string.
+    return StoredItem(user_id=row[0] if isinstance(row[0], UUID) else UUID(row[0]), item_type=row[1], status=row[2])
 
 
 async def get_item_status(engine: AsyncEngine, item_id: UUID) -> str | None:

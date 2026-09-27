@@ -1,20 +1,30 @@
 # One execution role per Lambda, granting only what that service's code
 # does:
 #
-#                      S3 objects                      SQS                     Secrets
-#   api                sign staging uploads, copy to   send: all               db, openai, turnstile
+#                      S3 objects                      SQS                             Secrets
+#   api                sign staging uploads, copy to   send: all                       db (api), openai, turnstile
 #                      originals, get, delete
-#   thumbnailer        get images, put|delete thumbs   send: all, consume own  db
-#   image_analyzer     get thumbnails                  send: all, consume own  db, openai
-#   document_analyzer  get files                       send: all, consume own  db, openai
-#   embedding_worker   -                               consume own             db, openai
-#   migrations         -                               -                       db
+#   thumbnailer        get images, put|delete thumbs   send: content analysis,         db (worker)
+#                                                      consume own
+#   image_analyzer     get thumbnails                  send: embedding, consume own    db (worker), openai
+#   document_analyzer  get files                       send: embedding, consume own    db (worker), openai
+#   embedding_worker   -                               consume own                     db (worker), openai
+#   migrations         -                               -                               db (master, and the
+#                                                                                      api/worker ones it provisions)
 #
-# "send: all": after its commit, a process flushes the whole transactional
-# outbox (stash_shared.outbox), publishing every pending event whatever its
-# queue, so each publisher may send to every queue. The embedding worker
-# never flushes. "sign staging uploads": the pre-signed URLs the API hands
-# to browsers act with its PutObject grant on uploads/*. "copy to
+# "send": after its commit, a process flushes the transactional outbox
+# (stash_shared.outbox). A worker publishes only the events of the queues
+# it hands jobs on to (stash_worker_core.runtime.build_outbox), so it may
+# send only to those; the API publishes every queue's events, its own and
+# any a worker left behind, so it may send to every queue. The embedding
+# worker never publishes. Each queue's resource policy (messaging.tf)
+# admits exactly these senders and its consumer. "db (...)": which
+# database login's secret (database.tf); the master user's is the
+# migrations' alone, unless var.lambda_master_database_secret_access (a
+# rollout transition) still lets the others read it.
+#
+# "sign staging uploads": the pre-signed URLs the API hands to browsers act
+# with its PutObject grant on uploads/*. "copy to
 # originals": finalize's pinned, create-only CopyObject of validated
 # content, which needs PutObject on the originals' prefixes too; the
 # bucket policy (storage.tf) refuses any pre-signed write there, so that
@@ -63,13 +73,27 @@ locals {
     }
   }
 
+  # The queues whose events each function's outbox flush publishes.
   lambda_publishes = {
-    api               = true
-    thumbnailer       = true
-    image_analyzer    = true
-    document_analyzer = true
-    embedding_worker  = false
-    migrations        = false
+    api               = keys(local.queues)
+    thumbnailer       = ["content_analysis_jobs"]
+    image_analyzer    = ["embedding_jobs"]
+    document_analyzer = ["embedding_jobs"]
+    embedding_worker  = []
+    migrations        = []
+  }
+
+  # The database secrets each function may read: its own login's; for
+  # migrations, the master's and the two logins it provisions.
+  lambda_database_secrets = {
+    for name, l in local.lambdas : name => (
+      l.db_role == null
+      ? concat([aws_secretsmanager_secret.db.arn], [for s in aws_secretsmanager_secret.db_app : s.arn])
+      : concat(
+        [aws_secretsmanager_secret.db_app[l.db_role].arn],
+        var.lambda_master_database_secret_access ? [aws_secretsmanager_secret.db.arn] : [],
+      )
+    )
   }
 }
 
@@ -117,7 +141,7 @@ data "aws_iam_policy_document" "lambda" {
   statement {
     sid       = "ReadDatabaseSecret"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.db.arn]
+    resources = local.lambda_database_secrets[each.key]
   }
 
   dynamic "statement" {
@@ -180,11 +204,11 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   dynamic "statement" {
-    for_each = local.lambda_publishes[each.key] ? [1] : []
+    for_each = length(local.lambda_publishes[each.key]) > 0 ? [1] : []
     content {
       sid       = "PublishJobs"
       actions   = ["sqs:SendMessage"]
-      resources = [for q in aws_sqs_queue.main : q.arn]
+      resources = [for q in local.lambda_publishes[each.key] : aws_sqs_queue.main[q].arn]
     }
   }
 

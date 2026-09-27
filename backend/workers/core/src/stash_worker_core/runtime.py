@@ -4,7 +4,7 @@ entrypoint (`python -m <worker>`, via `run_locally`) and its Lambda handler
 settings (a `WorkerSettings` subclass)."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -58,17 +58,20 @@ def build_queue(settings: WorkerSettings, queue_name: str) -> JobQueue:
     return build_job_queue(settings, queue_name)
 
 
-def build_outbox(settings: WorkerSettings, engine: AsyncEngine) -> OutboxPublisher:
-    """Publishes the outbox (`stash_shared.outbox`) — every unpublished
-    event, whichever process wrote it — to whichever queue each names,
-    built on first use. A queue that can't be built (no SQS URL for it)
-    only fails its own events."""
+def build_outbox(settings: WorkerSettings, engine: AsyncEngine, *, publishes: Collection[str]) -> OutboxPublisher:
+    """Publishes the outbox (`stash_shared.outbox`): every unpublished event
+    for the queues in `publishes`, the ones this worker hands jobs on to,
+    whichever process wrote it. Other queues' events are left to the
+    processes that feed them (the API publishes them all), so a worker's
+    role only needs to send to its own next stages (infra: `iam.tf`). A
+    queue that can't be built (no SQS URL for it) only fails its own
+    events."""
 
     @lru_cache
     def queue(queue_name: str) -> JobQueue:
         return build_queue(settings, queue_name)
 
-    return OutboxPublisher(engine, queue)
+    return OutboxPublisher(engine, queue, publishes=publishes)
 
 
 def build_stage_worker(

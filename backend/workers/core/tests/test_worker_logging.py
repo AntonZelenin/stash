@@ -6,11 +6,12 @@ import logging
 import uuid
 
 import pytest
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import Delivery, ItemType, ProcessingJob
 
 from conftest import DescribingHandler
 from stash_worker_core.errors import PermanentProcessingError
 from stash_worker_core.testing import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -54,7 +55,6 @@ def _delivery(item_id: uuid.UUID, user_id: uuid.UUID, attempt: int) -> Delivery:
         item_id=item_id,
         user_id=user_id,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
     return Delivery(message_id="7-0", receipt="receipt-7", delivery_count=attempt, raw_payload="{}", job=job)
 
@@ -74,7 +74,7 @@ def _capture(caplog):
 
 async def test_successful_job_logs_start_and_completion_with_job_context(engine, caplog):
     item_id, user_id = uuid.uuid4(), uuid.uuid4()
-    await insert_item(engine, item_id)
+    await insert_item(engine, item_id, user_id=user_id)
 
     await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id, user_id, attempt=1))
 
@@ -95,7 +95,7 @@ async def test_successful_job_logs_start_and_completion_with_job_context(engine,
 
 async def test_retry_then_dead_letter_is_traceable(engine, caplog):
     item_id, user_id = uuid.uuid4(), uuid.uuid4()
-    await insert_item(engine, item_id)
+    await insert_item(engine, item_id, user_id=user_id)
     worker = _worker(engine, _FlakyDescriber([TimeoutError("slow"), TimeoutError("slow")]))
 
     await worker.process_message(_delivery(item_id, user_id, attempt=1))
@@ -125,10 +125,10 @@ async def test_retries_log_who_schedules_them(engine, caplog):
     await insert_item(engine, item_id)
 
     await _worker(engine, _FlakyDescriber([TimeoutError("slow")])).process_message(
-        _delivery(item_id, uuid.uuid4(), attempt=1)
+        _delivery(item_id, OWNER_ID, attempt=1)
     )
     sqs_worker = _worker(engine, _FlakyDescriber([TimeoutError("slow")]), queue=FakePlatformDeadLetteringQueue())
-    await sqs_worker.process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
+    await sqs_worker.process_message(_delivery(item_id, OWNER_ID, attempt=1))
 
     valkey, sqs = (_fields(record) for record in _records(caplog, "Job attempt failed; retrying"))
     assert valkey["retry_mode"] == "backoff"
@@ -143,7 +143,7 @@ async def test_sqs_dead_letter_log_says_redrive_moves_it(engine, caplog):
     await insert_item(engine, item_id)
     worker = _worker(engine, _FlakyDescriber([TimeoutError("slow")]), queue=FakePlatformDeadLetteringQueue())
 
-    await worker.process_message(_delivery(item_id, uuid.uuid4(), attempt=2))
+    await worker.process_message(_delivery(item_id, OWNER_ID, attempt=2))
 
     [dead] = _records(caplog, "Job moved to dead-letter queue")
     assert _fields(dead)["retry_mode"] == "visibility_timeout"
@@ -156,7 +156,7 @@ async def test_permanent_error_is_dead_lettered_with_its_reason(engine, caplog):
     await insert_item(engine, item_id)
     describer = _FlakyDescriber([PermanentProcessingError("OpenAI rejected the image")])
 
-    await _worker(engine, describer).process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
+    await _worker(engine, describer).process_message(_delivery(item_id, OWNER_ID, attempt=1))
 
     [dead] = _records(caplog, "Job moved to dead-letter queue")
     assert _fields(dead)["permanent"] is True
@@ -168,7 +168,7 @@ async def test_context_does_not_leak_past_the_delivery(engine, caplog):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)
 
-    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id, uuid.uuid4(), attempt=1))
+    await _worker(engine, _FlakyDescriber([])).process_message(_delivery(item_id, OWNER_ID, attempt=1))
     logging.getLogger("elsewhere").info("after")
 
     [after] = _records(caplog, "after")

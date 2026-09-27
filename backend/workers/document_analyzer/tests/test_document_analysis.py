@@ -1,9 +1,11 @@
 import io
+import json
 import uuid
 import zipfile
 
 import pytest
-from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, FileRef, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue import codec
+from stash_shared.queue.base import EMBEDDING_JOBS, Delivery, ItemType, ProcessingJob
 from stash_worker_core.testing import (
     OWNER_ID,
     FakeDeadLetterQueue,
@@ -44,15 +46,10 @@ class _FakeDocumentDescriber:
         return "A shopping list for the week."
 
 
-def _job(item_id: uuid.UUID, *, user_id: uuid.UUID = OWNER_ID, key: str = _KEY) -> ProcessingJob:
-    """What the worker reads comes from the item's row (`_insert_file_item`);
-    the job's `file` is informational only."""
-    return ProcessingJob(
-        item_id=item_id,
-        user_id=user_id,
-        item_type=ItemType.file,
-        file=FileRef(storage_key=key, content_type="text/plain", filename="job.txt"),
-    )
+def _job(item_id: uuid.UUID, *, user_id: uuid.UUID = OWNER_ID) -> ProcessingJob:
+    """Names the item only: what the worker reads comes from the item's
+    row (`_insert_file_item`)."""
+    return ProcessingJob(item_id=item_id, user_id=user_id, item_type=ItemType.file)
 
 
 def _delivery(job: ProcessingJob, delivery_count: int = 1) -> Delivery:
@@ -213,9 +210,7 @@ async def test_openai_outage_is_retried_then_dead_lettered_on_fifth_attempt(engi
 async def test_image_job_on_document_queue_is_ignored(engine, storage, describer, queue, dead_letters):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id)  # an image item
-    job = ProcessingJob(
-        item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image, image=ImageRef("images/x.png", "image/png")
-    )
+    job = ProcessingJob(item_id=item_id, user_id=OWNER_ID, item_type=ItemType.image)
 
     await _worker(engine, storage, describer, queue, dead_letters).process_message(_delivery(job))
 
@@ -295,16 +290,27 @@ async def test_storage_failure_while_parsing_is_retried(engine, describer, queue
 # ---- the file comes from the database, pinned to its validated content ----
 
 
-async def test_reads_the_file_the_database_records_not_the_one_the_job_names(
+async def test_reads_the_file_the_database_records_not_the_one_the_payload_names(
     engine, storage, describer, queue, dead_letters
 ):
+    """A key, type or filename in a job's payload (older producers sent
+    them; a forged message might) is never used."""
     item_id = uuid.uuid4()
     await _insert_file_item(engine, item_id)
     other_key = f"users/{uuid.uuid4()}/files/someone-elses.txt"
     storage.objects[other_key] = b"someone else's secrets"
+    raw = json.dumps(
+        {
+            "item_id": str(item_id),
+            "user_id": str(OWNER_ID),
+            "item_type": "file",
+            "file": {"storage_key": other_key, "content_type": "application/pdf", "filename": "forged.pdf"},
+        }
+    )
+    job = codec.decode_job(raw, message_id="1-0")
 
     await _worker(engine, storage, describer, queue, dead_letters).process_message(
-        _delivery(_job(item_id, key=other_key))
+        Delivery(message_id="1-0", receipt="1-0", delivery_count=1, raw_payload=raw, job=job)
     )
 
     assert other_key not in storage.bytes_served
@@ -346,6 +352,43 @@ async def test_job_of_another_user_is_not_processed(engine, storage, describer, 
         _delivery(_job(item_id, user_id=uuid.uuid4()))
     )
 
+    # Dropped, and the owner's item left as it was: not failed.
     assert describer.calls == []
     assert storage.bytes_served == {}
+    assert await fetch_status(engine, item_id) == "pending"
+    assert len(queue.acked) == 1
+    assert dead_letters.letters == []
+
+
+async def test_a_parser_error_quoting_the_document_is_logged_without_it(
+    engine, storage, describer, queue, dead_letters, monkeypatch, caplog
+):
+    """Parser errors can quote what they choked on (pypdf the bytes, `int()`
+    the text): their type and stack trace are kept, their message isn't."""
+    import traceback
+
+    from document_analyzer import handler
+
+    # Not in the `raise` line: a stack trace shows the code, which in a
+    # real parser is the library's, not the document.
+    content = "Olena Kovalenko, diagnosis: ..."
+
+    def parse_patient_record(parser, source, limits):
+        raise ValueError(f"invalid literal for int() with base 10: {content!r}")
+
+    monkeypatch.setattr(handler, "extract_text", parse_patient_record)
+    caplog.set_level("DEBUG")
+    item_id = uuid.uuid4()
+    await _insert_file_item(engine, item_id)
+
+    await _worker(engine, storage, describer, queue, dead_letters).process_message(_delivery(_job(item_id)))
+
     assert await fetch_status(engine, item_id) == "failed"
+    [letter] = dead_letters.letters
+    assert letter.reason == "Could not extract text: ValueError"
+    [dead_lettered] = [record for record in caplog.records if record.getMessage() == "Job moved to dead-letter queue"]
+    stack_trace = "".join(traceback.format_exception(*dead_lettered.exc_info))
+    assert "parse_patient_record" in stack_trace
+    assert "builtins.ValueError (message withheld)" in stack_trace
+    logged = " ".join(f"{record.getMessage()} {getattr(record, 'stash_fields', {})}" for record in caplog.records)
+    assert "Kovalenko" not in logged + stack_trace

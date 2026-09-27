@@ -18,8 +18,6 @@ from stash_shared.queue.base import (
     DOCUMENT_ANALYSIS_JOBS,
     EMBEDDING_JOBS,
     THUMBNAIL_JOBS,
-    FileRef,
-    ImageRef,
     ProcessingJob,
 )
 
@@ -308,17 +306,19 @@ async def _normalized_query(query: str, normalizer: QueryNormalizer) -> str:
 def _log_semantic_candidates(candidates: list[SemanticMatch], max_distance: float | None) -> None:
     """TEMPORARY search diagnostics, for tuning `search_max_cosine_distance`
     and the image analyzer's chunks: every item the semantic search
-    considered, with its best chunk and whether that passed the cutoff.
-    Unlike every other log line, this includes content (the chunk's text:
-    generated from an image, or the user's own note or caption). Remove once
-    search is tuned."""
+    considered, with its distance and whether that passed the cutoff. Its
+    best chunk's text is user content (generated from an image, or the
+    user's own note or caption): logged only when `search_log_chunk_text`
+    is on, which only a local environment allows. Remove once search is
+    tuned."""
+    log_chunk_text = get_settings().search_log_chunk_text
     for candidate in candidates:
         logger.info(
             "Semantic search candidate",
             item_id=candidate.item.id,
             cosine_distance=round(candidate.distance, 4),
             similarity=round(1 - candidate.distance, 4),
-            best_chunk=candidate.chunk_text,
+            best_chunk=candidate.chunk_text if log_chunk_text else None,
             passed_threshold=max_distance is None or candidate.distance <= max_distance,
             max_cosine_distance=max_distance,
         )
@@ -1009,16 +1009,9 @@ class ItemService:
             text=upload.caption,
             tags=resolved_tags,
         )
+        # Identifiers only: the worker reads the key from the item's row.
         await self._add_job(
-            THUMBNAIL_JOBS,
-            ProcessingJob(
-                item_id=item.id,
-                user_id=item.user_id,
-                item_type=QueueItemType.image,
-                # Informational only: workers read the item's key from the
-                # database (kept for workers deployed before that).
-                image=ImageRef(storage_key=storage_key, content_type=upload.content_type),
-            ),
+            THUMBNAIL_JOBS, ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType.image)
         )
         if upload.caption is not None:
             # Searchable by its caption now, not only once analysis is done.
@@ -1075,13 +1068,7 @@ class ItemService:
         if classified.analyzable:
             await self._add_job(
                 DOCUMENT_ANALYSIS_JOBS,
-                ProcessingJob(
-                    item_id=item.id,
-                    user_id=item.user_id,
-                    item_type=QueueItemType.file,
-                    # Informational only, like the image job's.
-                    file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
-                ),
+                ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType.file),
             )
         if upload.caption is not None:
             await self._add_embedding_job(item)

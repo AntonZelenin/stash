@@ -10,7 +10,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import SpanKind, StatusCode
 
 from stash_shared import log, tracing
-from stash_shared.queue.base import ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import ItemType, ProcessingJob
 from stash_shared.queue.valkey_queue import ValkeyJobQueue, _to_delivery
 
 ITEM_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -47,7 +47,6 @@ def _job() -> ProcessingJob:
         item_id=ITEM_ID,
         user_id=USER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
 
 
@@ -97,7 +96,7 @@ async def test_publish_sends_trace_context_next_to_the_payload(spans):
 
     [entry] = client.entries
     # The payload is the business contract alone.
-    assert set(json.loads(entry["payload"])) == {"item_id", "user_id", "item_type", "image"}
+    assert set(json.loads(entry["payload"])) == {"item_id", "user_id", "item_type"}
     [publish, request] = spans.get_finished_spans()
     assert publish.name == "publish thumbnail_jobs"
     assert publish.kind == SpanKind.PRODUCER
@@ -166,3 +165,101 @@ def test_disabled_tracing_sets_nothing_up():
 
     assert not tracing.is_enabled()
     assert tracing.current_trace_ids() == {}
+
+
+# ---- redaction ------------------------------------------------------------------
+
+_PRESIGNED = "https://stash.s3.amazonaws.com/uploads/u/1?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=deadbeef"
+
+
+def _export_through_redaction(record) -> list:
+    """Runs `record(tracer)` on a provider of its own (the global one is
+    shared by the other tests) exporting through `RedactingSpanExporter`."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(tracing.RedactingSpanExporter(exporter)))
+    record(provider.get_tracer("test"))
+    return list(exporter.get_finished_spans())
+
+
+def test_exported_spans_lose_secrets_and_query_strings():
+    def record(tracer):
+        with tracer.start_as_current_span("GET /tags", kind=SpanKind.SERVER) as span:
+            span.set_attribute("http.target", "/tags?query=holiday+in+kyiv")
+            span.set_attribute("http.url", "https://api.example.com/tags?query=holiday+in+kyiv")
+            span.set_attribute("http.request.header.authorization", ("Bearer abc123",))
+            span.set_attribute("item_id", str(ITEM_ID))
+            span.record_exception(RuntimeError(f"PUT {_PRESIGNED} failed; password=hunter2"))
+            span.set_status(StatusCode.ERROR, f"Attempt failed: {_PRESIGNED}")
+
+    [span] = _export_through_redaction(record)
+
+    exported = json.dumps(
+        {
+            "attributes": dict(span.attributes),
+            "events": [dict(event.attributes) for event in span.events],
+            "status": span.status.description,
+        }
+    )
+    for secret in ("holiday", "Bearer abc123", "AKIAEXAMPLE", "deadbeef", "hunter2"):
+        assert secret not in exported
+    assert span.attributes["http.target"] == "/tags?[REDACTED]"
+    assert span.attributes["item_id"] == str(ITEM_ID)
+    [event] = span.events
+    assert event.name == "exception"
+    assert event.attributes["exception.type"] == "RuntimeError"
+    assert "https://stash.s3.amazonaws.com/uploads/u/1?[REDACTED]" in event.attributes["exception.stacktrace"]
+    assert (span.name, span.kind, span.status.status_code) == ("GET /tags", SpanKind.SERVER, StatusCode.ERROR)
+
+
+def test_redaction_keeps_the_span_in_its_trace():
+    def record(tracer):
+        with tracer.start_as_current_span("parent"):
+            with tracer.start_as_current_span("child"):
+                pass
+
+    child, parent = _export_through_redaction(record)
+
+    assert child.context.trace_id == parent.context.trace_id
+    assert child.parent.span_id == parent.context.span_id
+    assert child.start_time and child.end_time >= child.start_time
+
+
+def test_configure_tracing_exports_through_redaction(monkeypatch):
+    from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
+
+    wrapped = []
+
+    class Recording(tracing.RedactingSpanExporter):
+        def __init__(self, exporter):
+            super().__init__(exporter)
+            wrapped.append(exporter)
+
+    monkeypatch.setattr(tracing, "RedactingSpanExporter", Recording)
+    # Neither the process-global provider nor botocore are touched.
+    monkeypatch.setattr(trace, "set_tracer_provider", lambda provider: None)
+    monkeypatch.setattr(BotocoreInstrumentor, "instrument", lambda self: None)
+    monkeypatch.setattr(tracing, "_enabled", False)
+
+    tracing.configure_tracing(service="api", environment="prod", enabled=True, otlp_endpoint="http://collector:4318")
+
+    [exporter] = wrapped
+    assert type(exporter).__name__ == "OTLPSpanExporter"
+
+
+def test_logged_call_span_carries_metadata_not_the_prompt(spans):
+    prompt = "Summarise my private diary entry about the hospital visit"
+
+    with log.logged_call(
+        log.get_logger("stash.test"), "openai.responses", purpose="document_description", model="m", input_chars=len(prompt)
+    ) as call:
+        call.update(response_status="completed", output_chars=42)
+
+    [span] = spans.get_finished_spans()
+    assert dict(span.attributes) == {
+        "purpose": "document_description",
+        "model": "m",
+        "input_chars": len(prompt),
+        "response_status": "completed",
+        "output_chars": 42,
+    }

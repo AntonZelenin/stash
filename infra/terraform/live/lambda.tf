@@ -11,10 +11,12 @@
 
 locals {
   # Keys are the service names the code uses (SERVICE_NAME defaults, the
-  # compose services); `queue` is the queue a worker consumes.
+  # compose services); `queue` is the queue a worker consumes; `db_role`
+  # the database login it connects as (database.tf; null: the master user).
   lambda_defaults = {
     api = {
       handler     = "app.aws_lambda.handler"
+      db_role     = "api"
       queue       = null
       memory_size = 512
       timeout     = 30
@@ -22,6 +24,7 @@ locals {
     }
     thumbnailer = {
       handler = "thumbnailer.aws_lambda.handler"
+      db_role = "worker"
       queue   = "thumbnail_jobs"
       # Pillow decodes the original (up to 100 MB, read from /tmp) at up
       # to THUMBNAIL_MAX_PIXELS (50 MP, 200 MB of pixels) before resizing.
@@ -30,12 +33,14 @@ locals {
     }
     image_analyzer = {
       handler     = "image_analyzer.aws_lambda.handler"
+      db_role     = "worker"
       queue       = "content_analysis_jobs"
       memory_size = 256
       openai      = true
     }
     document_analyzer = {
       handler = "document_analyzer.aws_lambda.handler"
+      db_role = "worker"
       queue   = "document_analysis_jobs"
       # Parsing a pathological PDF can take ~300 MB of Python allocations
       # within its processing limits (DOCUMENT_MAX_*), on top of the
@@ -51,6 +56,7 @@ locals {
     }
     embedding_worker = {
       handler     = "embedding_worker.aws_lambda.handler"
+      db_role     = "worker"
       queue       = "embedding_jobs"
       memory_size = 256
       openai      = true
@@ -58,9 +64,11 @@ locals {
     # `alembic upgrade head`, invoked only by the deployment, synchronously
     # (app.aws_lambda_migrations): nothing triggers it. In the VPC because
     # RDS is private. The deployment workflow runs one at a time, so two
-    # migrations never overlap.
+    # migrations never overlap. The only function with the master user's
+    # credentials; it provisions the others' roles (database.tf).
     migrations = {
       handler     = "app.aws_lambda_migrations.handler"
+      db_role     = null
       queue       = null
       memory_size = 512
       timeout     = 300
@@ -94,8 +102,7 @@ locals {
   }
 
   # Settings every service reads (app.config.Settings,
-  # stash_worker_core.config.WorkerSettings). S3 endpoint and keys are
-  # empty: AWS S3 itself, with the execution role's credentials.
+  # stash_worker_core.config.WorkerSettings).
   lambda_common_environment = merge(
     {
       PLATFORM                   = "aws"
@@ -103,20 +110,51 @@ locals {
       LOG_LEVEL                  = var.log_level
       METRICS_NAMESPACE          = var.metrics_namespace
       TRACING_ENABLED            = tostring(var.tracing_otlp_endpoint != null)
-      DATABASE_SECRET_ARN        = aws_secretsmanager_secret.db.arn
-      SQS_QUEUE_URLS             = jsonencode(local.sqs_queue_urls)
-      S3_BUCKET                  = aws_s3_bucket.objects.bucket
-      S3_ENDPOINT_URL            = ""
-      S3_ACCESS_KEY              = ""
-      S3_SECRET_KEY              = ""
       AWS_USE_DUALSTACK_ENDPOINT = "true"
     },
     var.tracing_otlp_endpoint == null ? {} : { TRACING_OTLP_ENDPOINT = var.tracing_otlp_endpoint },
   )
 
+  # The database secret each function connects with: its own role's, or
+  # the master user's for migrations.
+  lambda_database_secret_arn = {
+    for name, l in local.lambdas : name => (
+      l.db_role == null ? aws_secretsmanager_secret.db.arn : aws_secretsmanager_secret.db_app[l.db_role].arn
+    )
+  }
+
+  # The queues a function consumes or publishes to (iam.tf): only their
+  # URLs are in its SQS_QUEUE_URLS.
+  lambda_queues = {
+    for name, l in local.lambdas : name => distinct(concat(l.queue == null ? [] : [l.queue], local.lambda_publishes[name]))
+  }
+
+  # Whether a function touches the object bucket at all (iam.tf).
+  lambda_uses_s3 = {
+    for name, a in local.lambda_s3_access : name => length(concat(a.get, a.put, a.delete)) > 0
+  }
+
+  # Each function gets only the settings (and secret ARNs) it uses.
   lambda_environment = {
     for name, l in local.lambdas : name => merge(
       local.lambda_common_environment,
+      { DATABASE_SECRET_ARN = local.lambda_database_secret_arn[name] },
+      # The runtime roles migrations provision (app.aws_lambda_migrations).
+      name == "migrations" ? {
+        DATABASE_API_SECRET_ARN    = aws_secretsmanager_secret.db_app["api"].arn
+        DATABASE_WORKER_SECRET_ARN = aws_secretsmanager_secret.db_app["worker"].arn
+      } : {},
+      length(local.lambda_queues[name]) == 0 ? {} : {
+        SQS_QUEUE_URLS = jsonencode({ for q in local.lambda_queues[name] : q => local.sqs_queue_urls[q] })
+      },
+      # Endpoint and keys empty: AWS S3 itself, with the execution role's
+      # credentials.
+      local.lambda_uses_s3[name] ? {
+        S3_BUCKET       = aws_s3_bucket.objects.bucket
+        S3_ENDPOINT_URL = ""
+        S3_ACCESS_KEY   = ""
+        S3_SECRET_KEY   = ""
+      } : {},
       l.openai ? { OPENAI_API_KEY_SECRET_ARN = aws_secretsmanager_secret.openai_api_key.arn } : {},
       name == "api" ? {
         S3_PUBLIC_ENDPOINT_URL = ""
@@ -178,8 +216,14 @@ resource "aws_lambda_function" "main" {
     log_group  = aws_cloudwatch_log_group.lambda[each.key].name
   }
 
+  # The secret values too, not only the secrets the environment names:
+  # the deployment's first, targeted apply (the migration function and what
+  # it depends on) must create them, since migrations provision the roles
+  # from them before any other function is updated to use them.
   depends_on = [
     aws_iam_role_policy_attachment.lambda_eni,
     aws_iam_role_policy.lambda,
+    aws_secretsmanager_secret_version.db,
+    aws_secretsmanager_secret_version.db_app,
   ]
 }

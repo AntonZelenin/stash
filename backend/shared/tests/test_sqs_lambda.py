@@ -9,7 +9,7 @@ import pytest
 from botocore.stub import Stubber
 
 from stash_shared.queue import codec
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob, RetryMode
+from stash_shared.queue.base import Delivery, ItemType, ProcessingJob, RetryMode
 from stash_shared.queue.sqs_lambda import LambdaSqsQueue, delivery_from_record, process_sqs_batch
 from stash_shared.queue.sqs_queue import SqsJobQueue
 
@@ -19,7 +19,6 @@ JOB = ProcessingJob(
     item_id=UUID("00000000-0000-0000-0000-000000000001"),
     user_id=UUID("00000000-0000-0000-0000-000000000002"),
     item_type=ItemType.image,
-    image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
 )
 
 

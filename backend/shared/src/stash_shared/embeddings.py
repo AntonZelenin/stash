@@ -56,6 +56,8 @@ class OpenAIEmbedder(Embedder):
             input_count=len(inputs),
             input_chars=sum(len(text) for text in inputs),
         ):
+            # No `store` here, unlike the Responses API: the Embeddings API
+            # has no stored-response feature to opt out of.
             response = await self._client.embeddings.create(
                 model=self._model,
                 input=inputs,

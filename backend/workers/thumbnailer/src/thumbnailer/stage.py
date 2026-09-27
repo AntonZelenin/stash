@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared.queue.base import THUMBNAIL_JOBS, JobQueue
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, THUMBNAIL_JOBS, JobQueue
 from stash_worker_core.runtime import build_object_store, build_outbox, build_stage_worker
 from stash_worker_core.worker import Worker
 
@@ -20,7 +20,7 @@ def build_worker(settings: Settings, engine: AsyncEngine, *, queue: JobQueue | N
         handler=ThumbnailHandler(
             storage=build_object_store(settings),
             engine=engine,
-            outbox=build_outbox(settings, engine),
+            outbox=build_outbox(settings, engine, publishes=[CONTENT_ANALYSIS_JOBS]),
             max_size=settings.thumbnail_max_size,
             quality=settings.thumbnail_quality,
             limits=ImageLimits(

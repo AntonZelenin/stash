@@ -85,3 +85,16 @@ async def test_errors_from_openai_propagate():
 
     with pytest.raises(ConnectionError):
         await normalizer.normalize("cat")
+
+
+async def test_openai_keeps_no_stored_copy_and_nothing_logs_the_query(caplog):
+    caplog.set_level("DEBUG")
+    normalizer, responses = normalizer_answering("hospital appointment letter")
+
+    await normalizer.normalize("лист про прийом у лікарні")
+
+    [call] = responses.calls
+    assert call["store"] is False
+    logged = " ".join(f"{record.getMessage()} {getattr(record, 'stash_fields', {})}" for record in caplog.records)
+    assert "лікарні" not in logged
+    assert "hospital" not in logged

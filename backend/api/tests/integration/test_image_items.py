@@ -3,6 +3,7 @@ from uuid import UUID
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared import storage_keys
+from stash_shared.queue import codec
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from app.items.models import Description, ImageMetadata, Item, ItemType, PendingUpload, TextContent
@@ -161,11 +162,9 @@ async def test_create_image_item_publishes_processing_job(
     assert str(job.item_id) == response.json()["id"]
     assert str(job.user_id) == user_id
     assert job.item_type == QueueItemType.image
-    # The worker fetches the bytes from storage using this, so it must point
-    # at exactly what was uploaded.
-    assert job.image is not None
-    assert job.image.storage_key in storage.uploads
-    assert job.image.content_type == "image/png"
+    # Identifiers only: the worker reads the key from the item's row, and
+    # never takes one from a queue message.
+    assert "storage_key" not in codec.encode_job(job)
 
 
 async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_later_request(
@@ -190,7 +189,6 @@ async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_lat
 
     [job] = queue.published
     assert job.item_id == item_id
-    assert job.image.storage_key == canonical_image_key(storage, user_id, item_id, _PNG_BYTES, ".png")
     assert str(job.user_id) == user_id
 
 

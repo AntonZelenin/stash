@@ -70,6 +70,69 @@ resource "aws_sqs_queue" "main" {
   })
 }
 
+# Who may use each queue, whatever IAM policies elsewhere in the account
+# grant: only its producers (iam.tf, local.lambda_publishes) may send to
+# it, and only its worker may receive, delete or hide its messages, plus
+# var.sqs_operator_principal_arns. A worker's jobs name items it then
+# checks (stash_worker_core.worker), but nobody else gets to send them in
+# the first place. Deny-only: same-account principals still need IAM
+# permissions, and no other account is allowed anything.
+locals {
+  # Queue -> the functions that publish to it.
+  queue_producers = {
+    for queue in keys(local.queues) : queue => sort([
+      for name, published in local.lambda_publishes : name if contains(published, queue)
+    ])
+  }
+}
+
+data "aws_iam_policy_document" "queue" {
+  for_each = local.queues
+
+  statement {
+    sid       = "OnlyProducersSend"
+    effect    = "Deny"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.main[each.key].arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = concat([for name in local.queue_producers[each.key] : aws_iam_role.lambda[name].arn], var.sqs_operator_principal_arns)
+    }
+  }
+
+  statement {
+    sid       = "OnlyItsWorkerConsumes"
+    effect    = "Deny"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility"]
+    resources = [aws_sqs_queue.main[each.key].arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = concat([aws_iam_role.lambda[each.value.worker].arn], var.sqs_operator_principal_arns)
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "main" {
+  for_each = local.queues
+
+  queue_url = aws_sqs_queue.main[each.key].id
+  policy    = data.aws_iam_policy_document.queue[each.key].json
+}
+
 # Only the matching source queue may use each DLQ; this also lets the
 # console's "Start DLQ redrive" send messages back to it.
 resource "aws_sqs_queue_redrive_allow_policy" "dlq" {

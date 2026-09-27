@@ -3,6 +3,6 @@ from stash_shared import tracing
 
 
 def create_engine(database_url: str) -> AsyncEngine:
-    engine = create_async_engine(database_url)
+    engine = create_async_engine(database_url, hide_parameters=True)
     tracing.instrument_sqlalchemy(engine)
     return engine

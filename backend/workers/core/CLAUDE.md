@@ -6,7 +6,8 @@ only what more than one worker needs. A change here rebuilds and redeploys
 every worker, so code only one worker uses belongs in that worker.
 
 Modules:
-- `worker.Worker` — stage-agnostic delivery handling: status checks,
+- `worker.Worker` — stage-agnostic delivery handling: checking the job
+  against its item (owner and type, from Postgres), status checks,
   retry/backoff, dead-lettering, ack ordering. See its docstring for the
   guarantees. Takes a `JobHandler` with the worker's actual work.
   `process_message(delivery)` is the complete processing of one delivery
@@ -30,9 +31,10 @@ Modules:
 - `config.WorkerSettings` — the settings every worker has (DB, queue, S3,
   retries, observability); each worker subclasses it with its own.
 - `runtime` — wiring every worker's `stage`/entrypoints use
-  (`build_stage_worker`, `build_outbox`, `configure_observability`,
-  `run_locally`, `require_openai_key`). Everything takes the worker's
-  settings explicitly.
+  (`build_stage_worker`, `build_outbox` (limited to the queues the worker
+  publishes to), `configure_observability`, `run_locally`,
+  `require_openai_key`). Everything takes the worker's settings
+  explicitly.
 - `aws_lambda.SqsWorkerFunction` — the Lambda runtime each worker's
   `aws_lambda.handler` is an instance of.
 - `errors` — `PermanentProcessingError` (never retried) and its kinds `MalformedInputError` and `ProcessingLimitExceeded`; `error_category` classifies any failure (`ErrorCategory`) for logs and spans.

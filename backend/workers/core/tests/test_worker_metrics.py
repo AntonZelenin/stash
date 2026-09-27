@@ -7,12 +7,13 @@ from collections import Counter
 
 import pytest
 from stash_shared import metrics
-from stash_shared.queue.base import Delivery, ImageRef, ItemType, ProcessingJob, QueueStats
+from stash_shared.queue.base import Delivery, ItemType, ProcessingJob, QueueStats
 
 from conftest import DescribingHandler
 from stash_worker_core.errors import PermanentProcessingError
 from stash_worker_core.storage import S3ObjectStore
 from stash_worker_core.testing import (
+    OWNER_ID,
     FakeDeadLetterQueue,
     FakeJobQueue,
     FakeObjectStore,
@@ -72,9 +73,8 @@ def _worker(engine, describer, queue: FakeJobQueue | None = None) -> Worker:
 def _delivery(item_id: uuid.UUID, attempt: int = 1) -> Delivery:
     job = ProcessingJob(
         item_id=item_id,
-        user_id=uuid.uuid4(),
+        user_id=OWNER_ID,
         item_type=ItemType.image,
-        image=ImageRef(storage_key="images/cat.png", content_type="image/png"),
     )
     return Delivery(message_id="7-0", receipt="7-0", delivery_count=attempt, raw_payload="{}", job=job)
 

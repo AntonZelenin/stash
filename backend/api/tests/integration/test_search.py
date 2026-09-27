@@ -268,9 +268,10 @@ async def test_the_cutoff_applies_to_each_items_best_chunk_distance(
 
 
 async def test_search_logs_semantic_diagnostics_and_how_each_result_matched(
-    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches, caplog
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches, caplog, monkeypatch
 ):
     caplog.set_level(logging.INFO)
+    monkeypatch.setattr(get_settings(), "search_log_chunk_text", True)
     _, token = await register_and_login(client)
     by_name_and_meaning = await _file(client, storage, token, "city.pdf")
     by_description = await _file(client, storage, token, "b.pdf")
@@ -298,6 +299,32 @@ async def test_search_logs_semantic_diagnostics_and_how_each_result_matched(
         if record.getMessage() == "Search result"
     }
     assert results == {by_name_and_meaning: ["filename", "semantic"], by_description: ["description"]}
+
+
+async def test_search_diagnostics_leave_out_chunk_text_and_the_query_by_default(
+    client: AsyncClient, storage: FakeObjectStorage, stubbed_searches: StubbedSearches, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    _, token = await register_and_login(client)
+    item = await _file(client, storage, token, "a.pdf")
+    stubbed_searches.semantic.append(item)
+    stubbed_searches.semantic_distances[item] = 0.5
+    stubbed_searches.semantic_chunks[item] = "my private diary entry"
+
+    await _search(client, token, "secret query words")
+
+    [candidate] = [record for record in caplog.records if record.getMessage() == "Semantic search candidate"]
+    assert "best_chunk" not in candidate.stash_fields
+    assert candidate.stash_fields["cosine_distance"] == 0.5
+    # The application's own records (the tests' SQLite driver logs its
+    # statements' values at DEBUG; asyncpg, used for real, logs none).
+    logged = " ".join(
+        f"{record.getMessage()} {record.stash_fields}"
+        for record in caplog.records
+        if record.name.startswith(("app.", "stash_shared."))
+    )
+    assert "my private diary entry" not in logged
+    assert "secret query words" not in logged
 
 
 async def test_filename_search_applies_the_filters(

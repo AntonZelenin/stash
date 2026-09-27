@@ -6,45 +6,25 @@ import json
 from uuid import UUID
 
 from stash_shared.log import get_logger
-from stash_shared.queue.base import FileRef, ImageRef, ItemType, ProcessingJob
+from stash_shared.queue.base import ItemType, ProcessingJob
 
 logger = get_logger(__name__)
 
 
 def encode_job(job: ProcessingJob) -> str:
-    payload = {
-        "item_id": str(job.item_id),
-        "user_id": str(job.user_id),
-        "item_type": job.item_type.value,
-    }
-    if job.image is not None:
-        payload["image"] = {"storage_key": job.image.storage_key, "content_type": job.image.content_type}
-    if job.file is not None:
-        payload["file"] = {
-            "storage_key": job.file.storage_key,
-            "content_type": job.file.content_type,
-            "filename": job.file.filename,
-        }
-    return json.dumps(payload)
+    return json.dumps({"item_id": str(job.item_id), "user_id": str(job.user_id), "item_type": job.item_type.value})
 
 
 def decode_job(raw: str, *, message_id: str) -> ProcessingJob | None:
     """None (logged) if `raw` isn't a valid job: the consumer dead-letters
-    it rather than retrying. `message_id` only labels the log."""
+    it rather than retrying. `message_id` only labels the log. Any other
+    field (e.g. the `image`/`file` older producers sent) is ignored."""
     try:
         data = json.loads(raw)
-        image = data.get("image")
-        file = data.get("file")
         return ProcessingJob(
             item_id=UUID(data["item_id"]),
             user_id=UUID(data["user_id"]),
             item_type=ItemType(data["item_type"]),
-            image=ImageRef(storage_key=image["storage_key"], content_type=image["content_type"]) if image else None,
-            file=(
-                FileRef(storage_key=file["storage_key"], content_type=file["content_type"], filename=file["filename"])
-                if file
-                else None
-            ),
         )
     except (ValueError, KeyError, TypeError) as exc:
         logger.warning(

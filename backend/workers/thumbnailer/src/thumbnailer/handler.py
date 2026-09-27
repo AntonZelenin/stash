@@ -11,8 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from stash_shared import storage_keys, tracing
 from stash_shared.log import get_logger
 from stash_shared.outbox import OutboxPublisher
-from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, ProcessingJob
-from stash_worker_core.errors import MalformedInputError, PermanentProcessingError, ProcessingLimitExceeded
+from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ProcessingJob
+from stash_worker_core.errors import (
+    MalformedInputError,
+    PermanentProcessingError,
+    ProcessingLimitExceeded,
+    content_safe_cause,
+)
 from stash_worker_core.storage import ObjectStore, download_to_file
 
 from thumbnailer.items import get_original, record_thumbnail
@@ -123,7 +128,7 @@ def make_thumbnail(
     except Exception as exc:
         # UnidentifiedImageError, OSError, ValueError, SyntaxError... from a
         # decoder: the file's fault, whatever the type.
-        raise MalformedInputError(f"Could not decode image: {exc!r}") from exc
+        raise MalformedInputError(f"Could not decode image: {type(exc).__name__}") from content_safe_cause(exc)
 
 
 class ThumbnailHandler:
@@ -169,9 +174,9 @@ class ThumbnailHandler:
         self._max_source_bytes = max_source_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
-        # From the database, never the job's `image` (informational only):
-        # the item's canonical original, read only if it's still exactly
-        # the content the API validated.
+        # From the database, never from the job (which only names the
+        # item, checked by the `Worker`): the item's canonical original, read
+        # only if it's still exactly the content the API validated.
         stored = await get_original(self._engine, job.item_id, user_id=job.user_id)
         if stored is None:
             raise PermanentProcessingError("Item has no stored image of the job's user")
@@ -194,12 +199,8 @@ class ThumbnailHandler:
 
         key = storage_keys.thumbnail_key(job.user_id, job.item_id)
         await self._storage.upload(key, thumbnail, content_type=THUMBNAIL_CONTENT_TYPE)
-        analysis_job = ProcessingJob(
-            item_id=job.item_id,
-            user_id=job.user_id,
-            item_type=job.item_type,
-            image=ImageRef(storage_key=key, content_type=THUMBNAIL_CONTENT_TYPE),
-        )
+        # The analyzer reads the thumbnail's key from the row recorded below.
+        analysis_job = ProcessingJob(item_id=job.item_id, user_id=job.user_id, item_type=job.item_type)
         if not await record_thumbnail(
             self._engine, job.item_id, user_id=job.user_id, thumbnail_key=key, analysis_job=analysis_job
         ):

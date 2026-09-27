@@ -21,12 +21,16 @@ Nothing here knows which queue backend is in use: events name a queue
 caller resolves for that name (Valkey locally, SQS on AWS).
 
 There is no background flusher: an unpublished event waits for the next
-flush in any process that has a job to publish. The table itself is owned
+flush in any process that has a job to publish and may publish to its
+queue. A publisher can be limited to the queues its process sends to
+(`OutboxPublisher(publishes=...)`): the workers are, so each one's
+credentials only need to reach the queues it feeds, while the API
+publishes every queue's events. The table itself is owned
 by the API's Alembic migrations; this module only uses plain SQL on it, so
 the workers don't depend on the API's models.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -84,12 +88,25 @@ class OutboxPublisher:
     """Publishes unpublished outbox events (see the module docstring). Safe
     to run in any number of processes at once: on Postgres each batch is
     claimed with `FOR UPDATE SKIP LOCKED`, so concurrent flushes publish
-    disjoint events instead of the same ones twice."""
+    disjoint events instead of the same ones twice.
 
-    def __init__(self, engine: AsyncEngine, queues: QueueResolver, *, batch_size: int = _DEFAULT_BATCH_SIZE):
+    `publishes`: the only queues whose events this publisher claims (None:
+    all). Events for other queues are left alone, for a process that
+    publishes them, rather than attempted and failed with an access error.
+    """
+
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        queues: QueueResolver,
+        *,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+        publishes: Collection[str] | None = None,
+    ):
         self._engine = engine
         self._queues = queues
         self._batch_size = batch_size
+        self._publishes = sorted(publishes) if publishes is not None else None
 
     async def flush(self) -> int:
         """Publishes every unpublished event, oldest first, and returns how
@@ -135,18 +152,22 @@ class OutboxPublisher:
         statement = (
             f"SELECT id, queue, payload, trace_context, created_at FROM {OUTBOX_TABLE} WHERE published_at IS NULL"
         )
+        expanding = []
+        if self._publishes is not None:
+            statement += " AND queue IN :publishes"
+            expanding.append(bindparam("publishes", expanding=True))
         if failed_queues:
             statement += " AND queue NOT IN :failed_queues"
+            expanding.append(bindparam("failed_queues", expanding=True))
         statement += " ORDER BY created_at LIMIT :limit"
         if conn.dialect.name == "postgresql":
             statement += " FOR UPDATE SKIP LOCKED"
-        compiled = text(statement)
-        if failed_queues:
-            compiled = compiled.bindparams(bindparam("failed_queues", expanding=True))
-        return compiled
+        return text(statement).bindparams(*expanding)
 
     def _select_params(self, failed_queues: set[str]) -> dict:
         params: dict = {"limit": self._batch_size}
+        if self._publishes is not None:
+            params["publishes"] = self._publishes
         if failed_queues:
             params["failed_queues"] = sorted(failed_queues)
         return params

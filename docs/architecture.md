@@ -95,6 +95,15 @@ stage a separate worker with its own package (see
    to the embedding stage (see "Search"). Tag generation isn't implemented
    yet.
 
+What's sent to OpenAI is the user's content (a thumbnail, a document's text
+and filename, search chunks, search queries), so every Responses API call
+(image and document descriptions, search query normalization) sets
+`store=False`: OpenAI keeps no stored response to retrieve later, and
+nothing here reads one back. The Embeddings API has no such option (it
+stores no responses). Both remain under OpenAI's own API data retention
+(abuse monitoring), which only an account-level agreement (e.g. zero data
+retention) changes, not a request parameter.
+
 The item is `processing` across both stages. Clients display the thumbnail
 (`thumbnail_url`), falling back to the original until it exists. Both
 stages share the same `Worker` (status handling, retries, dead-lettering,
@@ -179,6 +188,23 @@ synchronously after `terraform apply` and before the frontend, and fails
 if it fails (see [deployment.md](deployment.md#migrations)). The API
 Lambda never migrates.
 
+Database roles (AWS; `app.db_roles`). Only migrations connect as the
+schema owner (RDS's master user). The API connects as `stash_api` (rows of
+every application table, not `alembic_version`) and every worker as
+`stash_worker`: only the tables processing touches, and for updates only
+the columns it writes (`items.status`/`status_updated_at`,
+`item_images.thumbnail_key`, descriptions, search chunks, the outbox). The
+worker role can't read users, tokens, pending uploads, tags or rate-limit
+counters, or change an item's owner, type or storage keys. Neither owns
+anything or has any role attribute, so neither can alter the schema or
+roles. The migration Lambda creates both after every `alembic upgrade
+head` and replaces their privileges with what `app.db_roles` lists, so a
+worker SQL change that needs another table or column updates
+`WORKER_PRIVILEGES` in the same change. Each login has its own secret, and
+each function's role reads only its own (the master's only migrations).
+Row ownership (`items.user_id`) is still enforced by the application; there
+is no row-level security. Locally every service connects as the owner.
+
 ### Object Storage
 
 Stores uploaded images.
@@ -247,8 +273,9 @@ can never send a key: the upload and edit requests reject unknown fields.
 The user id in a key is for organizing the bucket (per-user cleanup,
 lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
 only source of truth. Workers read the object an item's row names, and
-only if the job's `user_id` owns the item; the thumbnail worker builds its
-thumbnail's key from that `user_id`.
+only for a job whose `user_id` and `item_type` are the item's (checked
+before anything else, see "Queue trust"); the thumbnail worker builds its
+thumbnail's key from that verified `user_id`.
 
 Playback: a video or audio file item is played in the clients' own item
 viewer with the browser's native `<video>`/`<audio>` player, straight from
@@ -377,10 +404,9 @@ one is deleted) until it expires. Nothing ever reads it: the upload is no
 longer pending, a replayed finalize returns the item as it is, and it
 expires with the lifecycle rule.
 
-Workers never use the key in a queue job (`ImageRef`/`FileRef` are
-informational, still sent for older workers): they read the item's
-`storage_key` and `content_etag` from Postgres, joined on the job's user,
-and read the original only with `If-Match` on that ETag. Anything else at
+Queue jobs carry no key (identifiers only, see "Queue trust"): workers
+read the item's `storage_key` and `content_etag` from Postgres, joined on
+the job's user, and read the original only with `If-Match` on that ETag. Anything else at
 the key fails the item permanently, unread. (A consistency check: the
 canonical object is never rewritten, so a different ETag there means
 something outside the application changed it.)
@@ -542,10 +568,13 @@ recorded thumbnail (content analysis), and an analyzer completing an item
 After the commit, `OutboxPublisher.flush` publishes every unpublished event,
 not only the ones just written, through the same `JobQueue` abstraction
 (Valkey or SQS), and sets each event's `published_at` once its queue has
-accepted it. A failed publish leaves the event for the next flush. There
+accepted it. The API publishes every queue's events; a worker only those
+of the queues it hands jobs on to (the thumbnailer `content_analysis_jobs`,
+the analyzers `embedding_jobs`), which are all its role may send to. A
+failed publish leaves the event for the next flush. There
 is no background flusher: after a crash or a queue outage, an event waits
-until the next API request or worker job that writes an event triggers a
-flush, in any process. Events keep the trace context they were created in,
+until the next API request that writes an event, or the next job of a
+worker that publishes its queue, triggers a flush. Events keep the trace context they were created in,
 so a job published by a later flush still joins the trace that caused it.
 
 Concurrent flushes (API replicas, workers) claim batches with
@@ -563,6 +592,19 @@ letters in `stash:<name>:dead-letter`):
 - `document_analysis_jobs`: API → document-analyzer worker.
 - `embedding_jobs`: API, content analyzer, document analyzer → embedding
   worker.
+
+Queue trust. A queue message is not a trust boundary. A job
+(`ProcessingJob`) is identifiers only: `item_id`, `user_id`, `item_type`,
+never a storage key, bucket, filename, content type or processing
+parameter (older jobs' `image`/`file` are ignored when decoded). Before
+anything else, the `Worker` loads the item and drops the job (acked, the
+item untouched: not started, failed or processed) unless the item exists
+and is that user's and of that type; a finished item's job is skipped. A
+forged or stale job can at most re-run an owner's own item's current
+stage. Everything the handler reads (keys, ETags, filenames, text) comes
+from the item's rows. On AWS, each queue's resource policy denies sending
+to anyone but the functions that publish to it (see the outbox above) and
+receiving to anyone but its worker.
 
 ## Logging
 
@@ -612,10 +654,35 @@ succeeded/failed` with `operation`, `model` and `duration_ms`; storage
 failures with `storage_key`.
 
 Never logged: passwords, tokens, emails, note text, captions, filenames,
-search queries (only their length), or document/image content. One
-temporary exception: search's diagnostics (`Semantic search candidate`)
-log each candidate's best-matching chunk text, while search is being tuned
-(see "Search").
+search queries (only their length), or document/image content — nor the
+prompts sent to OpenAI or its answers (only `input_chars`/`input_bytes`,
+`output_chars`, `model`, `response_status`). One temporary exception, off
+by default: search's diagnostics (`Semantic search candidate`) can log each
+candidate's best-matching chunk text while search is being tuned, with
+`SEARCH_LOG_CHUNK_TEXT=true`, which the API refuses to start with unless
+`ENVIRONMENT=local` (see "Search").
+
+Exceptions are logged with their message and stack trace, so what goes into
+an exception message is logged too. Hence: SQLAlchemy engines are created
+with `hide_parameters=True` (a failed statement's error names the statement,
+never its bound values); and an exception a parser or image decoder raised
+on an upload, whose message may quote the file, is chained through
+`stash_worker_core.errors.content_safe_cause`, which keeps its type and
+stack trace but not its message (the dead-letter reason is e.g. `Could not
+extract text: ValueError`).
+
+As a backstop, every record is scrubbed as it's written, whatever logged
+it — application code, a third-party library, an exception's stack trace —
+in all three formats (`stash_shared.redaction`): values of fields with a
+sensitive name (`authorization`, `cookie`, `password`, `*secret*`,
+`api_key`, `access_token`/`refresh_token`/`*_token`...) are replaced
+whole; in text, `Bearer`/`Basic` credentials, `name=value` pairs with such a
+name, OpenAI keys, passwords in connection URLs, SQLAlchemy's
+`[parameters: ...]`, `PASSWORD '...'` literals and every URL's query string
+(a pre-signed URL's signature and credentials) are replaced by
+`[REDACTED]`. It can't recognise user content in free text, so it doesn't
+replace the rules above. Libraries that log requests (`openai`, `httpx`,
+`botocore`...) are kept at WARNING whatever `LOG_LEVEL` is.
 
 Inside a trace span (see "Tracing"), every record — third-party ones
 included — also carries that span's `trace_id` and `span_id`, added by
@@ -677,7 +744,15 @@ trace can be found from a log line and the other way round.
 
 The same content rules as for logs apply to span attributes: no user
 content, only ids, sizes, types and outcomes. SQL spans carry the
-statement text with bind-parameter placeholders, never the values.
+statement text with bind-parameter placeholders, never the values. OpenAI
+call spans (`logged_call`) carry `purpose`, `model`, input/output sizes and
+`response_status`, never the prompt or the answer. Spans are scrubbed on
+export the same way log records are written (`RedactingSpanExporter`, around
+the OTLP exporter): attributes, recorded exceptions (message and stack
+trace) and status descriptions; and the HTTP server span's URL attributes
+(`http.url`, `http.target`, `url.query`) lose their query string, which may
+carry what the user typed (`GET /tags?query=...`), as the request log line
+does. Request and response headers are never captured.
 
 ## Metrics
 
@@ -789,7 +864,8 @@ Infrastructure (Terraform, `infra/terraform/live/`):
   function (see PostgreSQL), invoked only by the deployment
 - RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
-- SQS queues with DLQs
+- SQS queues with DLQs, each with a resource policy admitting only its
+  producers and its worker
 - The web frontend: a private S3 bucket served only through CloudFront
   (Origin Access Control, `*.cloudfront.net`, SPA fallback to
   `index.html`); its origin is always in the API's and the object bucket's
@@ -811,7 +887,10 @@ GitHub OIDC roles scoped to Stash's resources
 
 Secrets are plain settings locally (`DATABASE_URL`, `OPENAI_API_KEY`). On
 AWS the functions get Secrets Manager ARNs instead (`DATABASE_SECRET_ARN`,
-`OPENAI_API_KEY_SECRET_ARN`), which the settings classes resolve into those
+`OPENAI_API_KEY_SECRET_ARN`), each only the ones it uses: its own database
+login (see "Database roles"), the OpenAI key only for the API and the
+three workers that call OpenAI, the Turnstile key only for the API. The
+settings classes resolve them into those
 same fields when they're built (`stash_shared.secrets`): once per execution
 environment, at cold start, never per request or message. Application code
 only ever sees the settings. The exception is the API's OpenAI key, which
@@ -1012,8 +1091,9 @@ doesn't truncate them) and keep each item's best of those.
 
 Temporary diagnostics, while search is tuned: each search logs one
 `Semantic search candidate` line per item the semantic match considered
-(`item_id`, `cosine_distance`, `similarity`, `best_chunk` — its text,
-the one content the logs otherwise never carry — and `passed_threshold`),
+(`item_id`, `cosine_distance`, `similarity`, `passed_threshold`, and
+`best_chunk` — its text, the one content the logs otherwise never carry —
+only with `SEARCH_LOG_CHUNK_TEXT=true`, allowed only with `ENVIRONMENT=local`),
 and one `Search result` line per returned item with `match_sources`: every
 tier that found it (`filename`, `user_text`, `description`, `semantic`).
 
