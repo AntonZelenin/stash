@@ -12,6 +12,7 @@ from stash_worker_core.errors import PermanentProcessingError, ProcessingLimitEx
 logger = get_logger(__name__)
 
 _MISSING_OBJECT_CODES = {"NoSuchKey", "404", "NotFound"}
+_CHANGED_OBJECT_CODES = {"PreconditionFailed", "412"}
 
 
 class ObjectStore(ABC):
@@ -22,27 +23,38 @@ class ObjectStore(ABC):
     up to 500 MB), so there's no unbounded read: `download` takes the most
     a caller will accept, and workers that need only part of a file read
     just that part (`size`, `read_range_blocking`; see
-    `stash_worker_core.ranged`)."""
+    `stash_worker_core.ranged`).
+
+    Every read takes the `etag` the item recorded for its original, if it
+    has one: the object is then read only if it's still in the state the
+    API recorded (If-Match; the ETag is a change-detection token, not a
+    content hash), and anything else is a `PermanentProcessingError`,
+    never processed. None (thumbnails, and
+    legacy originals that predate recorded ETags) reads whatever is
+    there."""
 
     @abstractmethod
-    async def download(self, key: str, *, max_bytes: int) -> bytes:
+    async def download(self, key: str, *, max_bytes: int, etag: str | None = None) -> bytes:
         """The whole object. Raises `PermanentProcessingError` if `key`
-        doesn't exist, and `ProcessingLimitExceeded` if it's larger than
-        `max_bytes` — known from its size before any of it is read."""
+        doesn't exist (or isn't `etag`), and `ProcessingLimitExceeded` if
+        it's larger than `max_bytes` — known from its size before any of it
+        is read."""
         ...
 
     @abstractmethod
-    async def size(self, key: str) -> int:
+    async def size(self, key: str, *, etag: str | None = None) -> int:
         """The object's size in bytes, without reading it. Raises
-        `PermanentProcessingError` if `key` doesn't exist."""
+        `PermanentProcessingError` if `key` doesn't exist (or isn't
+        `etag`)."""
         ...
 
     @abstractmethod
-    def read_range_blocking(self, key: str, start: int, end: int) -> bytes:
+    def read_range_blocking(self, key: str, start: int, end: int, *, etag: str | None = None) -> bytes:
         """Bytes `start` to `end` (exclusive) of the object, and only those
         (a Range request). Blocking: for code already running off the event
         loop, like the parsers the analyzers run in a thread. The range
-        must be within the object."""
+        must be within the object. Raises `PermanentProcessingError` if it
+        isn't `etag`."""
         ...
 
     @abstractmethod
@@ -81,14 +93,14 @@ class S3ObjectStore(ObjectStore):
 
     # boto3 is synchronous; every call runs off the event loop thread.
 
-    async def download(self, key: str, *, max_bytes: int) -> bytes:
-        return await self._call("download", key, self._download, key, max_bytes)
+    async def download(self, key: str, *, max_bytes: int, etag: str | None = None) -> bytes:
+        return await self._call("download", key, self._download, key, max_bytes, etag)
 
-    async def size(self, key: str) -> int:
-        return await self._call("head", key, self._size, key)
+    async def size(self, key: str, *, etag: str | None = None) -> int:
+        return await self._call("head", key, self._size, key, etag)
 
-    def read_range_blocking(self, key: str, start: int, end: int) -> bytes:
-        return self._call_blocking("read_range", key, self._read_range, key, start, end)
+    def read_range_blocking(self, key: str, start: int, end: int, *, etag: str | None = None) -> bytes:
+        return self._call_blocking("read_range", key, self._read_range, key, start, end, etag)
 
     async def upload(self, key: str, data: bytes, *, content_type: str) -> None:
         await self._call(
@@ -126,8 +138,8 @@ class S3ObjectStore(ObjectStore):
             )
             raise
 
-    def _download(self, key: str, max_bytes: int) -> bytes:
-        response = self._missing_is_permanent(key, self._client.get_object, Bucket=self._bucket, Key=key)
+    def _download(self, key: str, max_bytes: int, etag: str | None) -> bytes:
+        response = self._read(key, etag, self._client.get_object, Bucket=self._bucket, Key=key)
         with response["Body"] as body:
             if response["ContentLength"] > max_bytes:
                 raise ProcessingLimitExceeded(
@@ -135,26 +147,33 @@ class S3ObjectStore(ObjectStore):
                 )
             return body.read()
 
-    def _size(self, key: str) -> int:
-        response = self._missing_is_permanent(key, self._client.head_object, Bucket=self._bucket, Key=key)
+    def _size(self, key: str, etag: str | None) -> int:
+        response = self._read(key, etag, self._client.head_object, Bucket=self._bucket, Key=key)
         return response["ContentLength"]
 
-    def _read_range(self, key: str, start: int, end: int) -> bytes:
+    def _read_range(self, key: str, start: int, end: int, etag: str | None) -> bytes:
         if not 0 <= start < end:
             raise ValueError(f"Invalid range {start}-{end}")
-        response = self._missing_is_permanent(
-            key, self._client.get_object, Bucket=self._bucket, Key=key, Range=f"bytes={start}-{end - 1}"
+        response = self._read(
+            key, etag, self._client.get_object, Bucket=self._bucket, Key=key, Range=f"bytes={start}-{end - 1}"
         )
         with response["Body"] as body:
             return body.read()
 
     @staticmethod
-    def _missing_is_permanent(key: str, function, **kwargs):
+    def _read(key: str, etag: str | None, function, **kwargs):
+        """Runs a read, pinned to `etag` if given. A missing object, or one
+        that isn't that content, is permanent: retrying can't change it."""
+        if etag is not None:
+            kwargs["IfMatch"] = etag
         try:
             return function(**kwargs)
         except ClientError as exc:
-            if _error_code(exc) in _MISSING_OBJECT_CODES:
+            code = _error_code(exc)
+            if code in _MISSING_OBJECT_CODES:
                 raise PermanentProcessingError(f"Object {key!r} not found in storage") from exc
+            if code in _CHANGED_OBJECT_CODES:
+                raise PermanentProcessingError(f"Object {key!r} is not the validated content") from exc
             raise
 
 

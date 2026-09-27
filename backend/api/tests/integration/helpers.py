@@ -1,4 +1,37 @@
+import re
+from typing import TYPE_CHECKING
+from uuid import UUID
+
 from httpx import AsyncClient, Response
+
+if TYPE_CHECKING:
+    from conftest import FakeObjectStorage
+
+
+_OBJECT_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _canonical_key(storage: "FakeObjectStorage", prefix: str, data: bytes, extension: str) -> str:
+    """The one object under `prefix` (an item's canonical area), checked to
+    be a fresh random object id + `extension` that holds exactly `data`."""
+    [key] = [key for key in storage.uploads if key.startswith(prefix)]
+    object_id = key.removeprefix(prefix).removesuffix(extension)
+    assert key.endswith(extension) and _OBJECT_ID.fullmatch(object_id), key
+    assert storage.data(key) == data
+    return key
+
+
+def canonical_image_key(
+    storage: "FakeObjectStorage", user_id: str | UUID, item_id: str | UUID, data: bytes, extension: str
+) -> str:
+    """Where finalize stored an image item's `data` for good."""
+    return _canonical_key(storage, f"users/{user_id}/images/{item_id}/", data, extension)
+
+
+def canonical_file_key(
+    storage: "FakeObjectStorage", user_id: str | UUID, item_id: str | UUID, data: bytes, extension: str
+) -> str:
+    return _canonical_key(storage, f"users/{user_id}/files/{item_id}/", data, extension)
 
 
 async def register_and_login(

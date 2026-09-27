@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import text
@@ -8,6 +9,31 @@ from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ProcessingJob
 # The thumbnailer's own SQL; the item status writes every worker shares are
 # in `stash_worker_core.items`. Same rules as there: plain SQL on the shared
 # schema (no API ORM), every write guarded against moving an item backwards.
+
+
+@dataclass(frozen=True)
+class StoredOriginal:
+    storage_key: str
+    # None for a legacy item (see `stash_worker_core.storage.ObjectStore`).
+    etag: str | None
+
+
+async def get_original(engine: AsyncEngine, item_id: UUID, *, user_id: UUID) -> StoredOriginal | None:
+    """Where the image item's validated original is, as the database
+    records it, never as a job says: None if the item is gone, or isn't
+    `user_id`'s (the user whose prefix its thumbnail goes under)."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text(
+                    "SELECT item_images.storage_key, item_images.content_etag FROM item_images "
+                    "JOIN items ON items.id = item_images.item_id "
+                    "WHERE item_images.item_id = :item_id AND items.user_id = :user_id"
+                ),
+                {"item_id": str(item_id), "user_id": str(user_id)},
+            )
+        ).first()
+    return StoredOriginal(storage_key=row[0], etag=row[1]) if row else None
 
 
 async def record_thumbnail(

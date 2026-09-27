@@ -90,6 +90,12 @@ without it. Until it's set:
 So set it before uploading content. Nothing needs redeploying afterwards:
 the next search, and the workers' next cold start, read it.
 
+### After the first deployment: check an upload
+
+Upload and finalize one image and one file, then follow the upload check
+under [Smoke tests](#smoke-tests). Until it passes, uploads aren't known to
+work on AWS.
+
 ### After the first deployment: the Turnstile secret key
 
 Likewise (`stash-<env>/turnstile/secret-key`, `terraform output
@@ -235,6 +241,14 @@ Read-only, against the deployed system:
 - A CORS preflight from the frontend's origin is allowed.
 - `<frontend_url>/` and an SPA route (`/login`) serve the app's `index.html`.
 - The uploaded `.wasm` is served as `application/wasm`.
+
+They upload nothing. After the first deployment (and after any change to
+the uploads bucket's encryption), run the manual upload check in
+[architecture.md, "Verifying AWS S3 checksums"](architecture.md#uploads):
+one real upload and finalize, then the canonical object's SHA-256 and ETag
+checked against the item's row, and its download and processing. Finalize
+depends on S3 returning a full-object SHA-256 for the canonical copy, which
+the local MinIO stack can't prove for AWS.
 
 ## When a deployment fails
 

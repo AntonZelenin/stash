@@ -32,7 +32,7 @@ from app.query_normalization import QueryNormalizer
 from app.rate_limits.limiter import Charge, RateLimiter
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
-from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
+from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -123,6 +123,22 @@ class UploadNotCompletedError(Exception):
     """Finalized before its content arrived in storage."""
 
 
+class UploadChangedError(Exception):
+    """The staged content was replaced while it was being finalized. The
+    upload stays pending, and nothing was created: finalizing again checks
+    what's there now."""
+
+
+# How long after its URL expired a pending upload can still be finalized.
+# S3 only checks the URL's expiry when a request starts, so a slow upload
+# may finish well after it; past this, the upload counts as abandoned. The
+# bucket's lifecycle rule expires staging objects on the same scale (1 day,
+# at S3's day granularity).
+ABANDONED_UPLOAD_GRACE = timedelta(days=1)
+# Abandoned pending rows of the user deleted per upload started.
+_ABANDONED_UPLOADS_PURGED_PER_START = 100
+
+
 # The stored content failed validation: the upload is discarded.
 _INVALID_UPLOAD_ERRORS = (
     EmptyImageError,
@@ -199,6 +215,11 @@ class StartedUpload:
     upload_id: uuid.UUID
     upload: PresignedUpload
     expires_at: datetime
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """Stored timestamps are UTC; some drivers (SQLite) return them naive."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def _clean_caption(text: str | None) -> str | None:
@@ -782,10 +803,13 @@ class ItemService:
         if it doesn't fit; an invalid request charges nothing. It's charged
         here, not on finalize, so no bytes are sent for an upload that can't
         be accepted, and retrying a finalize costs nothing. The item id and
-        storage key are generated here, never taken from the client, and
-        the URL is signed for that key, type and size only. Nothing is
-        visible yet: the upload is recorded as pending (`PendingUpload`)
-        until `finalize_upload` checks what arrived and creates the item.
+        staging key are generated here, never taken from the client, and
+        the URL is signed for that key, type and size only, create-only.
+        The staging key is never the item's: finalize copies what it
+        validated to a canonical key. Nothing is visible yet: the upload is
+        recorded as pending (`PendingUpload`) until `finalize_upload`
+        checks what arrived and creates the item. The user's abandoned
+        pending uploads are purged on the way.
 
         `content_type` is an image's declared type (it picks the key's
         extension, and must match the content on finalize); ignored for
@@ -805,7 +829,6 @@ class ItemService:
             content_type = (content_type or "").split(";", 1)[0].strip().lower()
             if content_type not in _IMAGE_EXTENSIONS_BY_CONTENT_TYPE:
                 raise UnsupportedImageTypeError()
-            storage_key = storage_keys.image_key(user_id, upload_id, _IMAGE_EXTENSIONS_BY_CONTENT_TYPE[content_type])
             # Kept only to name downloads; without one, they're unnamed.
             filename = files.clean_filename(filename) if filename and filename.strip() else None
             # Every image is described by the image analyzer.
@@ -815,12 +838,12 @@ class ItemService:
             filename = files.clean_filename(filename)
             expected = files.expected_format(filename)
             content_type = expected.content_type
-            storage_key = storage_keys.file_key(user_id, upload_id, expected.extension)
             # Charged as analyzed if its extension says so, even if its
             # content later turns out generic (and isn't).
             analyzed = expected.analyzable
         else:
             raise ValueError(f"{item_type} items aren't uploaded")
+        storage_key = storage_keys.staging_key(user_id, upload_id)
         bind_context(item_id=upload_id)
 
         user = str(user_id)
@@ -846,8 +869,15 @@ class ItemService:
             tag_names=tag_names,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
         )
+        purged = await self._repo.delete_abandoned_uploads(
+            user_id=user_id,
+            expired_before=datetime.now(UTC) - ABANDONED_UPLOAD_GRACE,
+            limit=_ABANDONED_UPLOADS_PURGED_PER_START,
+        )
         await self._repo.add_pending_upload(pending)
         await self._session.commit()
+        if purged:
+            logger.info("Abandoned uploads purged", purged_count=purged)
         # The filename is user content, so it isn't logged.
         logger.info(
             "Upload started",
@@ -861,20 +891,33 @@ class ItemService:
     @_tracer.start_as_current_span("items.finalize_upload")
     async def finalize_upload(self, *, user_id: uuid.UUID, upload_id: uuid.UUID) -> Item:
         """Creates the item for an upload `start_upload` authorized, once
-        its content is in storage. The item gets the upload's id, and the
-        storage key recorded when it started; nothing about it comes from
-        this request.
+        its content is in storage. The item gets the upload's id; nothing
+        about it comes from this request.
 
         Only the user who started the upload can finalize it: anyone else's
-        is indistinguishable from a missing one. The stored content is
+        is indistinguishable from a missing one. The staged content is
         checked as before direct uploads (size, and the type sniffed from
         its first bytes); content that fails the check is discarded, object
         included, and no item is created. Not uploaded (yet): the upload
         stays pending, so the client can still upload and finalize again.
+        Abandoned (see `ABANDONED_UPLOAD_GRACE`): discarded, like a missing
+        upload.
 
-        Idempotent: finalizing an upload that already became an item (e.g.
-        a retry after a lost response) returns that item, without creating
-        it or triggering its processing again."""
+        Valid content becomes immutable: the staged object, only in the
+        state that was checked (its ETag, as `inspect` read it), is copied
+        to a fresh, random, create-only canonical key; the copy itself is
+        then checked to be what was validated (same size and first bytes),
+        and the item records its key, ETag and SHA-256 (computed by the
+        storage as it wrote the copy). The staging object, which the upload
+        URL can still reach, is never the item's content. If the staged
+        object is replaced between the check and the copy, nothing is
+        created (`UploadChangedError`).
+
+        Idempotent and serialized: the pending row stays locked from the
+        check until the item is committed, so a concurrent finalize waits,
+        then finds the item. Finalizing an upload that already became an
+        item (e.g. a retry after a lost response) returns that item, without
+        copying, creating it or triggering its processing again."""
         bind_context(item_id=upload_id)
         upload = await self._repo.get_pending_upload_for_update(upload_id=upload_id, user_id=user_id)
         if upload is None:
@@ -882,8 +925,14 @@ class ItemService:
             if item is None or item.type not in (ItemType.image, ItemType.file):
                 raise UploadNotFoundError()
             return item
+        if _as_utc(upload.expires_at) + ABANDONED_UPLOAD_GRACE < datetime.now(UTC):
+            await self._discard_upload(upload, reason="abandoned")
+            raise UploadNotFoundError()
 
-        stored = await self._storage.inspect(key=upload.storage_key, head_bytes=files.SNIFF_BYTES)
+        try:
+            stored = await self._storage.inspect(key=upload.storage_key, head_bytes=files.SNIFF_BYTES)
+        except ObjectChangedError:
+            raise UploadChangedError() from None
         if stored is None:
             raise UploadNotCompletedError()
         try:
@@ -893,6 +942,40 @@ class ItemService:
         except _INVALID_UPLOAD_ERRORS as exc:
             await self._discard_upload(upload, reason=type(exc).__name__)
             raise
+
+    async def _store_canonical(
+        self, upload: PendingUpload, stored: StoredObject, *, content_type: str, extension: str
+    ) -> tuple[str, str, str]:
+        """Copies the validated staging object (`stored`, exactly as
+        inspected) to a new canonical key; returns that key, the copy's
+        ETag and its SHA-256. Raises `UploadChangedError` if the staged
+        object is no longer what was validated.
+
+        The ETag only ties the inspection and the copy to one state of the
+        staging object; it's not trusted as a content hash. What makes the
+        validation hold for the item is the check of the copy itself: an
+        object nothing else can write, whose size and first bytes (all the
+        validation looked at) must be the ones validated."""
+        object_id = storage_keys.new_object_id()
+        if upload.type == ItemType.image:
+            key = storage_keys.image_key(upload.user_id, upload.id, object_id, extension)
+        else:
+            key = storage_keys.file_key(upload.user_id, upload.id, object_id, extension)
+        try:
+            etag = await self._storage.copy_immutable(
+                source_key=upload.storage_key, source_etag=stored.etag, dest_key=key, content_type=content_type
+            )
+            copy = await self._storage.inspect(key=key, head_bytes=len(stored.head))
+        except ObjectChangedError:
+            copy = None
+        if copy is None or (copy.size_bytes, copy.head, copy.etag) != (stored.size_bytes, stored.head, etag):
+            logger.warning("Upload changed during finalize; nothing created", staging_key=upload.storage_key)
+            await self._delete_uncommitted_copy(key)
+            raise UploadChangedError()
+        if copy.sha256 is None:
+            await self._delete_uncommitted_copy(key)
+            raise RuntimeError("Storage kept no SHA-256 for the canonical copy")
+        return key, etag, copy.sha256
 
     async def _create_image_item(self, upload: PendingUpload, stored: StoredObject) -> Item:
         _check_size(
@@ -907,11 +990,19 @@ class ItemService:
         if _detect_image_content_type(stored.head) != upload.content_type:
             raise UnsupportedImageTypeError()
 
+        storage_key, etag, sha256 = await self._store_canonical(
+            upload,
+            stored,
+            content_type=upload.content_type,
+            extension=_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[upload.content_type],
+        )
         resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
         item = await self._repo.create_image_item(
             item_id=upload.id,
             user_id=upload.user_id,
-            storage_key=upload.storage_key,
+            storage_key=storage_key,
+            content_etag=etag,
+            content_sha256=sha256,
             content_type=upload.content_type,
             size_bytes=stored.size_bytes,
             filename=upload.filename,
@@ -924,7 +1015,9 @@ class ItemService:
                 item_id=item.id,
                 user_id=item.user_id,
                 item_type=QueueItemType.image,
-                image=ImageRef(storage_key=upload.storage_key, content_type=upload.content_type),
+                # Informational only: workers read the item's key from the
+                # database (kept for workers deployed before that).
+                image=ImageRef(storage_key=storage_key, content_type=upload.content_type),
             ),
         )
         if upload.caption is not None:
@@ -934,12 +1027,13 @@ class ItemService:
         await self._session.commit()
         _log_created(
             item,
-            storage_key=upload.storage_key,
+            storage_key=storage_key,
             content_type=upload.content_type,
             size_bytes=stored.size_bytes,
             has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
         )
+        await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
         return item
 
@@ -953,16 +1047,24 @@ class ItemService:
             stored.size_bytes, get_settings().max_file_upload_bytes, empty=EmptyFileError, too_large=FileTooLargeError
         )
         filename = upload.filename or files.clean_filename(None)
-        # May differ from the type the object was stored with (a charset
+        # May differ from the type the object was uploaded with (a charset
         # added, or generic if the content doesn't match the extension):
-        # downloads are served with this one.
+        # the canonical copy is stored, and downloads served, with this one.
         classified = files.classify(filename, stored.head)
 
+        storage_key, etag, sha256 = await self._store_canonical(
+            upload,
+            stored,
+            content_type=classified.content_type,
+            extension=files.expected_format(filename).extension,
+        )
         resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
         item = await self._repo.create_file_item(
             item_id=upload.id,
             user_id=upload.user_id,
-            storage_key=upload.storage_key,
+            storage_key=storage_key,
+            content_etag=etag,
+            content_sha256=sha256,
             filename=filename,
             content_type=classified.content_type,
             size_bytes=stored.size_bytes,
@@ -977,9 +1079,8 @@ class ItemService:
                     item_id=item.id,
                     user_id=item.user_id,
                     item_type=QueueItemType.file,
-                    file=FileRef(
-                        storage_key=upload.storage_key, content_type=classified.content_type, filename=filename
-                    ),
+                    # Informational only, like the image job's.
+                    file=FileRef(storage_key=storage_key, content_type=classified.content_type, filename=filename),
                 ),
             )
         if upload.caption is not None:
@@ -989,28 +1090,47 @@ class ItemService:
         # The filename is user content, so it isn't logged.
         _log_created(
             item,
-            storage_key=upload.storage_key,
+            storage_key=storage_key,
             content_type=classified.content_type,
             size_bytes=stored.size_bytes,
             analyzable=classified.analyzable,
             has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
         )
+        await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
         return item
 
     async def _discard_upload(self, upload: PendingUpload, *, reason: str) -> None:
-        """Drops an upload whose content was rejected: the pending row, then
-        (best effort, as when deleting an item) its object. A failed object
-        delete leaves an orphan that no row points at any more."""
+        """Drops an upload that won't become an item (rejected content, or
+        abandoned): the pending row, then its staging object. No canonical
+        object exists for it: one is only made from valid content."""
         storage_key = upload.storage_key
         await self._repo.delete_pending_upload(upload)
         await self._session.commit()
-        logger.info("Upload rejected", storage_key=storage_key, reason=reason)
+        logger.info("Upload discarded", storage_key=storage_key, reason=reason)
+        await self._delete_staging_object(storage_key)
+
+    async def _delete_staging_object(self, key: str) -> None:
+        """Best effort, once nothing needs it: a failure leaves it to the
+        lifecycle rule. Only ever a staging key, so this path can never
+        delete an item's content. (An upload started before staging keys
+        existed has its object elsewhere; that's left in place.)"""
+        if not storage_keys.is_staging_key(key):
+            logger.warning("Not a staging key; left in place", storage_key=key)
+            return
         try:
-            await self._storage.delete(key=storage_key)
+            await self._storage.delete(key=key)
         except Exception:
-            logger.exception("Failed to delete rejected upload; object orphaned", storage_key=storage_key)
+            logger.exception("Failed to delete staging object; left to the lifecycle rule", storage_key=key)
+
+    async def _delete_uncommitted_copy(self, key: str) -> None:
+        """Best effort: a canonical copy this finalize just made under a
+        fresh key and rejected, before any item referenced it."""
+        try:
+            await self._storage.delete(key=key)
+        except Exception:
+            logger.exception("Failed to delete rejected canonical copy", storage_key=key)
 
     async def _link_tags(self, user_id: uuid.UUID, names: list[str]) -> list[Tag]:
         """The user's tags with these names (already normalized, see

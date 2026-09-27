@@ -317,23 +317,26 @@ paths:
 
 
         1. `POST /uploads` with what is about to be uploaded. The API
-           validates it, generates the new item's id and its storage key
-           (`users/{user_id}/images|files/{item_id}[.ext]`; never chosen by
-           the client, never containing the filename), and returns a
-           short-lived pre-signed upload URL for exactly that key, content
-           type and size.
+           validates it, generates the new item's id and a temporary staging
+           key for the upload (never chosen by the client, never containing
+           the filename), and returns a short-lived pre-signed upload URL
+           for exactly that key, content type and size.
 
         2. Send the file's bytes as the whole request body to `upload.url`
            with `upload.method`, setting exactly `upload.headers`. Storage
-           rejects any other key, content type or size, and requests after
-           `expires_at`.
+           rejects any other key, content type or size, requests after
+           `expires_at`, and a second upload with the same URL (412): the
+           URL can't replace what it uploaded.
 
         3. `POST /uploads/{upload_id}/finalize` to create the item.
 
 
         Until it's finalized, an upload is not an item: it isn't listed,
-        searched or processed. Uploads that are never finalized are kept as
-        pending (nothing cleans them up yet).
+        searched, processed or downloadable. Finalizing copies exactly the
+        content it validated to the item's own, permanent storage; nothing
+        uploaded afterwards (with the same URL or otherwise) changes an
+        item. Uploads never finalized are discarded a day after
+        `expires_at`.
 
 
         Images: `content_type` must be PNG, JPEG, GIF or WebP, up to
@@ -410,11 +413,15 @@ paths:
         `upload_id`) with the caption and tags given when the upload
         started, and starts its processing. The uploaded content is checked
         first: if it's empty, too large or (for images) not the declared
-        type, the upload is discarded and no item is created.
+        type, the upload is discarded and no item is created. Valid content
+        becomes the item's for good: the checked upload is copied to the
+        item's permanent, write-once storage, and the copy is checked again
+        before the item is created.
 
 
         Idempotent: finalizing an upload that already became an item
-        returns that item again.
+        returns that item again, unchanged. Concurrent finalizes of the
+        same upload create one item.
       operationId: finalizeUpload
 
       security:
@@ -444,12 +451,15 @@ paths:
         "404":
           description: >-
             No such upload started by this user (someone else's is
-            indistinguishable from a missing one), or it was discarded.
+            indistinguishable from a missing one), or it was discarded
+            (including an upload abandoned for more than a day after its
+            URL expired).
 
         "409":
           description: >-
-            The file isn't in storage yet. The upload stays pending: upload
-            it, then finalize again.
+            The file isn't in storage yet, or it changed while it was being
+            finalized. Nothing was created and the upload stays pending:
+            upload it (if it wasn't), then finalize again.
 
         "413":
           description: The uploaded file is too large; the upload was discarded.

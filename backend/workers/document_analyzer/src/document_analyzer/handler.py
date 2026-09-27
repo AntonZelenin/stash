@@ -15,6 +15,7 @@ from stash_worker_core.storage import ObjectStore
 
 from document_analyzer.describer import DocumentDescriber
 from document_analyzer.excerpt import select_excerpt
+from document_analyzer.items import get_file
 from document_analyzer.parsers import DocumentSource, ParserLimits, extract_text, normalize_text, parser_for
 
 logger = get_logger(__name__)
@@ -66,17 +67,24 @@ class DocumentAnalysisHandler:
         self._limits = dataclasses.replace(limits, excerpt_chars=max_chars)
 
     async def handle(self, job: ProcessingJob) -> None:
-        if job.file is None:
-            raise PermanentProcessingError("Document job has no file reference")
-        parser = parser_for(job.file.content_type)
+        # From the database, never the job's `file` (informational only):
+        # the item's canonical original, every read of it pinned to the
+        # content the API validated.
+        stored = await get_file(self._engine, job.item_id, user_id=job.user_id)
+        if stored is None:
+            raise PermanentProcessingError("Item has no stored file of the job's user")
+        parser = parser_for(stored.content_type)
         if parser is None:
-            raise PermanentProcessingError(f"No parser for {job.file.content_type!r}")
+            raise PermanentProcessingError(f"No parser for {stored.content_type!r}")
 
-        key = job.file.storage_key
-        source = DocumentSource(functools.partial(self._storage.read_range_blocking, key), await self._storage.size(key))
+        key = stored.storage_key
+        source = DocumentSource(
+            functools.partial(self._storage.read_range_blocking, key, etag=stored.etag),
+            await self._storage.size(key, etag=stored.etag),
+        )
         with _tracer.start_as_current_span("document.extract_text") as span:
             tracing.set_attributes(
-                span, parser=type(parser).__name__, content_type=job.file.content_type, size_bytes=source.size
+                span, parser=type(parser).__name__, content_type=stored.content_type, size_bytes=source.size
             )
             try:
                 extracted = await asyncio.to_thread(extract_text, parser, source, self._limits)
@@ -99,7 +107,7 @@ class DocumentAnalysisHandler:
         logger.info(
             "Document text extracted",
             storage_key=key,
-            content_type=job.file.content_type,
+            content_type=stored.content_type,
             parser=type(parser).__name__,
             size_bytes=source.size,
             bytes_read=source.bytes_read,
@@ -108,7 +116,7 @@ class DocumentAnalysisHandler:
             is_partial=is_partial,
             stopped_by=extracted.stopped_by,
         )
-        description = await self._describer.describe(filename=job.file.filename, text=excerpt.text, is_partial=is_partial)
+        description = await self._describer.describe(filename=stored.filename, text=excerpt.text, is_partial=is_partial)
         completed = await complete_item(
             self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)
         )

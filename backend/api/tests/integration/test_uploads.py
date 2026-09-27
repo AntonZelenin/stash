@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import FileMetadata, Item, PendingUpload
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import finalize_upload, register_and_login, start_upload, upload_file
+from helpers import canonical_file_key, finalize_upload, register_and_login, start_upload, upload_file
 
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 
@@ -46,7 +46,8 @@ async def test_start_upload_records_a_pending_upload_that_expires(
 
     pending = await session.get(PendingUpload, UUID(started["upload_id"]))
     assert str(pending.user_id) == user_id
-    assert pending.storage_key == f"users/{user_id}/files/{started['upload_id']}.pdf"
+    # A staging key: never an item's.
+    assert pending.storage_key == f"uploads/{user_id}/{started['upload_id']}"
     assert (pending.filename, pending.caption, pending.tag_names) == ("report.pdf", "notes", ["Work"])
     assert pending.size_bytes == len(_PDF_BYTES)
     # Short-lived: the URL's TTL (UPLOAD_URL_TTL_SECONDS, 15 min by default).
@@ -78,7 +79,7 @@ async def test_filename_never_reaches_the_storage_key(client: AsyncClient, stora
         )
     ).json()
 
-    assert list(storage.signed_uploads) == [f"users/{user_id}/files/{started['upload_id']}.pdf"]
+    assert list(storage.signed_uploads) == [f"uploads/{user_id}/{started['upload_id']}"]
 
 
 async def test_invalid_metadata_gets_no_upload_url(client: AsyncClient, storage: FakeObjectStorage):
@@ -187,8 +188,10 @@ async def test_upload_that_is_never_finalized_is_not_an_item(
 async def test_finalize_moves_the_upload_from_pending_to_item(
     client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
 ):
-    """The item takes the id and storage key the upload started with."""
-    _, token = await register_and_login(client)
+    """The item takes the upload's id, but never the key the upload URL
+    was signed for: its content is a canonical copy, and the staging
+    object is gone."""
+    user_id, token = await register_and_login(client)
     started = await _start_pdf(client, token)
     _put(storage, started)
     upload_id = UUID(started["upload_id"])
@@ -198,7 +201,10 @@ async def test_finalize_moves_the_upload_from_pending_to_item(
 
     session.expunge_all()
     assert await session.get(PendingUpload, upload_id) is None
-    assert (await session.get(FileMetadata, upload_id)).storage_key == signed_key
+    stored = await session.get(FileMetadata, upload_id)
+    assert stored.storage_key != signed_key
+    assert stored.storage_key == canonical_file_key(storage, user_id, upload_id, _PDF_BYTES, ".pdf")
+    assert list(storage.uploads) == [stored.storage_key]
 
 
 async def test_finalize_is_idempotent(

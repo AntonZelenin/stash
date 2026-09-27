@@ -176,6 +176,12 @@ variable "s3_cors_allowed_origins" {
   }
 }
 
+variable "s3_enforce_create_only_originals" {
+  description = "Bucket policy: refuse any write to an original's canonical key (users/*/images|files/*) without If-None-Match: *, so no principal, the API's role included, can overwrite finalized content. The API always sends it; turn on once a finalize is confirmed to work with it (storage.tf)."
+  type        = bool
+  default     = false
+}
+
 variable "lambda_package_dir" {
   description = "Directory with the Lambda packages (<function>.zip), as built by scripts/build_lambda_packages.py. Relative to this directory."
   type        = string

@@ -6,6 +6,7 @@ has `pytest_plugins = ["stash_worker_core.testing"]`. Needs the `testing`
 extra; never imported by worker code."""
 
 import asyncio
+import hashlib
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from uuid import UUID
@@ -58,13 +59,13 @@ async def create_schema(engine: AsyncEngine) -> None:
         await conn.execute(
             text(
                 "CREATE TABLE item_files (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "
-                "content_type TEXT NOT NULL, filename TEXT NOT NULL)"
+                "content_etag TEXT, content_type TEXT NOT NULL, filename TEXT NOT NULL)"
             )
         )
         await conn.execute(
             text(
                 "CREATE TABLE item_images (item_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, "
-                "content_type TEXT NOT NULL, thumbnail_key TEXT)"
+                "content_etag TEXT, content_type TEXT NOT NULL, thumbnail_key TEXT)"
             )
         )
         # As created by the API's migrations (see `stash_shared.outbox`).
@@ -92,11 +93,14 @@ async def insert_item(
     caption: str | None = None,
     thumbnail_key: str | None = None,
     file: tuple[str, str, str] | None = None,
+    content_etag: str | None = None,
 ) -> None:
     """Image items also get an `item_images` row unless `storage_key` is
     None, and an
     `item_text_contents` row if `caption` is given. `file` is a file item's
-    (storage_key, content_type, filename) for its `item_files` row."""
+    (storage_key, content_type, filename) for its `item_files` row.
+    `content_etag` is the original's (image or file) recorded ETag; None
+    is a legacy item."""
     updated_at = datetime.now(UTC)
     async with engine.begin() as conn:
         await conn.execute(
@@ -115,18 +119,24 @@ async def insert_item(
         if item_type == "image" and storage_key is not None:
             await conn.execute(
                 text(
-                    "INSERT INTO item_images (item_id, storage_key, content_type, thumbnail_key) "
-                    "VALUES (:id, :key, 'image/png', :thumbnail_key)"
+                    "INSERT INTO item_images (item_id, storage_key, content_etag, content_type, thumbnail_key) "
+                    "VALUES (:id, :key, :etag, 'image/png', :thumbnail_key)"
                 ),
-                {"id": str(item_id), "key": storage_key, "thumbnail_key": thumbnail_key},
+                {"id": str(item_id), "key": storage_key, "etag": content_etag, "thumbnail_key": thumbnail_key},
             )
         if file is not None:
             await conn.execute(
                 text(
-                    "INSERT INTO item_files (item_id, storage_key, content_type, filename) "
-                    "VALUES (:id, :key, :content_type, :filename)"
+                    "INSERT INTO item_files (item_id, storage_key, content_etag, content_type, filename) "
+                    "VALUES (:id, :key, :etag, :content_type, :filename)"
                 ),
-                {"id": str(item_id), "key": file[0], "content_type": file[1], "filename": file[2]},
+                {
+                    "id": str(item_id),
+                    "key": file[0],
+                    "etag": content_etag,
+                    "content_type": file[1],
+                    "filename": file[2],
+                },
             )
         if caption is not None:
             await conn.execute(
@@ -222,8 +232,9 @@ async def fetch_thumbnail_key(engine: AsyncEngine, item_id: UUID) -> str | None:
 
 
 class FakeObjectStore:
-    """In-memory stand-in for S3/MinIO. Missing keys and oversized
-    downloads fail the same way the real store does (permanently).
+    """In-memory stand-in for S3/MinIO. Missing keys, oversized downloads
+    and reads pinned to another ETag (`etag_of`, an MD5 like S3's) fail
+    the same way the real store does (permanently).
 
     `bytes_served` counts, per key, every byte a worker read (whole or in
     ranges), so tests can check how much of an object was read."""
@@ -233,26 +244,32 @@ class FakeObjectStore:
         self.content_types: dict[str, str] = {}
         self.bytes_served: dict[str, int] = {}
 
-    async def download(self, key: str, *, max_bytes: int) -> bytes:
-        data = self._get(key)
+    @staticmethod
+    def etag_of(data: bytes) -> str:
+        return '"' + hashlib.md5(data).hexdigest() + '"'
+
+    async def download(self, key: str, *, max_bytes: int, etag: str | None = None) -> bytes:
+        data = self._get(key, etag)
         if len(data) > max_bytes:
             raise ProcessingLimitExceeded(f"{key} is over {max_bytes} bytes")
         self._served(key, len(data))
         return data
 
-    async def size(self, key: str) -> int:
-        return len(self._get(key))
+    async def size(self, key: str, *, etag: str | None = None) -> int:
+        return len(self._get(key, etag))
 
-    def read_range_blocking(self, key: str, start: int, end: int) -> bytes:
-        data = self._get(key)
+    def read_range_blocking(self, key: str, start: int, end: int, *, etag: str | None = None) -> bytes:
+        data = self._get(key, etag)
         if not 0 <= start < end <= len(data):
             raise ValueError(f"Invalid range {start}-{end} of {len(data)} bytes")
         self._served(key, end - start)
         return data[start:end]
 
-    def _get(self, key: str) -> bytes:
+    def _get(self, key: str, etag: str | None = None) -> bytes:
         if key not in self.objects:
             raise PermanentProcessingError(f"{key} not found")
+        if etag is not None and self.etag_of(self.objects[key]) != etag:
+            raise PermanentProcessingError(f"{key} is not the validated content")
         return self.objects[key]
 
     def _served(self, key: str, count: int) -> None:

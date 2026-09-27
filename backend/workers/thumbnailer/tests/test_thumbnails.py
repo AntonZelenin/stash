@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 from PIL import Image
+from sqlalchemy import text
 from stash_shared import storage_keys
 from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, Delivery, ImageRef, ItemType, ProcessingJob
 from stash_worker_core.errors import PermanentProcessingError
@@ -199,9 +200,11 @@ async def test_job_for_another_users_item_records_nothing(engine, storage, analy
     await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
     other_user = uuid.uuid4()
 
-    await handler.handle(_job(item_id, user_id=other_user))
+    with pytest.raises(PermanentProcessingError):
+        await handler.handle(_job(item_id, user_id=other_user))
 
     assert await fetch_thumbnail_key(engine, item_id) is None
+    assert storage.bytes_served == {}
     assert storage_keys.thumbnail_key(other_user, item_id) not in storage.objects
     assert analysis_queue.published == []
 
@@ -220,8 +223,29 @@ async def test_rerun_is_idempotent(engine, storage, analysis_queue, handler):
     assert len(analysis_queue.published) == 2
 
 
+async def test_item_already_deleted_is_not_processed(engine, storage, analysis_queue, handler):
+    item_id = uuid.uuid4()  # never inserted: as if deleted before the job ran
+
+    with pytest.raises(PermanentProcessingError):
+        await handler.handle(_job(item_id))
+
+    assert storage.bytes_served == {}
+    assert analysis_queue.published == []
+
+
 async def test_item_deleted_meanwhile_discards_thumbnail(engine, storage, analysis_queue, handler):
-    item_id = uuid.uuid4()  # never inserted: as if deleted before we recorded the thumbnail
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+    download = storage.download
+
+    async def download_then_delete_item(key, **kwargs):
+        data = await download(key, **kwargs)
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM item_images WHERE item_id = :id"), {"id": str(item_id)})
+            await conn.execute(text("DELETE FROM items WHERE id = :id"), {"id": str(item_id)})
+        return data
+
+    storage.download = download_then_delete_item
 
     await handler.handle(_job(item_id))
 
@@ -299,3 +323,55 @@ async def test_original_over_the_size_limit_fails_without_being_read(engine, ana
 
     assert await fetch_status(engine, item_id) == "failed"
     assert storage.bytes_served == {}
+
+
+# ---- the original comes from the database, pinned to its validated content ----
+
+
+async def test_reads_the_original_the_database_records_not_the_one_the_job_names(
+    engine, storage, analysis_queue, handler
+):
+    """A job's `image` is informational: a stale or forged key in it is
+    never read."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", storage_key=_ORIGINAL_KEY)
+    other_key = f"users/{uuid.uuid4()}/images/someone-elses.png"
+    storage.objects[other_key] = _encode(Image.new("RGB", (10, 10), "red"))
+
+    await handler.handle(_job(item_id, original_key=other_key))
+
+    assert other_key not in storage.bytes_served
+    assert storage.bytes_served[_ORIGINAL_KEY] == len(storage.objects[_ORIGINAL_KEY])
+    assert _decode(storage.objects[thumbnail_key(item_id)]).size == (1024, 768)
+
+
+async def test_original_replaced_after_validation_is_never_processed(engine, storage, analysis_queue, handler):
+    """The item records the ETag of the content the API validated; other
+    bytes at its key (however they got there) fail the item, unread."""
+    item_id = uuid.uuid4()
+    validated_etag = storage.etag_of(storage.objects[_ORIGINAL_KEY])
+    await insert_item(
+        engine, item_id, status="processing", storage_key=_ORIGINAL_KEY, content_etag=validated_etag
+    )
+    storage.objects[_ORIGINAL_KEY] = _encode(Image.new("RGB", (10, 10), "red"))
+
+    with pytest.raises(PermanentProcessingError):
+        await handler.handle(_job(item_id))
+
+    assert thumbnail_key(item_id) not in storage.objects
+    assert analysis_queue.published == []
+
+
+async def test_original_with_its_validated_etag_is_processed(engine, storage, analysis_queue, handler):
+    item_id = uuid.uuid4()
+    await insert_item(
+        engine,
+        item_id,
+        status="processing",
+        storage_key=_ORIGINAL_KEY,
+        content_etag=storage.etag_of(storage.objects[_ORIGINAL_KEY]),
+    )
+
+    await handler.handle(_job(item_id))
+
+    assert await fetch_thumbnail_key(engine, item_id) == thumbnail_key(item_id)

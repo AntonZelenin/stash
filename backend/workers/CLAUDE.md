@@ -22,8 +22,8 @@ Two form the image pipeline:
    `CONTENT_ANALYSIS_JOBS`, pointing the job at the thumbnail. Its own SQL
    (`items.record_thumbnail`) records the thumbnail and adds that job to the
    outbox in one transaction.
-2. `image_analyzer/`: consumes `CONTENT_ANALYSIS_JOBS`, describes the image
-   the job points at via OpenAI — as short search chunks (JSON, via
+2. `image_analyzer/`: consumes `CONTENT_ANALYSIS_JOBS`, describes the
+   thumbnail recorded on the item via OpenAI — as short search chunks (JSON, via
    structured output), stored one per line as its generated description —
    and completes the item.
 
@@ -52,8 +52,12 @@ And one turns searchable text into vectors:
 Each worker looks up the item's status in Postgres by id and drives
 `pending -> processing -> completed`/`failed` (for images, `processing` spans
 both image workers). Never trusts the queue payload as the source of truth for item
-state — always re-reads from Postgres. (The image/file location *is* taken from
-the payload; it's immutable once written.)
+state — always re-reads from Postgres. That includes which object to read: the
+original's key and the ETag of its validated content come from the item's row
+(`item_images`/`item_files`, joined on the job's user), never from the job's
+`image`/`file`, which are informational only. Originals are read pinned to that
+ETag (`ObjectStore` reads take `etag`), so other bytes at the key fail the item
+instead of being processed; legacy items (no ETag) are read unpinned.
 
 ## A worker's layout
 

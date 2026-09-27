@@ -11,12 +11,12 @@ from stash_shared.queue.base import CONTENT_ANALYSIS_JOBS, ImageRef, ProcessingJ
 from stash_worker_core.errors import PermanentProcessingError
 from stash_worker_core.storage import ObjectStore
 
-from thumbnailer.items import record_thumbnail
+from thumbnailer.items import get_original, record_thumbnail
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
-THUMBNAIL_CONTENT_TYPE = "image/webp"
+THUMBNAIL_CONTENT_TYPE = storage_keys.THUMBNAIL_CONTENT_TYPE
 DEFAULT_MAX_PIXELS = 50_000_000
 
 # Pillow's own decompression-bomb guard counts the pixels an image declares,
@@ -104,12 +104,18 @@ class ThumbnailHandler:
         self._max_source_bytes = max_source_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
-        if job.image is None:
-            raise PermanentProcessingError("Image job has no storage reference")
+        # From the database, never the job's `image` (informational only):
+        # the item's canonical original, read only if it's still exactly
+        # the content the API validated.
+        stored = await get_original(self._engine, job.item_id, user_id=job.user_id)
+        if stored is None:
+            raise PermanentProcessingError("Item has no stored image of the job's user")
 
         # The whole original: decoding needs all of it. At most the API's
         # image upload limit.
-        original = await self._storage.download(job.image.storage_key, max_bytes=self._max_source_bytes)
+        original = await self._storage.download(
+            stored.storage_key, max_bytes=self._max_source_bytes, etag=stored.etag
+        )
         with _tracer.start_as_current_span("thumbnail.generate") as span:
             thumbnail = await asyncio.to_thread(
                 make_thumbnail,

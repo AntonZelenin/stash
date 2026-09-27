@@ -8,7 +8,7 @@ from stash_shared.queue.base import ItemType as QueueItemType
 from app.items.models import Description, ImageMetadata, Item, ItemType, PendingUpload, TextContent
 from app.config import get_settings
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import finalize_upload, register_and_login, start_upload, upload_image
+from helpers import canonical_image_key, finalize_upload, register_and_login, start_upload, upload_image
 
 # A minimal, valid 1x1 PNG.
 _PNG_BYTES = bytes.fromhex(
@@ -39,9 +39,10 @@ async def test_create_image_item_persists_and_associates_with_user(
     assert image.content_type == "image/png"
     assert image.size_bytes == len(_PNG_BYTES)
     assert image.filename == "photo.png"
-    # Under the owner's prefix, named by item id only (never the upload's
-    # own filename).
-    assert image.storage_key == f"users/{user_id}/images/{item.id}.png"
+    # Under the owner's prefix, named by item id and content only (never
+    # the upload's own filename).
+    assert image.storage_key == canonical_image_key(storage, user_id, item.id, _PNG_BYTES, ".png")
+    assert image.content_etag == storage.etag_of(_PNG_BYTES)
 
     uploaded_data, uploaded_content_type = storage.uploads[image.storage_key]
     assert uploaded_data == _PNG_BYTES
@@ -60,13 +61,13 @@ async def test_start_upload_signs_a_url_for_a_generated_user_scoped_key(
     assert response.status_code == 201
     body = response.json()
     upload_id = body["upload_id"]
-    key = f"users/{user_id}/images/{upload_id}.jpg"
-    # Signed for that key, type and exact size only.
+    key = f"uploads/{user_id}/{upload_id}"
+    # Signed for that staging key, type and exact size only, create-only.
     assert storage.signed_uploads == {key: ("image/jpeg", len(_PNG_BYTES))}
     assert body["upload"] == {
         "url": f"https://fake-storage.test/upload/{key}?expires_in=900",
         "method": "PUT",
-        "headers": {"Content-Type": "image/jpeg"},
+        "headers": {"Content-Type": "image/jpeg", "If-None-Match": "*"},
     }
     assert body["expires_at"]
     # Nothing exists yet but the pending upload.
@@ -189,7 +190,7 @@ async def test_image_whose_job_cannot_be_published_yet_stays_pending_until_a_lat
 
     [job] = queue.published
     assert job.item_id == item_id
-    assert job.image.storage_key == f"users/{user_id}/images/{item_id}.png"
+    assert job.image.storage_key == canonical_image_key(storage, user_id, item_id, _PNG_BYTES, ".png")
     assert str(job.user_id) == user_id
 
 
@@ -256,7 +257,7 @@ async def test_listed_image_downloads_under_its_original_filename(client: AsyncC
     listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
     # Path dropped; inline, so it still displays in the browser.
     assert listed[0]["download_url"] == (
-        f"https://fake-storage.test/users/{user_id}/images/{item_id}.png"
+        f"https://fake-storage.test/{canonical_image_key(storage, user_id, item_id, _PNG_BYTES, '.png')}"
         "?expires_in=3600&filename=Cat on the sofa.png&disposition=inline"
     )
 
@@ -270,4 +271,5 @@ async def test_image_uploaded_without_a_filename_downloads_unnamed(
 
     assert (await session.get(ImageMetadata, UUID(item_id))).filename is None
     listed = (await client.get("/items", headers={"Authorization": f"Bearer {token}"})).json()["items"]
-    assert listed[0]["download_url"] == f"https://fake-storage.test/users/{user_id}/images/{item_id}.png?expires_in=3600"
+    key = canonical_image_key(storage, user_id, item_id, _PNG_BYTES, ".png")
+    assert listed[0]["download_url"] == f"https://fake-storage.test/{key}?expires_in=3600"

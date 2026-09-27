@@ -1,8 +1,9 @@
 # One execution role per Lambda, granting only what that service's code
 # does:
 #
-#                      S3 objects (users/...)          SQS                     Secrets
-#   api                sign uploads, get, delete       send: all               db, openai, turnstile
+#                      S3 objects                      SQS                     Secrets
+#   api                sign staging uploads, copy to   send: all               db, openai, turnstile
+#                      originals, get, delete
 #   thumbnailer        get images, put|delete thumbs   send: all, consume own  db
 #   image_analyzer     get thumbnails                  send: all, consume own  db, openai
 #   document_analyzer  get files                       send: all, consume own  db, openai
@@ -12,19 +13,23 @@
 # "send: all": after its commit, a process flushes the whole transactional
 # outbox (stash_shared.outbox), publishing every pending event whatever its
 # queue, so each publisher may send to every queue. The embedding worker
-# never flushes. "sign uploads": the API never writes objects itself; its
-# PutObject grant is what the pre-signed URLs it hands to browsers act
-# with, so it's scoped to the originals' prefixes. "consume own": what the worker's SQS event source mapping
+# never flushes. "sign staging uploads": the pre-signed URLs the API hands
+# to browsers act with its PutObject grant on uploads/*. "copy to
+# originals": finalize's pinned, create-only CopyObject of validated
+# content, which needs PutObject on the originals' prefixes too; the
+# bucket policy (storage.tf) refuses any pre-signed write there, so that
+# part of the grant is usable only by the API's own requests. Workers
+# never touch uploads/*. "consume own": what the worker's SQS event source mapping
 # (messaging.tf) needs on its queue. API Gateway invokes the API through a
 # resource-based permission (api_gateway.tf), not a role.
 
 locals {
   lambda_s3_access = {
     api = {
-      put    = ["users/*/images/*", "users/*/files/*"] # presigned direct uploads
-      get    = ["users/*"]                             # presigned downloads; reading an upload's first bytes on finalize
-      delete = ["users/*"]                             # deleting an item removes its original and thumbnail
-      list   = true                                    # finalizing before the upload arrived: 404, not 403
+      put    = ["uploads/*", "users/*/images/*", "users/*/files/*"] # presigned staging uploads; finalize's copy
+      get    = ["uploads/*", "users/*"]                             # finalize reading (and copying) the staged upload; presigned downloads
+      delete = ["uploads/*", "users/*"]                             # staging cleanup; deleting an item removes its original and thumbnail
+      list   = true                                                 # finalizing before the upload arrived: 404, not 403
     }
     thumbnailer = {
       put    = ["users/*/thumbnails/*"]

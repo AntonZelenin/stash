@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncEngine
-from stash_shared import descriptions
+from stash_shared import descriptions, storage_keys
 from stash_shared.outbox import OutboxPublisher
 from stash_shared.queue.base import ProcessingJob
 from stash_worker_core.completion import embedding_job_for, log_completion
@@ -8,12 +8,13 @@ from stash_worker_core.items import complete_item
 from stash_worker_core.storage import ObjectStore
 
 from image_analyzer.describer import ImageDescriber
+from image_analyzer.items import get_thumbnail_key
 
 
 class ImageAnalysisHandler:
-    """Last pipeline stage (`CONTENT_ANALYSIS_JOBS`): describes the image
-    the job points at — the thumbnail, put there by the thumbnail stage — and
-    completes the item. Only image descriptions so far (tags aren't
+    """Last pipeline stage (`CONTENT_ANALYSIS_JOBS`): describes the item's
+    thumbnail — recorded on the item by the thumbnail stage, and read from
+    there — and completes the item. Only image descriptions so far (tags aren't
     implemented yet; embeddings are the embedding worker's job).
 
     The description is a list of short search chunks, stored one per line
@@ -45,13 +46,15 @@ class ImageAnalysisHandler:
         self._max_image_bytes = max_image_bytes
 
     async def handle(self, job: ProcessingJob) -> None:
-        if job.image is None:
-            raise PermanentProcessingError("Image job has no storage reference")
+        # From the database, never the job's `image` (informational only).
+        key = await get_thumbnail_key(self._engine, job.item_id, user_id=job.user_id)
+        if key is None:
+            raise PermanentProcessingError("Item has no recorded thumbnail of the job's user")
 
         # Sent to OpenAI whole, so read whole; a thumbnail is far below
         # the limit.
-        data = await self._storage.download(job.image.storage_key, max_bytes=self._max_image_bytes)
-        chunks = await self._describer.describe(data, content_type=job.image.content_type)
+        data = await self._storage.download(key, max_bytes=self._max_image_bytes)
+        chunks = await self._describer.describe(data, content_type=storage_keys.THUMBNAIL_CONTENT_TYPE)
         description = descriptions.from_chunks(chunks)
         completed = await complete_item(
             self._engine, job.item_id, description=description, embedding_job=embedding_job_for(job)

@@ -49,6 +49,7 @@ from app.items.services import (
     ItemNotFoundError,
     ItemService,
     UnsupportedImageTypeError,
+    UploadChangedError,
     UploadNotCompletedError,
     UploadNotFoundError,
 )
@@ -144,7 +145,7 @@ async def start_upload(
     responses={
         **_RESPONSES,
         404: {"description": "Upload not found"},
-        409: {"description": "File not uploaded yet"},
+        409: {"description": "File not uploaded yet, or it changed while being finalized"},
         413: {"description": "File is too large"},
     },
 )
@@ -165,6 +166,10 @@ async def finalize_upload(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found") from None
     except UploadNotCompletedError:
         raise HTTPException(status.HTTP_409_CONFLICT, "File has not been uploaded yet") from None
+    except UploadChangedError:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "File changed while it was being finalized; finalize again"
+        ) from None
     except _UPLOAD_ERRORS as exc:
         raise _invalid_upload(exc) from None
 

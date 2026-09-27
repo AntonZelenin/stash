@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import FileMetadata, ImageMetadata, Item, ItemStatus, ItemType
 from conftest import FakeObjectStorage
-from helpers import register_and_login, upload_file, upload_image
+from helpers import canonical_file_key, canonical_image_key, register_and_login, upload_file, upload_image
 
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 # A minimal, valid 1x1 PNG.
@@ -54,8 +54,8 @@ async def test_same_filename_from_two_users_does_not_collide(
 
     alice_file = await session.get(FileMetadata, alice_item)
     bob_file = await session.get(FileMetadata, bob_item)
-    assert alice_file.storage_key == f"users/{alice_id}/files/{alice_item}.pdf"
-    assert bob_file.storage_key == f"users/{bob_id}/files/{bob_item}.pdf"
+    assert alice_file.storage_key == canonical_file_key(storage, alice_id, alice_item, alice_data, ".pdf")
+    assert bob_file.storage_key == canonical_file_key(storage, bob_id, bob_item, bob_data, ".pdf")
     # Both objects kept, each with its own bytes.
     assert storage.uploads[alice_file.storage_key][0] == alice_data
     assert storage.uploads[bob_file.storage_key][0] == bob_data
@@ -73,7 +73,7 @@ async def test_uploaded_filename_never_shapes_the_key(client: AsyncClient, stora
     item_id = await _upload_file(client, storage, token, "../../users/someone-else/files/x.pdf")
 
     stored = await session.get(FileMetadata, item_id)
-    assert stored.storage_key == f"users/{user_id}/files/{item_id}.pdf"
+    assert stored.storage_key == canonical_file_key(storage, user_id, item_id, _PDF_BYTES, ".pdf")
     assert stored.filename == "x.pdf"
 
 
@@ -91,11 +91,13 @@ async def test_owner_gets_presigned_urls_for_their_objects(client: AsyncClient, 
     by_id = {UUID(item["id"]): item for item in await _listed(client, token)}
 
     image_item, file_item = by_id[image_id], by_id[file_id]
-    assert image_item["download_url"].startswith(f"https://fake-storage.test/users/{user_id}/images/{image_id}.png?")
+    image_key = canonical_image_key(storage, user_id, image_id, _PNG_BYTES, ".png")
+    assert image_item["download_url"].startswith(f"https://fake-storage.test/{image_key}?")
     assert image_item["thumbnail_url"].startswith(
         f"https://fake-storage.test/users/{user_id}/thumbnails/{image_id}.webp?"
     )
-    assert file_item["download_url"].startswith(f"https://fake-storage.test/users/{user_id}/files/{file_id}.pdf?")
+    file_key = canonical_file_key(storage, user_id, file_id, _PDF_BYTES, ".pdf")
+    assert file_item["download_url"].startswith(f"https://fake-storage.test/{file_key}?")
     # Short-lived: every URL carries its expiry.
     assert "expires_in=3600" in image_item["download_url"]
 
@@ -148,7 +150,9 @@ async def test_client_cannot_point_an_item_at_another_users_object(client: Async
 
     assert response.status_code == 422
     session.expire_all()
-    assert (await session.get(FileMetadata, item_id)).storage_key == f"users/{user_id}/files/{item_id}.pdf"
+    assert (await session.get(FileMetadata, item_id)).storage_key == canonical_file_key(
+        storage, user_id, item_id, _PDF_BYTES, ".pdf"
+    )
     listed = await _listed(client, token)
     assert all(victim_key not in (item["download_url"] or "") for item in listed)
 

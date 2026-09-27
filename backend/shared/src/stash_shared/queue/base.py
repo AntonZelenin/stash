@@ -40,9 +40,11 @@ class ItemType(str, Enum):
 
 @dataclass(frozen=True)
 class ImageRef:
-    """Where an image item's bytes live in object storage. Immutable once
-    the item exists, so carrying it in the job is safe even though the
-    worker otherwise treats Postgres as the source of truth."""
+    """Where an image item's bytes live in object storage, for logs and
+    tracing only: workers never read what a job says is there. They look
+    the object (and the ETag it must still have) up in Postgres
+    by the job's item and user. Still sent, for workers deployed before
+    that; don't rely on it, and it can be dropped once none are left."""
 
     storage_key: str
     content_type: str
@@ -51,8 +53,8 @@ class ImageRef:
 @dataclass(frozen=True)
 class FileRef:
     """Where a file item's bytes live in object storage, what they are, and
-    the name the user uploaded them under (context for analysis). Immutable
-    once the item exists, like `ImageRef`."""
+    the name the user uploaded them under. Informational only, like
+    `ImageRef`: the document analyzer reads all of it from Postgres."""
 
     storage_key: str
     content_type: str
@@ -65,8 +67,9 @@ class ProcessingJob:
     processing workers what to process.
 
     Carries only enough to look the item up (plus, for images and files,
-    where to fetch the bytes from). The worker treats Postgres, not this
-    payload, as the source of truth for the item's status.
+    an informational `image`/`file`). The worker treats Postgres, not this
+    payload, as the source of truth for the item's status and for which
+    object to read.
     """
 
     item_id: UUID

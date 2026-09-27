@@ -1,17 +1,24 @@
 import asyncio
+import base64
+import binascii
 from functools import lru_cache
 from urllib.parse import quote
 
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
-from stash_shared import metrics
+from stash_shared import metrics, storage_keys
 from stash_shared.log import get_logger
 
 from app.config import get_settings
-from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
+from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
 
 logger = get_logger(__name__)
+
+_MISSING_CODES = ("404", "NoSuchKey", "NotFound")
+# A conditional request's condition didn't hold (412), or another
+# conditional write to the same key was in flight (409).
+_CONDITION_FAILED_CODES = ("PreconditionFailed", "412", "ConditionalRequestConflict")
 
 
 class MinioStorage(ObjectStorage):
@@ -50,16 +57,28 @@ class MinioStorage(ObjectStorage):
     async def generate_upload_url(
         self, *, key: str, content_type: str, size_bytes: int, expires_in: int
     ) -> PresignedUpload:
-        # Content-Type and Content-Length become signed headers: S3 rejects
-        # a PUT with any other type or size (the browser sets the length
-        # from the body itself).
+        if not storage_keys.is_staging_key(key):
+            # Canonical objects are only ever created by `copy_immutable`
+            # (the bucket policy refuses pre-signed writes there too).
+            raise ValueError("Upload URLs are only issued for staging keys")
+        # Content-Type, Content-Length and If-None-Match become signed
+        # headers: S3 rejects a PUT with any other type or size (the browser
+        # sets the length from the body itself), and, with `If-None-Match:
+        # *`, one to a key that already has an object, so the URL can't
+        # replace what was uploaded with it.
         url = await asyncio.to_thread(
             self._public_client.generate_presigned_url,
             "put_object",
-            Params={"Bucket": self._bucket, "Key": key, "ContentType": content_type, "ContentLength": size_bytes},
+            Params={
+                "Bucket": self._bucket,
+                "Key": key,
+                "ContentType": content_type,
+                "ContentLength": size_bytes,
+                "IfNoneMatch": "*",
+            },
             ExpiresIn=expires_in,
         )
-        return PresignedUpload(url=url, method="PUT", headers={"Content-Type": content_type})
+        return PresignedUpload(url=url, method="PUT", headers={"Content-Type": content_type, "If-None-Match": "*"})
 
     async def inspect(self, *, key: str, head_bytes: int) -> StoredObject | None:
         try:
@@ -79,18 +98,66 @@ class MinioStorage(ObjectStorage):
 
     def _inspect(self, key: str, head_bytes: int) -> StoredObject | None:
         try:
-            size = self._client.head_object(Bucket=self._bucket, Key=key)["ContentLength"]
+            # ChecksumMode: include the object's stored checksum, if any.
+            response = self._client.head_object(Bucket=self._bucket, Key=key, ChecksumMode="ENABLED")
         except ClientError as exc:
             # HEAD responses have no body, so a missing key is just "404".
-            if _error_code(exc) in ("404", "NoSuchKey", "NotFound"):
+            if _error_code(exc) in _MISSING_CODES:
                 return None
             raise
+        size, etag, sha256 = response["ContentLength"], response["ETag"], _full_object_sha256(response)
         head = b""
         if size > 0 and head_bytes > 0:
-            # A range, so a 50 MB upload costs the API only a few KB.
-            response = self._client.get_object(Bucket=self._bucket, Key=key, Range=f"bytes=0-{head_bytes - 1}")
+            # A range, so a 50 MB upload costs the API only a few KB. Only
+            # of the object HEAD saw (If-Match), so the size and the bytes
+            # sniffed describe the same state of the object: the ETag
+            # they're validated under (a token, not a content hash).
+            try:
+                response = self._client.get_object(
+                    Bucket=self._bucket, Key=key, Range=f"bytes=0-{head_bytes - 1}", IfMatch=etag
+                )
+            except ClientError as exc:
+                if _error_code(exc) in _CONDITION_FAILED_CODES + _MISSING_CODES:
+                    raise ObjectChangedError(key) from exc
+                raise
             head = response["Body"].read()
-        return StoredObject(size_bytes=size, head=head)
+        return StoredObject(size_bytes=size, head=head, etag=etag, sha256=sha256)
+
+    async def copy_immutable(self, *, source_key: str, source_etag: str, dest_key: str, content_type: str) -> str:
+        with metrics.external_call("storage.copy"):
+            return await asyncio.to_thread(self._copy_immutable, source_key, source_etag, dest_key, content_type)
+
+    def _copy_immutable(self, source_key: str, source_etag: str, dest_key: str, content_type: str) -> str:
+        try:
+            response = self._client.copy_object(
+                Bucket=self._bucket,
+                Key=dest_key,
+                CopySource={"Bucket": self._bucket, "Key": source_key},
+                # Only the object state that was validated...
+                CopySourceIfMatch=source_etag,
+                # ...and never over an existing object. (MinIO ignores this
+                # on a copy; `dest_key` is random and new, so there's none.)
+                IfNoneMatch="*",
+                MetadataDirective="REPLACE",
+                ContentType=content_type,
+                # S3 computes the copy's full-object SHA-256 from the bytes
+                # it writes (a CopyObject result is never multipart), and
+                # keeps it with the object: `inspect` reads it back.
+                ChecksumAlgorithm="SHA256",
+            )
+        except ClientError as exc:
+            code = _error_code(exc)
+            if code not in _CONDITION_FAILED_CODES + _MISSING_CODES:
+                raise
+            logger.warning(
+                "Immutable copy refused",
+                source_key=source_key,
+                storage_key=dest_key,
+                bucket=self._bucket,
+                error_code=code,
+            )
+            raise ObjectChangedError(source_key) from exc
+        return response["CopyObjectResult"]["ETag"]
 
     async def delete(self, *, key: str) -> None:
         # S3 DeleteObject already succeeds for a missing key.
@@ -106,6 +173,9 @@ class MinioStorage(ObjectStorage):
         inline: bool = True,
         content_type: str | None = None,
     ) -> str:
+        if storage_keys.is_staging_key(key):
+            # Unvalidated, and never an item's content.
+            raise ValueError("Staging objects are never served")
         params = {"Bucket": self._bucket, "Key": key}
         if content_type is not None:
             params["ResponseContentType"] = content_type
@@ -129,6 +199,21 @@ def _content_disposition(filename: str, *, inline: bool) -> str:
     disposition = "inline" if inline else "attachment"
     ascii_fallback = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
     return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
+def _full_object_sha256(head: dict) -> str | None:
+    """The hex SHA-256 of the whole object from a HEAD with
+    `ChecksumMode`, if S3 keeps one. A multipart upload's composite
+    checksum (a checksum of the parts' checksums, "<base64>-<parts>") is
+    not the content's digest, so it's ignored."""
+    value = head.get("ChecksumSHA256")
+    if not value or head.get("ChecksumType", "FULL_OBJECT") != "FULL_OBJECT":
+        return None
+    try:
+        digest = base64.b64decode(value, validate=True)
+    except binascii.Error:
+        return None
+    return digest.hex() if len(digest) == 32 else None
 
 
 def _error_code(exc: Exception) -> str | None:

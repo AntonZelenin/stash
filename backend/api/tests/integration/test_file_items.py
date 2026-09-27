@@ -10,7 +10,7 @@ from stash_shared.queue.base import FileRef
 from stash_shared.queue.base import ItemType as QueueItemType
 
 from conftest import FakeJobQueue, FakeObjectStorage
-from helpers import finalize_upload, register_and_login, start_upload, upload_file
+from helpers import canonical_file_key, finalize_upload, register_and_login, start_upload, upload_file
 
 _PDF_BYTES = b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF\n"
 _DOCX_BYTES = b"PK\x03\x04" + b"\x00" * 64  # zip container header, as a .docx starts
@@ -41,7 +41,7 @@ async def test_upload_pdf_stores_file_and_metadata(
     assert job.item_type == QueueItemType.file
     assert job.image is None
     assert job.file == FileRef(
-        storage_key=f"users/{user_id}/files/{job.item_id}.pdf",
+        storage_key=canonical_file_key(storage, user_id, job.item_id, _PDF_BYTES, ".pdf"),
         content_type="application/pdf",
         filename="Quarterly Report.pdf",
     )
@@ -53,8 +53,10 @@ async def test_upload_pdf_stores_file_and_metadata(
     assert stored.filename == "Quarterly Report.pdf"
     assert stored.content_type == "application/pdf"
     assert stored.size_bytes == len(_PDF_BYTES)
-    assert stored.storage_key == f"users/{user_id}/files/{item.id}.pdf"
-    assert storage.uploads[stored.storage_key] == (_PDF_BYTES, "application/pdf")
+    assert stored.storage_key == canonical_file_key(storage, user_id, item.id, _PDF_BYTES, ".pdf")
+    assert stored.content_etag == storage.etag_of(_PDF_BYTES)
+    # Only the canonical copy is left: the staging object is deleted.
+    assert storage.uploads == {stored.storage_key: (_PDF_BYTES, "application/pdf")}
 
 
 async def test_start_upload_takes_the_type_from_the_filename_not_the_client(
@@ -67,9 +69,9 @@ async def test_start_upload_takes_the_type_from_the_filename_not_the_client(
     )
 
     assert response.status_code == 201
-    key = f"users/{user_id}/files/{response.json()['upload_id']}.pdf"
+    key = f"uploads/{user_id}/{response.json()['upload_id']}"
     assert storage.signed_uploads == {key: ("application/pdf", len(_PDF_BYTES))}
-    assert response.json()["upload"]["headers"] == {"Content-Type": "application/pdf"}
+    assert response.json()["upload"]["headers"] == {"Content-Type": "application/pdf", "If-None-Match": "*"}
 
 
 async def test_listed_file_has_metadata_and_download_url(client: AsyncClient, storage: FakeObjectStorage):
@@ -89,7 +91,7 @@ async def test_listed_file_has_metadata_and_download_url(client: AsyncClient, st
     }
     # Signed with the original filename, so it opens/saves under that name.
     assert listed["download_url"] == (
-        f"https://fake-storage.test/users/{user_id}/files/{listed['id']}.pdf"
+        f"https://fake-storage.test/{canonical_file_key(storage, user_id, listed['id'], _PDF_BYTES, '.pdf')}"
         "?expires_in=3600&filename=Quarterly Report.pdf&disposition=inline"
     )
     assert listed["thumbnail_url"] is None
@@ -131,35 +133,35 @@ async def test_supported_types(
 
 
 async def test_downloads_are_served_with_the_validated_content_type(client: AsyncClient, storage: FakeObjectStorage):
-    """The object was stored as the extension's type ("text/plain") before
-    its content was checked; downloads use the validated one, charset
-    included."""
+    """The client uploaded it as the extension's type ("text/plain"),
+    before its content was checked; the canonical copy is stored, and
+    downloads served, as the validated one, charset included."""
     _, token = await register_and_login(client)
     await upload_file(client, storage, token, "todo.txt", "купить молоко\n".encode())
 
     [listed] = (await client.get("/items", headers=_auth(token))).json()["items"]
 
     [(key, (_, stored_as))] = storage.uploads.items()
-    assert stored_as == "text/plain"
+    assert stored_as == "text/plain; charset=utf-8"
     assert storage.download_content_types[key] == "text/plain; charset=utf-8"
     assert listed["file"]["content_type"] == "text/plain; charset=utf-8"
 
 
 @pytest.mark.parametrize(
-    ("filename", "data", "extension", "stored_as"),
+    ("filename", "data", "extension"),
     [
-        ("program.exe", b"MZ\x90\x00", "", "application/octet-stream"),  # unrecognized extension
+        ("program.exe", b"MZ\x90\x00", ""),  # unrecognized extension
         # An image type the image pipeline doesn't take.
-        ("photo.heic", b"\x00\x00\x00\x18ftypheic", "", "application/octet-stream"),
-        ("no-extension", _PDF_BYTES, "", "application/octet-stream"),
-        # Content doesn't match the extension. The key's extension was picked
-        # from the filename before the content existed, so it stays.
-        ("fake.pdf", b"<html>not a pdf</html>", ".pdf", "application/pdf"),
-        ("binary.txt", b"abc\x00\x01\x02", ".txt", "text/plain"),
+        ("photo.heic", b"\x00\x00\x00\x18ftypheic", ""),
+        ("no-extension", _PDF_BYTES, ""),
+        # Content doesn't match the extension. The key's extension comes
+        # from the filename, as it did when the upload started.
+        ("fake.pdf", b"<html>not a pdf</html>", ".pdf"),
+        ("binary.txt", b"abc\x00\x01\x02", ".txt"),
     ],
 )
 async def test_other_files_are_stored_as_generic_downloads(
-    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage, filename, data, extension, stored_as
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage, filename, data, extension
 ):
     """Anything is accepted; what isn't a recognized format is kept as an
     opaque binary that can only be downloaded, never displayed inline."""
@@ -172,12 +174,12 @@ async def test_other_files_are_stored_as_generic_downloads(
     stored = await session.get(FileMetadata, item_id)
     assert stored.filename == filename
     assert stored.content_type == "application/octet-stream"
-    assert stored.storage_key == f"users/{user_id}/files/{item_id}{extension}"
-    assert storage.uploads[stored.storage_key] == (data, stored_as)
+    assert stored.storage_key == canonical_file_key(storage, user_id, item_id, data, extension)
+    # Stored as generic, whatever it was uploaded as.
+    assert storage.uploads[stored.storage_key] == (data, "application/octet-stream")
 
     [listed] = (await client.get("/items", headers=_auth(token))).json()["items"]
     assert listed["download_url"].endswith(f"&filename={filename}&disposition=attachment")
-    # Served as generic whatever it was stored as.
     assert storage.download_content_types[stored.storage_key] == "application/octet-stream"
 
 

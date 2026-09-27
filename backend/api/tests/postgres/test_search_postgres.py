@@ -94,7 +94,13 @@ async def _image(session: AsyncSession, user_id: uuid.UUID, chunks: dict[str, li
     item_id = uuid.uuid4()
     repo = ItemRepository(session)
     item = await repo.create_image_item(
-        item_id=item_id, user_id=user_id, storage_key=f"images/{item_id}.png", content_type="image/png", size_bytes=1
+        item_id=item_id,
+        user_id=user_id,
+        storage_key=f"images/{item_id}.png",
+        content_etag='"e"',
+        content_sha256="0" * 64,
+        content_type="image/png",
+        size_bytes=1,
     )
     item.status = ItemStatus.completed
     item.description = Description(text="\n".join(chunks))
@@ -205,6 +211,8 @@ async def test_filenames_and_the_users_own_text_are_still_matched(session, user_
         item_id=uuid.uuid4(),
         user_id=user_id,
         storage_key="files/resume.pdf",
+        content_etag='"e"',
+        content_sha256="0" * 64,
         filename="Resume-2.pdf",
         content_type="application/pdf",
         size_bytes=1,

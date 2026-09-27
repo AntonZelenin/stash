@@ -188,33 +188,60 @@ default credential chain (e.g. an ECS task role), so the same code also runs
 on AWS without static keys.
 
 Key layout (`stash_shared.storage_keys`, used by the API and the thumbnail
-worker):
+worker), in two disjoint areas:
 
-- `users/{user_id}/images/{item_id}{ext}`: uploaded image.
-- `users/{user_id}/files/{item_id}[{ext}]`: uploaded file.
-- `users/{user_id}/thumbnails/{item_id}.webp`: image thumbnail.
+- `uploads/{user_id}/{upload_id}`: staging. The only place a browser can
+  write (a pre-signed, create-only PUT), never an item's content, and
+  expired by a lifecycle rule after a day (see "Uploads").
+- `users/{user_id}/images/{item_id}/{object_id}{ext}`: an image item's
+  original, canonical and immutable: created once, by the API's copy at
+  finalize, and never written again.
+- `users/{user_id}/files/{item_id}/{object_id}[{ext}]`: a file item's
+  original, likewise.
+- `users/{user_id}/thumbnails/{item_id}.webp`: image thumbnail (written by
+  the thumbnail worker; re-running it overwrites the same key).
 
-Keys are made from ids and a validated extension only, never from the
-uploaded filename. That name is kept in `item_files.filename` /
+`{object_id}` is random (`new_object_id`, 128 bits), new for every copy: a
+canonical key names one stored object, it doesn't address content
+(identical content uploaded twice gets two keys), and nothing relies on it
+being unguessable. Keys are made from ids, a validated extension and that
+id only, never from the uploaded filename. That name is kept in `item_files.filename` /
 `item_images.filename`, and downloads are served under it (images uploaded
 before their name was kept have none, and are served unnamed). An item's key is stored on its row
-(`item_images.storage_key` / `thumbnail_key`, `item_files.storage_key`) and
-always read back from there, never rebuilt. So items stored under the older
-unscoped layout (`images/…`, `files/…`, `thumbnails/…`) keep working.
+(`item_images.storage_key` / `thumbnail_key`, `item_files.storage_key`),
+always read back from there, never rebuilt or taken from a queue job, with
+two facts about its original's canonical object:
+
+- `content_etag`: its ETag, an object-state token for consistency (workers
+  read the object only while it still has it, `If-Match`). Not a content
+  identity: S3's ETag is the content's MD5 only for single-part uploads
+  without SSE-KMS (not for multipart uploads, whose ETag is
+  `<md5 of the parts' md5s>-<part count>`), and even then MD5 isn't
+  collision-resistant. Nothing derives a guarantee from what an ETag is.
+- `content_sha256`: the hex SHA-256 of the canonical object's bytes,
+  computed by S3 itself as it wrote the copy: the content's identity.
+
+So items stored under older layouts keep working: the unscoped one
+(`images/…`, `files/…`, `thumbnails/…`) and the one before canonical copies
+(`users/{user_id}/images|files/{item_id}{ext}`, the key the upload URL
+itself wrote). Those "legacy" items have neither; see "Uploads".
 
 Access: the bucket is private, and clients never get credentials or
 direct bucket access. The only way to an object is a short-lived pre-signed
 URL: GET for downloads (`IMAGE_DOWNLOAD_URL_TTL_SECONDS`), PUT for uploads
 (`UPLOAD_URL_TTL_SECONDS`, see "Uploads"). The API issues a download URL
 only for keys of items it loaded filtered by the authenticated user's id, so
-someone else's item is indistinguishable from a missing one (404), and an
-upload URL only for a key it just generated under the requesting user's
-prefix. Deletes likewise take their keys from the owned item's row. Clients
+someone else's item is indistinguishable from a missing one (404), and
+never for a staging key; and an upload URL only for a staging key it just
+generated for the requesting user. The bucket policy backs both up
+whatever signs the URL: a pre-signed request (`s3:authType` =
+`REST-QUERY-STRING`) can't write outside `uploads/`, or read inside it. Deletes likewise take their keys from the owned item's row. Clients
 can never send a key: the upload and edit requests reject unknown fields.
 The user id in a key is for organizing the bucket (per-user cleanup,
 lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
-only source of truth. The thumbnail worker builds its key from the job's
-`user_id` and records it only if that user still owns the item.
+only source of truth. Workers read the object an item's row names, and
+only if the job's `user_id` owns the item; the thumbnail worker builds its
+thumbnail's key from that `user_id`.
 
 Playback: a video or audio file item is played in the clients' own item
 viewer with the browser's native `<video>`/`<audio>` player, straight from
@@ -244,54 +271,183 @@ uploads them straight to object storage.
     client → POST /uploads/{upload_id}/finalize
            ← {id: upload_id, status}   (item created, processing started)
 
+The bytes go to S3 in one pre-signed single `PutObject` (500 MB at most,
+well under S3's 5 GB single-PUT limit). S3 Multipart Upload
+(CreateMultipartUpload / UploadPart / CompleteMultipartUpload) isn't used
+anywhere. Nor is HTTP `multipart/form-data`, which is unrelated to it: the
+API's upload requests are JSON metadata only, and the bytes never pass
+through the API.
+
 Start (`ItemService.start_upload`): the API validates the declared metadata
 first — size (images ≤ 100 MB, files ≤ 500 MB, not empty; a size over the
 limit is a 413), an image's type (PNG/JPEG/GIF/WebP), caption and tags — and
 issues nothing if it's invalid. It then charges the upload to the user's
 quotas (uploads, bytes, and an AI analysis for images and analyzable
 formats; see "Rate limits and quotas"): a 429, and nothing issued, if it
-doesn't fit. It then generates the item id and the storage key, under the user's prefix,
-with the extension from the declared image type or the filename's
-recognized extension (`app.items.files.expected_format`), never the
-filename itself. The upload URL is signed for that key, that content type
-and that exact `Content-Length`, so S3 rejects any other key, type or size
-(the size limit is enforced by S3 itself, not only by the API). Last, it
-records a pending upload (`pending_uploads`: id = the future item id, user,
-key, signed type and size, filename, caption, tag names, `expires_at`).
+doesn't fit. It then generates the item id and a staging key for it
+(`uploads/{user_id}/{upload_id}`: never an item's key). The upload URL is
+signed for that key, that content type, that exact `Content-Length` and
+`If-None-Match: *`, so S3 rejects any other key, type or size (the size
+limit is enforced by S3 itself, not only by the API), and any PUT once an
+object is there: the URL can create the staging object once, never replace
+it. Last, it records a pending upload (`pending_uploads`: id = the future
+item id, user, staging key, signed type and size, filename, caption, tag
+names, `expires_at`), in the same transaction deleting up to 100 of the
+user's abandoned pending rows (see "Incomplete uploads").
 
 Finalize (`ItemService.finalize_upload`): loads the pending upload by id
 *and* the authenticated user's id, row-locked (another user's is a 404),
-and reads back what arrived: its size (HEAD) and first 8 KB (a ranged GET),
-never the whole object. The content is validated as it always was: size,
-and the format sniffed from those bytes (an image must be the declared type;
-a file is classified by extension + content, falling back to generic). If
-nothing has arrived yet it's a 409 and the upload stays pending. Invalid
-content discards the upload (row and object) with a 422. Otherwise, in one
-transaction: the item is created with the upload's id and key, its tags
-linked, its jobs added to the outbox exactly as before direct uploads
-(thumbnail / document analysis / embedding), and the pending row deleted;
-the outbox is flushed after the commit. Finalizing again returns the same
-item without re-processing it.
+and holds that lock until the item is committed. An upload abandoned
+(`expires_at` more than a day past) is discarded instead, a 404. It reads
+back what arrived: its size and ETag (HEAD) and first 8 KB (a ranged GET
+with `If-Match` on that ETag, so the size and the bytes describe the same
+state of the object), never the whole object. The content is validated as it always was:
+size, and the format sniffed from those bytes (an image must be the declared
+type; a file is classified by extension + content, falling back to generic).
+If nothing has arrived yet it's a 409 and the upload stays pending. Invalid
+content discards the upload (row and staging object) with a 422; no
+canonical object is ever made for it.
 
-A file's object is stored with the type expected from its extension (what
-the URL was signed for), which the content check may then refine (a
-charset) or reject (generic). Downloads are therefore always served with
-the validated type from `item_files.content_type`
-(`ResponseContentType`), not the object's own.
+Valid content is then made immutable, in three steps:
+
+1. Copy: S3 copies the staging object server-side to a new canonical key
+   (random, see "Object Storage") with `CopyObject`:
+   `CopySourceIfMatch` = the validated ETag (only the object state that was
+   checked), `If-None-Match: *` (never over an existing object),
+   `ChecksumAlgorithm: SHA256` (S3 computes the copy's SHA-256 from the
+   bytes it writes; a `CopyObject` result is a single-part object, so it's
+   a full-object checksum), stored with the validated content type. If the
+   staging object was replaced after the check, the copy is refused.
+2. Check the copy: a HEAD (`ChecksumMode: ENABLED`) and 8 KB ranged GET of
+   the canonical object. Its size and first bytes must be exactly the ones
+   validated (all the validation looks at) and its ETag the copy's. This is
+   what makes the validation hold for the item without trusting the ETag
+   as a content hash: content swapped in under the same ETag (an MD5
+   collision, or any store whose ETags don't hash content) that differs in
+   what was validated is caught here, on an object nothing else can write.
+   A mismatch deletes the copy (never referenced) and is a 409.
+3. Record: the SHA-256 is read from that HEAD (`ChecksumSHA256` with
+   `ChecksumType` `FULL_OBJECT` or absent; a composite, multipart checksum,
+   `<base64>-<parts>`, is not the content's digest and is never used). No
+   full-object SHA-256 means the finalize fails (a 500, copy deleted)
+   rather than create an item without one.
+
+A 409 creates nothing and leaves the upload pending: the next finalize
+validates what's actually there. Then, in one transaction: the item is
+created with the upload's id, the canonical key, `content_etag` and
+`content_sha256`, its tags linked, its jobs added to the outbox exactly as
+before direct uploads (thumbnail / document analysis / embedding), and the
+pending row deleted. After the commit the staging object is deleted (best
+effort) and the outbox flushed. So the bytes an item has are the canonical
+object's, whose size and first bytes are the ones validated and whose
+SHA-256 is recorded, from its creation on. Downloads are still served with
+the validated type from the row (`ResponseContentType`), not the object's
+own: legacy objects were stored with the type expected from the extension.
+
+Cost: all server-side. Finalize makes one `CopyObject` (S3 reads and hashes
+the object; up to 500 MB, typically seconds, within the request) plus a
+HEAD and an 8 KB GET of the copy; no byte of the object passes through the
+API and nothing is held in memory. Hashing in the API instead would mean
+downloading up to 500 MB per finalize; a client-computed checksum would
+need the frontend to hash the file and S3 to verify it on the PUT.
+
+Concurrency and replays: the pending row's lock serializes finalizes of one
+upload; the second waits, then finds the item and returns it. Finalizing
+again returns the same item without copying or re-processing it. No job
+exists before the commit, so no worker can start on a half-finalized item.
+A delete can't race it either: until the commit there's no item to delete.
+
+Known issue, deferred (not a security problem): a finalize that dies after
+its `CopyObject` succeeded but before its transaction commits leaves an
+unreferenced canonical object. A retry never adopts it (nothing at a key is
+trusted by name): it copies again to a fresh key, so the orphan stays, and
+it's outside `uploads/`, so no lifecycle rule removes it. It's only ever
+reachable by a key no row holds, so it's never served or processed.
+Cleaning these up is a separate task.
+
+After finalize, the upload URL can still create a staging object (the old
+one is deleted) until it expires. Nothing ever reads it: the upload is no
+longer pending, a replayed finalize returns the item as it is, and it
+expires with the lifecycle rule.
+
+Workers never use the key in a queue job (`ImageRef`/`FileRef` are
+informational, still sent for older workers): they read the item's
+`storage_key` and `content_etag` from Postgres, joined on the job's user,
+and read the original only with `If-Match` on that ETag. Anything else at
+the key fails the item permanently, unread. (A consistency check: the
+canonical object is never rewritten, so a different ETag there means
+something outside the application changed it.)
 
 Incomplete uploads: a started upload that is never finalized (the upload
 failed, the tab closed, finalize never arrived) is only a
-`pending_uploads` row, maybe with an object at its key. It's not an item:
-not listed, searched or processed, and no job exists for it. Nothing
-cleans these up yet. The rows are exactly the candidates for a future
-cleanup job: for each row whose `expires_at` is well past (by more than the
-longest upload can take; S3 only checks the URL's expiry when a request
-starts), delete the object at its `storage_key` (a no-op if never
-uploaded), then the row, locking it `FOR UPDATE SKIP LOCKED` so it can't
-race a finalize (`ix_pending_uploads_expires_at` serves that scan). A
-bucket lifecycle rule can't do it, since finalized and abandoned uploads
-share the same prefixes. Rejected uploads are removed at once; only if that
-object delete fails is an object orphaned with no row pointing at it.
+`pending_uploads` row, maybe with a staging object. It's not an item:
+not listed, searched, processed or downloadable, and no job exists for it.
+Staging objects are removed by the bucket's lifecycle rule
+(`expire-staging-uploads`: everything under `uploads/`, 1 day; locally the
+same rule is set by `minio-init`), which can't touch an item's object since
+none lives under `uploads/`. The rows are purged by `start_upload`: the
+user's rows past `expires_at` by more than `ABANDONED_UPLOAD_GRACE` (1 day;
+S3 only checks the URL's expiry when a request starts, so a slow upload may
+legitimately finish late) are deleted, `FOR UPDATE SKIP LOCKED` so a
+finalize in progress is never raced. Rejected uploads are removed at once.
+The API itself only ever deletes staging keys on this path
+(`_delete_staging_object` refuses anything else).
+
+Legacy items: items finalized before canonical copies existed reference the
+key their upload URL wrote (`users/{user_id}/images|files/{item_id}{ext}`)
+and have no `content_etag` or `content_sha256`. They keep working
+unchanged: listed, downloaded and processed from that key, read unpinned.
+They can no longer be overwritten by any upload URL (the bucket policy
+refuses pre-signed writes outside `uploads/`, including URLs issued before
+it), but what's there is whatever was last written before that, which may
+not be what was validated if an item's URL was reused within its 15
+minutes. Neither is backfilled, since the current content isn't known to
+be the validated content.
+
+If S3 Multipart Upload is ever added (e.g. for files over 5 GB, or
+resumable uploads), the staging → canonical design stays; what must
+change:
+- Every pre-signed `UploadPart` URL must be for the upload's own staging key
+  and multipart upload id (issued by the API, like the PUT URL), and
+  `CompleteMultipartUpload` must be done or checked by the API with
+  `If-None-Match: *`, so a completed staging object can't be replaced by
+  completing another upload to the same key. Upload ids must be recorded on
+  the pending row and never reused after completion.
+- The ETag will be `<md5 of parts' md5s>-<parts>`: fine, it's only a token.
+  A composite checksum is not a content digest: the SHA-256 must still come
+  from the canonical copy (step 3), which is single-part.
+- `CopyObject` handles sources up to 5 GB; beyond that the copy needs
+  `UploadPartCopy` (a multipart copy) whose checksum is composite again, so
+  the full-object SHA-256 would need another source (a full-object
+  checksum type on the multipart upload, verified by S3, or hashing).
+- The existing `abort-incomplete-multipart-uploads` lifecycle rule (7 days)
+  already removes abandoned parts.
+
+Verifying AWS S3 checksums: the local stack runs MinIO, which proves
+nothing about AWS. Finalize depends on one S3 behaviour MinIO only
+approximates: after `CopyObject` with `ChecksumAlgorithm: SHA256`, a
+`HeadObject` with `ChecksumMode: ENABLED` returns `ChecksumSHA256` (a
+base64 full-object SHA-256) and `ChecksumType` `FULL_OBJECT` or none.
+MinIO returns the checksum on the HEAD (verified) but not in the
+`CopyObject` response, and ignores `If-None-Match` on copies (harmless:
+the destination key is fresh); the code relies only on the HEAD. If AWS
+didn't return it, every finalize would fail with a 500 (no item is ever
+created without it). So after the first AWS deployment (and after any
+change to the bucket's encryption, e.g. to SSE-KMS), as a manual smoke test:
+1. Upload and finalize one image and one file (e.g. a PDF) through the app.
+2. `aws s3api head-object --bucket <bucket> --key <storage_key>
+   --checksum-mode ENABLED` on each item's `storage_key`: expect
+   `ChecksumSHA256` and `ChecksumType: FULL_OBJECT`.
+3. Check that base64-decoded value is the row's `content_sha256`, and that
+   it equals `sha256sum` of the original file and of the object
+   (`aws s3 cp s3://<bucket>/<storage_key> - | sha256sum`).
+4. Check the row's `content_etag` is the HEAD's `ETag`.
+5. Download both from the app, and check the image gets a thumbnail and the
+   file is analyzed (workers read with `If-Match` on `content_etag`): the
+   items reach `completed`, with no "is not the validated content" errors
+   in the worker logs.
+The deploy workflow's smoke tests don't upload anything, so this isn't
+covered automatically.
 
 Locally the same flow runs against MinIO: upload URLs are signed for
 `S3_PUBLIC_ENDPOINT_URL` (reachable from the browser), and MinIO allows

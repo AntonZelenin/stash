@@ -87,7 +87,7 @@ async def test_describes_the_image_the_job_points_at_and_completes_the_item(
     worker, engine, describer, queue, embedding_queue
 ):
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id, status="processing")
+    await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
 
     await worker.process_message(_delivery(_job(item_id)))
 
@@ -100,7 +100,7 @@ async def test_describes_the_image_the_job_points_at_and_completes_the_item(
     assert embedding_job.item_id == item_id
 
 
-async def test_job_without_an_image_fails_the_item(engine, describer):
+async def test_item_without_a_recorded_thumbnail_fails(engine, describer):
     item_id = uuid.uuid4()
     await insert_item(engine, item_id, status="processing")
     dead_letters = FakeDeadLetterQueue()
@@ -124,7 +124,7 @@ async def test_item_is_not_completed_if_its_embedding_job_cannot_be_added(worker
     """The description and `completed` are in the transaction when adding
     the job fails: all of it rolls back, and the delivery is retried."""
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id, status="processing")
+    await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
 
     async def failing_add_event(*_args, **_kwargs):
         raise RuntimeError("outbox insert failed")
@@ -144,7 +144,7 @@ async def test_a_duplicate_job_completes_the_item_once(worker, engine, describer
     crash before marking it published): the duplicate is skipped, leaving
     one description and one embedding job."""
     item_id = uuid.uuid4()
-    await insert_item(engine, item_id, status="processing")
+    await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
 
     await worker.process_message(_delivery(_job(item_id), "1-0"))
     await worker.process_message(_delivery(_job(item_id), "2-0"))
@@ -156,3 +156,32 @@ async def test_a_duplicate_job_completes_the_item_once(worker, engine, describer
     assert [job.item_id for job in embedding_queue.published] == [item_id]
     async with engine.connect() as conn:
         assert (await conn.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one() == 1
+
+
+async def test_describes_the_recorded_thumbnail_not_the_one_the_job_names(worker, engine, describer):
+    """A job's `image` is informational: a stale or forged key in it is
+    never read."""
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
+    job = ProcessingJob(
+        item_id=item_id,
+        user_id=OWNER_ID,
+        item_type=ItemType.image,
+        image=ImageRef(storage_key=f"users/{uuid.uuid4()}/images/someone-elses.png", content_type="image/png"),
+    )
+
+    await worker.process_message(_delivery(job))
+
+    assert describer.received == [(_THUMBNAIL, "image/webp")]
+    assert await fetch_status(engine, item_id) == "completed"
+
+
+async def test_job_of_another_user_is_not_processed(worker, engine, describer):
+    item_id = uuid.uuid4()
+    await insert_item(engine, item_id, status="processing", thumbnail_key=_THUMBNAIL_KEY)
+    job = ProcessingJob(item_id=item_id, user_id=uuid.uuid4(), item_type=ItemType.image)
+
+    await worker.process_message(_delivery(job))
+
+    assert describer.received == []
+    assert await fetch_status(engine, item_id) == "failed"

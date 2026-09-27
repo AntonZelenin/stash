@@ -179,6 +179,8 @@ class ItemRepository:
         item_id: uuid.UUID,
         user_id: uuid.UUID,
         storage_key: str,
+        content_etag: str,
+        content_sha256: str,
         content_type: str,
         size_bytes: int,
         filename: str | None = None,
@@ -190,7 +192,12 @@ class ItemRepository:
             user_id=user_id,
             type=ItemType.image,
             image=ImageMetadata(
-                storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
+                storage_key=storage_key,
+                content_etag=content_etag,
+                content_sha256=content_sha256,
+                filename=filename,
+                content_type=content_type,
+                size_bytes=size_bytes,
             ),
             tags=list(tags),
         )
@@ -210,6 +217,8 @@ class ItemRepository:
         item_id: uuid.UUID,
         user_id: uuid.UUID,
         storage_key: str,
+        content_etag: str,
+        content_sha256: str,
         filename: str,
         content_type: str,
         size_bytes: int,
@@ -225,7 +234,12 @@ class ItemRepository:
             type=ItemType.file,
             status=status,
             file=FileMetadata(
-                storage_key=storage_key, filename=filename, content_type=content_type, size_bytes=size_bytes
+                storage_key=storage_key,
+                content_etag=content_etag,
+                content_sha256=content_sha256,
+                filename=filename,
+                content_type=content_type,
+                size_bytes=size_bytes,
             ),
             tags=list(tags),
         )
@@ -260,6 +274,23 @@ class ItemRepository:
     async def delete_pending_upload(self, upload: PendingUpload) -> None:
         await self._session.delete(upload)
         await self._session.flush()
+
+    async def delete_abandoned_uploads(self, *, user_id: uuid.UUID, expired_before: datetime, limit: int) -> int:
+        """Deletes up to `limit` of the user's pending uploads whose URL
+        expired before `expired_before`, skipping any a finalize has locked
+        (`SKIP LOCKED`), and returns how many. Only rows: their staging
+        objects are left to the bucket's lifecycle rule, which is the only
+        thing that deletes under the staging prefix."""
+        ids = (
+            select(PendingUpload.id)
+            .where(PendingUpload.user_id == user_id, PendingUpload.expires_at < expired_before)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        result = await self._session.execute(
+            delete(PendingUpload).where(PendingUpload.id.in_(ids)).execution_options(synchronize_session=False)
+        )
+        return result.rowcount
 
     async def get_for_update(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> Item | None:
         """The user's item with everything an edit touches, row-locked

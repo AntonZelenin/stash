@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import fields
 
@@ -8,6 +9,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from stash_shared import storage_keys
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
 from stash_shared.queue.base import (
     DOCUMENT_ANALYSIS_JOBS,
@@ -38,7 +40,7 @@ from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.queue import get_queue_resolver
 from app.rate_limits.limiter import Limit, RateLimiter, RateLimits, get_rate_limiter
 from app.rate_limits.models import RateLimitCounter
-from app.storage.base import ObjectStorage, PresignedUpload, StoredObject
+from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
 from app.storage.minio import get_object_storage
 from app.turnstile import TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
@@ -64,29 +66,55 @@ _TEST_TABLES = [
 class FakeObjectStorage(ObjectStorage):
     """In-memory stand-in for MinIO, so tests never touch real storage.
 
-    `uploads` holds the stored objects (key -> (data, content type)). Like
-    S3, a pre-signed upload only accepts the key, content type and size it
-    was signed for: `put` (what the browser does with the URL) rejects
-    anything else."""
+    `uploads` holds the stored objects (key -> (data, content type)), each
+    with an MD5 ETag like S3's single-part uploads (`etag`), unless a test
+    gave it another one (`overwrite(..., keep_etag=True)`: an ETag is not a
+    content hash). Like S3, a pre-signed upload only accepts the key,
+    content type and size it was signed for, and honors its signed
+    `If-None-Match: *`: `put` (what the browser does with the URL) rejects
+    anything else. `copy_immutable` applies the same conditions S3's
+    CopyObject does, and like S3 with `ChecksumAlgorithm`, keeps the
+    copy's SHA-256 (`inspect` returns it).
+
+    `before_copy`, if set, runs between finalize's inspect and its copy,
+    to model a client racing the finalize."""
 
     _UPLOAD_URL_PREFIX = "https://fake-storage.test/upload/"
 
     def __init__(self):
         self.uploads: dict[str, tuple[bytes, str]] = {}
+        # key -> an ETag other than the content's MD5.
+        self.etags: dict[str, str] = {}
+        # key -> the hex SHA-256 the storage keeps with it (copies only).
+        self.checksums: dict[str, str] = {}
         # key -> (content type, size) each issued upload URL was signed for.
         self.signed_uploads: dict[str, tuple[str, int]] = {}
         self.inspected: list[str] = []
+        self.copies: list[tuple[str, str]] = []
         # key -> the content type its last download URL overrides it with.
         self.download_content_types: dict[str, str | None] = {}
+        self.before_copy: Callable[[], None] | None = None
+
+    @staticmethod
+    def etag_of(data: bytes) -> str:
+        return f'"{hashlib.md5(data).hexdigest()}"'
+
+    def etag(self, key: str) -> str:
+        return self.etags.get(key) or self.etag_of(self.uploads[key][0])
+
+    def data(self, key: str) -> bytes:
+        return self.uploads[key][0]
 
     async def generate_upload_url(
         self, *, key: str, content_type: str, size_bytes: int, expires_in: int
     ) -> PresignedUpload:
+        if not storage_keys.is_staging_key(key):
+            raise ValueError("Upload URLs are only issued for staging keys")
         self.signed_uploads[key] = (content_type, size_bytes)
         return PresignedUpload(
             url=f"{self._UPLOAD_URL_PREFIX}{key}?expires_in={expires_in}",
             method="PUT",
-            headers={"Content-Type": content_type},
+            headers={"Content-Type": content_type, "If-None-Match": "*"},
         )
 
     def put(self, url: str, headers: dict[str, str], data: bytes) -> None:
@@ -95,17 +123,52 @@ class FakeObjectStorage(ObjectStorage):
         content_type, size_bytes = self.signed_uploads[key]
         if headers.get("Content-Type") != content_type or len(data) != size_bytes:
             raise PermissionError("SignatureDoesNotMatch")
+        if headers.get("If-None-Match") != "*":
+            raise PermissionError("SignatureDoesNotMatch")
+        if key in self.uploads:
+            raise FileExistsError("PreconditionFailed")
         self.uploads[key] = (data, content_type)
+
+    def overwrite(self, key: str, data: bytes, *, keep_etag: bool = False) -> None:
+        """Replaces an object unconditionally: what an attacker could do
+        with a write that isn't create-only (a URL issued before URLs were,
+        or any other writer). `keep_etag`: the new content gets the old
+        one's ETag (an MD5 collision, or any storage whose ETags aren't
+        content hashes)."""
+        etag = self.etag(key) if keep_etag else None
+        content_type = self.uploads[key][1] if key in self.uploads else "application/octet-stream"
+        self.uploads[key] = (data, content_type)
+        self.etags.pop(key, None)
+        self.checksums.pop(key, None)
+        if etag is not None:
+            self.etags[key] = etag
 
     async def inspect(self, *, key: str, head_bytes: int) -> StoredObject | None:
         self.inspected.append(key)
         if key not in self.uploads:
             return None
         data, _ = self.uploads[key]
-        return StoredObject(size_bytes=len(data), head=data[:head_bytes])
+        return StoredObject(
+            size_bytes=len(data), head=data[:head_bytes], etag=self.etag(key), sha256=self.checksums.get(key)
+        )
+
+    async def copy_immutable(self, *, source_key: str, source_etag: str, dest_key: str, content_type: str) -> str:
+        if self.before_copy is not None:
+            self.before_copy()
+        if source_key not in self.uploads or self.etag(source_key) != source_etag:
+            raise ObjectChangedError(source_key)
+        if dest_key in self.uploads:
+            raise ObjectChangedError(dest_key)
+        data = self.data(source_key)
+        self.uploads[dest_key] = (data, content_type)
+        self.checksums[dest_key] = hashlib.sha256(data).hexdigest()
+        self.copies.append((source_key, dest_key))
+        return self.etag(dest_key)
 
     async def delete(self, *, key: str) -> None:
         self.uploads.pop(key, None)
+        self.etags.pop(key, None)
+        self.checksums.pop(key, None)
 
     async def generate_download_url(
         self,
@@ -116,6 +179,8 @@ class FakeObjectStorage(ObjectStorage):
         inline: bool = True,
         content_type: str | None = None,
     ) -> str:
+        if storage_keys.is_staging_key(key):
+            raise ValueError("Staging objects are never served")
         self.download_content_types[key] = content_type
         url = f"https://fake-storage.test/{key}?expires_in={expires_in}"
         if filename is None:
