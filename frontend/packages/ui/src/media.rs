@@ -6,6 +6,7 @@ use dioxus_i18n::t;
 
 use crate::AuthSession;
 use crate::icons::{IconMusic, IconPlay, IconVideo};
+use crate::viewer_nav::keep_step_keys;
 
 // `MediaError.code` values (0: the element has no error).
 const MEDIA_ERR_ABORTED: u16 = 1;
@@ -382,6 +383,8 @@ pub(crate) fn MediaPlayer(
                     controls: true,
                     playsinline: true,
                     preload: "metadata",
+                    // ← → seek, rather than step to another item.
+                    onkeydown: move |evt| keep_step_keys(&evt),
                     onerror: on_error,
                     onloadedmetadata: on_metadata,
                     onloadeddata: on_loaded,
@@ -394,6 +397,8 @@ pub(crate) fn MediaPlayer(
                     src: "{url}",
                     controls: true,
                     preload: "metadata",
+                    // ← → seek, rather than step to another item.
+                    onkeydown: move |evt| keep_step_keys(&evt),
                     onerror: on_error,
                     onloadedmetadata: on_metadata,
                     onloadeddata: on_loaded,

@@ -25,6 +25,7 @@ mod filters;
 mod items;
 mod media;
 mod text_kind;
+mod viewer_nav;
 
 mod settings;
 mod welcome;

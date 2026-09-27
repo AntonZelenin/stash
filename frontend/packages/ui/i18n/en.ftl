@@ -192,6 +192,8 @@ item-caption-placeholder = Add a caption
 item-save-as = Save as
 item-type-text = Text
 item-type-link = Link
+item-previous = Previous item
+item-next = Next item
 
 ## File sizes ($size is already formatted for the language)
 

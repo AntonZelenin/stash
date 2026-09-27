@@ -727,12 +727,15 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 56px 24px;
+    padding: 56px var(--lightbox-gutter);
     overflow-y: auto;
     background: rgba(20, 22, 27, 0.72);
     cursor: zoom-out;
     outline: none;
     --lightbox-panel-width: 320px;
+    /* Room on either side of the content; wider with the previous/next
+       buttons there. */
+    --lightbox-gutter: 24px;
 }
 
 /* Image and side panel, as one rounded box. Deliberately no overflow
@@ -764,7 +767,7 @@
    at their real size. */
 .lightbox-image {
     display: block;
-    max-width: calc(100vw - 48px - var(--lightbox-panel-width));
+    max-width: calc(100vw - 2 * var(--lightbox-gutter) - var(--lightbox-panel-width));
     max-height: calc(100vh - 112px);
     object-fit: contain;
 }
@@ -775,7 +778,7 @@
    small videos are scaled up, so the controls have room. */
 .lightbox-video {
     display: block;
-    width: min(1280px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    width: min(1280px, calc(100vw - 2 * var(--lightbox-gutter) - var(--lightbox-panel-width)));
     height: auto;
     /* 16:9 until its metadata gives the real ratio (the default box is a
        fixed 150px tall). */
@@ -795,7 +798,7 @@
     justify-content: center;
     gap: 14px;
     box-sizing: border-box;
-    width: min(720px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    width: min(720px, calc(100vw - 2 * var(--lightbox-gutter) - var(--lightbox-panel-width)));
     max-height: calc(100vh - 112px);
     aspect-ratio: 16 / 9;
     padding: 24px;
@@ -833,7 +836,7 @@
     align-items: center;
     gap: 16px;
     box-sizing: border-box;
-    width: min(520px, calc(100vw - 48px - var(--lightbox-panel-width)));
+    width: min(520px, calc(100vw - 2 * var(--lightbox-gutter) - var(--lightbox-panel-width)));
     padding: 40px 28px 32px;
 }
 
@@ -1194,4 +1197,79 @@
 .lightbox-close .icon {
     width: 20px;
     height: 20px;
+}
+
+/* ---- previous/next item ---- */
+
+/* Wide screens: room for the buttons beside the content. */
+.lightbox-has-nav {
+    --lightbox-gutter: 76px;
+}
+
+/* Halfway down the screen's left and right edges, in the gutter kept
+   clear for them; fixed, so they stay put while a long note scrolls. */
+.lightbox-nav {
+    position: fixed;
+    top: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text-primary);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+
+.lightbox-nav-previous {
+    left: 16px;
+}
+
+.lightbox-nav-next {
+    right: 16px;
+}
+
+.lightbox-nav:hover:not([aria-disabled="true"]) {
+    background: #fff;
+}
+
+.lightbox-nav:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+/* First or last item: shown, so the controls don't jump, but inert. */
+.lightbox-nav[aria-disabled="true"] {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.lightbox-nav .icon {
+    width: 22px;
+    height: 22px;
+}
+
+/* Neighbouring images, fetched ahead of stepping to them. */
+.lightbox-preload {
+    display: none;
+}
+
+/* Narrow screens: no room beside the content, so the buttons sit in the
+   bottom corners, with room kept below the content to scroll it clear. */
+@media (max-width: 760px) {
+    .lightbox-has-nav {
+        --lightbox-gutter: 12px;
+        padding-bottom: 84px;
+    }
+
+    .lightbox-nav {
+        top: auto;
+        bottom: 20px;
+        transform: none;
+    }
 }

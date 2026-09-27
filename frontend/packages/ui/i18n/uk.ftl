@@ -191,6 +191,8 @@ item-caption-placeholder = Додайте підпис
 item-save-as = Зберегти як
 item-type-text = Текст
 item-type-link = Посилання
+item-previous = Попередній елемент
+item-next = Наступний елемент
 
 ## File sizes ($size is already formatted for the language)
 

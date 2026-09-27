@@ -8,11 +8,12 @@ use crate::AuthSession;
 use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::i18n::{Language, api_error_message, current_language};
 use crate::icons::{
-    IconClose, IconFile, IconHeart, IconHeartFilled, IconLink, IconMoreHorizontal, IconPencil,
-    IconTrash,
+    IconChevronLeft, IconChevronRight, IconClose, IconFile, IconHeart, IconHeartFilled, IconLink,
+    IconMoreHorizontal, IconPencil, IconTrash,
 };
 use crate::media::{AudioBody, AudioStage, MediaKind, MediaPlayer, VideoBody};
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
+use crate::viewer_nav::{Step, ViewerNav, keep_step_keys, step_for_key, stepped};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
@@ -62,6 +63,10 @@ fn column_count(grid_width: f64) -> usize {
 /// The column count comes from the grid's measured width (`onresize`),
 /// since the number of column elements is decided here, not in CSS.
 ///
+/// The grid also knows which item is open in its viewer, so the viewer can
+/// step to the previous or next item of `items`, in their order: the
+/// result set the item was opened from, whatever the types.
+///
 /// `on_delete` receives the id of an item the user chose to delete from
 /// its card menu, `on_tags_changed` fires after a tag was added to or
 /// removed from a card, `on_favorite_changed` after a card's favorite
@@ -78,6 +83,49 @@ pub fn ItemGrid(
     on_tag_click: EventHandler<Tag>,
 ) -> Element {
     let mut columns = use_signal(|| PREFERRED_MAX_COLUMNS);
+    let mut open = use_signal(|| None::<OpenItem>);
+
+    // The result set as shown: items without a card are left out, so
+    // stepping never lands on one.
+    let items: Vec<ListedItem> = items.into_iter().filter(has_card).collect();
+    let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+
+    // An item that left the set (deleted, or no longer matching the filters)
+    // closes; forgotten, so it doesn't reopen should it come back.
+    use_effect(use_reactive!(|ids| {
+        if open
+            .peek()
+            .as_ref()
+            .is_some_and(|open| !ids.contains(&open.id))
+        {
+            open.set(None);
+        }
+    }));
+
+    let on_view = use_callback(move |(id, mode): (String, Option<ViewMode>)| {
+        open.set(mode.map(|mode| OpenItem {
+            id,
+            mode,
+            arrived_by: None,
+        }));
+    });
+    // Reads the open item when called, not when rendered, so presses
+    // quicker than a render each count from the item the last one opened.
+    let on_step = use_callback({
+        let ids = ids.clone();
+        move |step: Step| {
+            let next = open().and_then(|open| open.stepped(&ids, step));
+            if next.is_some() {
+                open.set(next);
+            }
+        }
+    });
+
+    let opened = open().filter(|open| ids.contains(&open.id));
+    let nav = opened.as_ref().and_then(|open| {
+        let preload = neighbour_images(&items, &open.id);
+        ViewerNav::new(&ids, &open.id, open.arrived_by, preload, on_step)
+    });
 
     let current_columns = columns();
     let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
@@ -104,6 +152,9 @@ pub fn ItemGrid(
                     for item in stack {
                         ItemCard {
                             key: "{item.id}",
+                            opened: opened.as_ref().filter(|open| open.id == item.id).map(|open| open.mode),
+                            nav: nav.clone().filter(|_| opened.as_ref().is_some_and(|open| open.id == item.id)),
+                            on_view,
                             item,
                             on_delete,
                             on_tags_changed,
@@ -164,10 +215,69 @@ fn CardDate(date: Option<UploadDate>) -> Element {
 }
 
 /// How an item is open in its `ItemView`.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ViewMode {
     Viewing,
     Editing,
+}
+
+/// The item open in an `ItemGrid`'s viewer.
+#[derive(Clone, Debug, PartialEq)]
+struct OpenItem {
+    id: String,
+    mode: ViewMode,
+    /// Set when it was reached by stepping from another item.
+    arrived_by: Option<Step>,
+}
+
+impl OpenItem {
+    /// The item `step` away in `ids`, open for viewing; None at either end,
+    /// while editing (the changes would be lost), or if this one has left
+    /// the set.
+    fn stepped(&self, ids: &[String], step: Step) -> Option<Self> {
+        if self.mode == ViewMode::Editing {
+            return None;
+        }
+        stepped(ids, &self.id, step).map(|id| Self {
+            id: id.clone(),
+            mode: ViewMode::Viewing,
+            arrived_by: Some(step),
+        })
+    }
+}
+
+/// Whether `ItemCard` shows anything for `item`: mirrors its content
+/// match (e.g. an image whose URL couldn't be produced, and without a
+/// caption, has no card).
+fn has_card(item: &ListedItem) -> bool {
+    let has_image = item.thumbnail_url.is_some() || item.download_url.is_some();
+    match (item.r#type.as_str(), &item.file) {
+        ("image", _) if has_image => true,
+        ("file", Some(file)) => file.is_video() || file.is_audio() || item.download_url.is_some(),
+        ("file", None) => false,
+        _ => item.text.is_some(),
+    }
+}
+
+/// The full-size image an image item's viewer shows (not the thumbnail,
+/// which is only the fallback while it's being generated).
+fn viewer_image_url(item: &ListedItem) -> Option<String> {
+    (item.r#type == "image")
+        .then(|| item.download_url.clone().or(item.thumbnail_url.clone()))
+        .flatten()
+}
+
+/// The viewer images of the items either side of `current` in `items`,
+/// to fetch ahead of stepping there. Only images: players fetch their own
+/// URL when they open, and the rest is already loaded with the list.
+fn neighbour_images(items: &[ListedItem], current: &str) -> Vec<String> {
+    let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+    [Step::Previous, Step::Next]
+        .into_iter()
+        .filter_map(|step| stepped(&ids, current, step))
+        .filter_map(|id| items.iter().find(|item| item.id == *id))
+        .filter_map(viewer_image_url)
+        .collect()
 }
 
 /// One saved item: its type-specific content, a footer with its tags,
@@ -185,6 +295,10 @@ enum ViewMode {
 /// card owns the view, so both show one favorite state and share the same
 /// handlers.
 ///
+/// Whether (and how) it's open is kept by the grid: `opened`, and `nav` to
+/// step to its neighbours from there. `on_view` asks the grid to open it
+/// (in a mode) or close it (None).
+///
 /// `on_tags_changed` fires after a tag was added to or removed from it,
 /// `on_favorite_changed` after its favorite state was saved, and
 /// `on_edited` after an edit was saved, and `on_tag_click` with a tag
@@ -192,6 +306,9 @@ enum ViewMode {
 #[component]
 fn ItemCard(
     item: ListedItem,
+    opened: Option<ViewMode>,
+    nav: Option<ViewerNav>,
+    on_view: Callback<(String, Option<ViewMode>)>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
@@ -209,8 +326,11 @@ fn ItemCard(
     };
     let (is_favorite, toggle_favorite) =
         use_favorite(item.id.clone(), item.is_favorite, on_favorite_changed);
-    // Whether the item is open in its `ItemView`, and how.
-    let mut view = use_signal(|| None::<ViewMode>);
+    // Opens the item in its `ItemView` (or closes it: None).
+    let view = use_callback({
+        let item_id = item.id.clone();
+        move |mode: Option<ViewMode>| on_view.call((item_id.clone(), mode))
+    });
 
     // Grid cards show the small thumbnail; the full original is only the
     // fallback while the thumbnail is still being generated. Viewing an
@@ -224,7 +344,7 @@ fn ItemCard(
                 ImageBody {
                     url: url.clone(),
                     caption: caption.clone(),
-                    on_open: move |_| view.set(Some(ViewMode::Viewing)),
+                    on_open: move |_| view.call(Some(ViewMode::Viewing)),
                 }
             },
         ),
@@ -247,7 +367,7 @@ fn ItemCard(
                         filename: file.filename.clone(),
                         details: file_details(&file.filename, file.size_bytes),
                         caption: caption.clone(),
-                        on_open: move |_| view.set(Some(ViewMode::Viewing)),
+                        on_open: move |_| view.call(Some(ViewMode::Viewing)),
                     }
                 },
             ),
@@ -261,7 +381,7 @@ fn ItemCard(
                         filename: file.filename.clone(),
                         details: file_details(&file.filename, file.size_bytes),
                         caption: caption.clone(),
-                        on_open: move |_| view.set(Some(ViewMode::Viewing)),
+                        on_open: move |_| view.call(Some(ViewMode::Viewing)),
                     }
                 },
             ),
@@ -290,11 +410,11 @@ fn ItemCard(
                     class: "item-card-note-main",
                     role: "button",
                     tabindex: "0",
-                    onclick: move |_| view.set(Some(ViewMode::Viewing)),
+                    onclick: move |_| view.call(Some(ViewMode::Viewing)),
                     onkeydown: move |evt| {
                         if evt.key() == Key::Enter || evt.key() == Key::Character(" ".into()) {
                             evt.prevent_default();
-                            view.set(Some(ViewMode::Viewing));
+                            view.call(Some(ViewMode::Viewing));
                         }
                     },
                     p { class: "item-card-note-text", LinkedText { text: text.clone() } }
@@ -328,20 +448,21 @@ fn ItemCard(
             div { class: "item-card-actions",
                 ItemMenu {
                     can_edit: true,
-                    on_edit: move |_| view.set(Some(ViewMode::Editing)),
+                    on_edit: move |_| view.call(Some(ViewMode::Editing)),
                     on_delete: {
                         let item_id = item_id.clone();
                         move |_| on_delete.call(item_id.clone())
                     },
                 }
             }
-            if let Some(mode) = view() {
+            if let Some(mode) = opened {
                 OpenedItem {
                     item: item.clone(),
                     mode,
+                    nav,
                     is_favorite,
                     on_toggle_favorite: toggle_favorite,
-                    on_mode: move |mode| view.set(mode),
+                    on_mode: move |mode| view.call(mode),
                     on_delete: move |_| on_delete.call(item_id.clone()),
                     on_tags_changed,
                     on_tag_click,
@@ -466,6 +587,9 @@ fn use_favorite(
 fn OpenedItem(
     item: ListedItem,
     mode: ViewMode,
+    /// Stepping to the neighbouring items, when opened from a result set.
+    #[props(default)]
+    nav: Option<ViewerNav>,
     is_favorite: bool,
     on_toggle_favorite: EventHandler<()>,
     on_mode: EventHandler<Option<ViewMode>>,
@@ -475,12 +599,7 @@ fn OpenedItem(
     on_saved: EventHandler<ListedItem>,
 ) -> Element {
     let media = match (item.r#type.as_str(), &item.file) {
-        // The view shows the full original image, not the thumbnail.
-        ("image", _) => item
-            .download_url
-            .clone()
-            .or(item.thumbnail_url.clone())
-            .map(ViewMedia::Image),
+        ("image", _) => viewer_image_url(&item).map(ViewMedia::Image),
         ("file", Some(file)) if file.is_video() => Some(ViewMedia::Video {
             item_id: item.id.clone(),
             poster: item.thumbnail_url.clone(),
@@ -496,6 +615,7 @@ fn OpenedItem(
     rsx! {
         ItemView {
             media,
+            nav,
             editing: mode == ViewMode::Editing,
             reading: is_note && mode == ViewMode::Viewing,
             on_close: move |_| on_mode.call(None),
@@ -1135,6 +1255,8 @@ pub(crate) fn TagPicker(
                     let found = enter_matches;
                     let typed = enter_typed;
                     move |evt: KeyboardEvent| {
+                        // ← → move the caret, not a viewer it's in.
+                        keep_step_keys(&evt);
                         if evt.key() == Key::Escape {
                             // Close just the picker, not a viewer it's in.
                             evt.stop_propagation();
@@ -1240,9 +1362,15 @@ enum ViewMedia {
 /// `reading` (a note being read) widens the panel for its text and lets it
 /// grow to the text's full length: the backdrop then scrolls, rather than
 /// the text inside the panel.
+///
+/// With `nav` (opened from a result set), ← → and arrow buttons at the
+/// screen's sides step to the previous/next item; not while `editing`.
+/// Text fields and players inside keep ← → for themselves (see
+/// `keep_step_keys`).
 #[component]
 fn ItemView(
     media: Option<ViewMedia>,
+    #[props(default)] nav: Option<ViewerNav>,
     editing: bool,
     #[props(default)] reading: bool,
     on_close: EventHandler<()>,
@@ -1257,22 +1385,49 @@ fn ItemView(
         None => t!("item-viewer"),
     };
     let mut dialog = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    // The step that opened this item, if any (each item stepped to gets a
+    // view of its own), and its button in this view.
+    let arrived_by = use_hook(|| nav.as_ref().and_then(|nav| nav.arrived_by));
+    let mut arrival_button = use_signal(|| None::<std::rc::Rc<MountedData>>);
+    let mut arrival_focused = use_signal(|| false);
+    let nav = nav.filter(|_| !editing);
 
     // Keep keyboard focus on the dialog whenever it's not being edited, so
-    // Escape reaches it: on opening, and after leaving edit mode, when the
-    // focused form field (or Cancel/Save button) has just been removed.
-    // While editing, the form's field has focus instead.
+    // Escape and ← → reach it: on opening, and after leaving edit mode, when
+    // the focused form field (or Cancel/Save button) has just been removed.
+    // While editing, the form's field has focus instead. Reached with an
+    // arrow button (or key), that button has it at first instead, so
+    // pressing it again keeps going; ← → still work from there.
     use_effect(use_reactive!(|editing| {
-        if !editing && let Some(dialog) = dialog() {
+        if editing {
+            return;
+        }
+        let target = if arrived_by.is_some() && !*arrival_focused.peek() {
+            let button = arrival_button();
+            if button.is_some() {
+                arrival_focused.set(true);
+            }
+            button
+        } else {
+            dialog()
+        };
+        if let Some(target) = target {
             spawn(async move {
-                let _ = dialog.set_focus(true).await;
+                let _ = target.set_focus(true).await;
             });
         }
     }));
 
+    let has_nav = nav.is_some();
+    let key_nav = nav.clone();
     rsx! {
         div {
-            class: if reading { "lightbox lightbox-reading" } else { "lightbox" },
+            class: match (reading, has_nav) {
+                (false, false) => "lightbox",
+                (false, true) => "lightbox lightbox-has-nav",
+                (true, false) => "lightbox lightbox-reading",
+                (true, true) => "lightbox lightbox-reading lightbox-has-nav",
+            },
             role: "dialog",
             aria_modal: "true",
             aria_label: label,
@@ -1285,6 +1440,14 @@ fn ItemView(
                         on_cancel_edit.call(());
                     } else {
                         on_close.call(());
+                    }
+                } else if let Some(nav) = &key_nav
+                    && let Some(step) = step_for_key(&evt.key(), evt.modifiers(), editing)
+                {
+                    // Not also scrolling the backdrop sideways.
+                    evt.prevent_default();
+                    if nav.allows(step) {
+                        nav.on_step.call(step);
                     }
                 }
             },
@@ -1323,6 +1486,52 @@ fn ItemView(
                     None => rsx! {},
                 }
                 div { class: "lightbox-panel", {children} }
+            }
+            if let Some(nav) = nav {
+                // `aria-disabled` at either end rather than `disabled`: a
+                // disabled button can't keep focus (having just stepped to
+                // the last item with it), and in some browsers a click on
+                // one falls through to the backdrop, closing the view.
+                for step in [Step::Previous, Step::Next] {
+                    button {
+                        key: "{step:?}",
+                        class: match step {
+                            Step::Previous => "lightbox-nav lightbox-nav-previous",
+                            Step::Next => "lightbox-nav lightbox-nav-next",
+                        },
+                        r#type: "button",
+                        title: step.label(),
+                        aria_label: step.label(),
+                        aria_disabled: if nav.allows(step) { "false" } else { "true" },
+                        onmounted: move |evt| {
+                            if arrived_by == Some(step) {
+                                arrival_button.set(Some(evt.data()));
+                            }
+                        },
+                        onclick: {
+                            let nav = nav.clone();
+                            move |evt: MouseEvent| {
+                                evt.stop_propagation();
+                                if nav.allows(step) {
+                                    nav.on_step.call(step);
+                                }
+                            }
+                        },
+                        match step {
+                            Step::Previous => rsx! { IconChevronLeft {} },
+                            Step::Next => rsx! { IconChevronRight {} },
+                        }
+                    }
+                }
+                for url in nav.preload.clone() {
+                    img {
+                        key: "{url}",
+                        class: "lightbox-preload",
+                        src: "{url}",
+                        alt: "",
+                        aria_hidden: "true",
+                    }
+                }
             }
             button {
                 class: "lightbox-close",
@@ -1514,6 +1723,216 @@ mod tests {
         // ...then a 4th rather than stretching the cards.
         assert_eq!(column_count(1361.0), 4);
         assert_eq!(column_count(5000.0), 4);
+    }
+
+    fn item(id: &str, r#type: &str) -> ListedItem {
+        ListedItem {
+            id: id.to_string(),
+            r#type: r#type.to_string(),
+            status: "ready".to_string(),
+            created_at: "2026-09-24T12:21:14Z".to_string(),
+            text: None,
+            download_url: None,
+            thumbnail_url: None,
+            file: None,
+            tags: Vec::new(),
+            is_favorite: false,
+        }
+    }
+
+    fn image(id: &str) -> ListedItem {
+        ListedItem {
+            download_url: Some(format!("https://files/{id}.png")),
+            thumbnail_url: Some(format!("https://files/{id}.webp")),
+            ..item(id, "image")
+        }
+    }
+
+    fn file(id: &str, kind: &str, download_url: bool) -> ListedItem {
+        ListedItem {
+            download_url: download_url.then(|| format!("https://files/{id}")),
+            file: Some(api::ListedFile {
+                filename: format!("{id}.bin"),
+                content_type: "application/octet-stream".to_string(),
+                size_bytes: 1,
+                kind: kind.to_string(),
+            }),
+            ..item(id, "file")
+        }
+    }
+
+    fn note(id: &str, r#type: &str) -> ListedItem {
+        ListedItem {
+            text: Some(format!("{id} https://example.com")),
+            ..item(id, r#type)
+        }
+    }
+
+    /// The grid's result set: `items` as given, minus those without a card.
+    fn result_set(items: &[ListedItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter(|item| has_card(item))
+            .map(|item| item.id.clone())
+            .collect()
+    }
+
+    fn viewing(id: &str) -> OpenItem {
+        OpenItem {
+            id: id.to_string(),
+            mode: ViewMode::Viewing,
+            arrived_by: None,
+        }
+    }
+
+    /// Where `steps`, applied one after another from `start`, end up.
+    fn after(ids: &[String], start: OpenItem, steps: &[Step]) -> OpenItem {
+        steps
+            .iter()
+            .fold(start, |open, &step| open.stepped(ids, step).unwrap_or(open))
+    }
+
+    #[test]
+    fn stepping_crosses_item_types() {
+        // image → PDF → note → link → video → audio
+        let items = [
+            image("img"),
+            file("pdf", "document", true),
+            note("txt", "text"),
+            note("url", "link"),
+            file("vid", "video", false),
+            file("mp3", "audio", false),
+        ];
+        let ids = result_set(&items);
+        assert_eq!(ids, ["img", "pdf", "txt", "url", "vid", "mp3"]);
+
+        let next = viewing("img").stepped(&ids, Step::Next).unwrap();
+        assert_eq!(next.id, "pdf");
+        assert_eq!(next.mode, ViewMode::Viewing);
+        assert_eq!(next.arrived_by, Some(Step::Next));
+        assert_eq!(
+            after(&ids, viewing("img"), &[Step::Next; 5]).id,
+            "mp3",
+            "every type in turn"
+        );
+        let back = viewing("url").stepped(&ids, Step::Previous).unwrap();
+        assert_eq!(
+            (back.id.as_str(), back.arrived_by),
+            ("txt", Some(Step::Previous))
+        );
+    }
+
+    #[test]
+    fn stepping_keeps_the_result_sets_order() {
+        // e.g. search results, ranked by relevance rather than date or type.
+        let items = [note("b", "text"), image("c"), note("a", "link")];
+        let ids = result_set(&items);
+        assert_eq!(
+            after(&ids, viewing("b"), &[Step::Next]).id,
+            "c",
+            "the next result, not the next by id"
+        );
+        assert_eq!(after(&ids, viewing("c"), &[Step::Next]).id, "a");
+    }
+
+    #[test]
+    fn stepping_skips_items_without_a_card() {
+        let unreachable_image = item("broken", "image");
+        let file_without_url = file("gone", "document", false);
+        let items = [
+            note("a", "text"),
+            unreachable_image,
+            file_without_url,
+            note("b", "text"),
+        ];
+        assert_eq!(result_set(&items), ["a", "b"]);
+    }
+
+    #[test]
+    fn processing_or_failed_items_are_stepped_to_like_any_other() {
+        // Their viewer shows what there is: the original until a thumbnail
+        // is made, or the player's own loading/failed message.
+        let processing = ListedItem {
+            thumbnail_url: None,
+            status: "processing".to_string(),
+            ..image("new")
+        };
+        let failed_video = ListedItem {
+            status: "failed".to_string(),
+            ..file("vid", "video", false)
+        };
+        let ids = result_set(&[note("a", "text"), processing, failed_video]);
+        assert_eq!(ids, ["a", "new", "vid"]);
+    }
+
+    #[test]
+    fn stepping_stops_at_either_end() {
+        let ids = result_set(&[note("a", "text"), note("b", "text")]);
+        assert!(viewing("a").stepped(&ids, Step::Previous).is_none());
+        assert!(viewing("b").stepped(&ids, Step::Next).is_none());
+        assert!(
+            viewing("only")
+                .stepped(&result_set(&[note("only", "text")]), Step::Next)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rapid_steps_each_count_from_the_last_one() {
+        let ids = result_set(&[note("a", "text"), image("b"), note("c", "link"), image("d")]);
+        // The grid reads the open item at each press, so presses faster
+        // than it renders don't all start from the same item...
+        assert_eq!(after(&ids, viewing("a"), &[Step::Next; 3]).id, "d");
+        // ...and more of them than there are items just stop at the end.
+        assert_eq!(after(&ids, viewing("a"), &[Step::Next; 10]).id, "d");
+        let there_and_back = [
+            Step::Next,
+            Step::Next,
+            Step::Previous,
+            Step::Next,
+            Step::Next,
+        ];
+        assert_eq!(after(&ids, viewing("a"), &there_and_back).id, "d");
+    }
+
+    #[test]
+    fn stepping_uses_the_current_result_set() {
+        let open = viewing("b");
+        let before = result_set(&[note("a", "text"), note("b", "text"), note("c", "text")]);
+        assert_eq!(open.stepped(&before, Step::Next).unwrap().id, "c");
+        // "c" deleted meanwhile (or filtered out): the set has changed.
+        let after_delete = result_set(&[note("a", "text"), note("b", "text")]);
+        assert!(open.stepped(&after_delete, Step::Next).is_none());
+        // The open item itself is gone: nowhere to step from.
+        let without_it = result_set(&[note("a", "text"), note("c", "text")]);
+        assert!(open.stepped(&without_it, Step::Next).is_none());
+    }
+
+    #[test]
+    fn no_stepping_while_editing() {
+        let ids = result_set(&[note("a", "text"), note("b", "text")]);
+        let editing = OpenItem {
+            mode: ViewMode::Editing,
+            ..viewing("a")
+        };
+        assert!(editing.stepped(&ids, Step::Next).is_none());
+    }
+
+    #[test]
+    fn neighbouring_images_are_fetched_ahead() {
+        let items = [
+            image("a"),
+            note("b", "text"),
+            image("c"),
+            file("d", "video", true),
+        ];
+        assert_eq!(neighbour_images(&items, "a"), Vec::<String>::new());
+        assert_eq!(
+            neighbour_images(&items, "b"),
+            ["https://files/a.png", "https://files/c.png"]
+        );
+        // A video's player fetches its own URL.
+        assert_eq!(neighbour_images(&items, "c"), Vec::<String>::new());
     }
 
     #[test]
