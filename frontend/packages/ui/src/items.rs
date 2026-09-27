@@ -1,5 +1,5 @@
 use api::{ItemUpdate, ListedItem, Tag, TextItemType};
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 use futures_timer::Delay;
@@ -67,6 +67,11 @@ fn column_count(grid_width: f64) -> usize {
 /// step to the previous or next item of `items`, in their order: the
 /// result set the item was opened from, whatever the types.
 ///
+/// With `group_by_day` (chronological listings), the items are split into
+/// one section per day saved, each headed by the day and laid out as its own
+/// masonry grid; `items` must already be in the order to show, and each
+/// day keeps it. The viewer still steps through all of `items`.
+///
 /// `on_delete` receives the id of an item the user chose to delete from
 /// its card menu, `on_tags_changed` fires after a tag was added to or
 /// removed from a card, `on_favorite_changed` after a card's favorite
@@ -76,6 +81,7 @@ fn column_count(grid_width: f64) -> usize {
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
+    #[props(default)] group_by_day: bool,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<()>,
@@ -128,17 +134,20 @@ pub fn ItemGrid(
     });
 
     let current_columns = columns();
-    let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); current_columns];
-    for (index, item) in items.into_iter().enumerate() {
-        stacks[index % current_columns].push(item);
-    }
+    let sections = if group_by_day {
+        day_sections(items, &Local, Local::now().date_naive())
+    } else {
+        vec![(None, items)]
+    };
 
     rsx! {
         document::Link { rel: "stylesheet", href: ITEMS_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
 
+        // Measured here rather than on each section's grid: every section
+        // has the same width, so the same column count.
         div {
-            class: "item-grid",
+            class: "item-feed",
             onresize: move |evt| {
                 if let Ok(size) = evt.get_content_box_size() {
                     let count = column_count(size.width);
@@ -147,26 +156,121 @@ pub fn ItemGrid(
                     }
                 }
             },
-            for (index , stack) in stacks.into_iter().enumerate() {
-                div { class: "item-grid-column", key: "{index}",
-                    for item in stack {
-                        ItemCard {
-                            key: "{item.id}",
-                            opened: opened.as_ref().filter(|open| open.id == item.id).map(|open| open.mode),
-                            nav: nav.clone().filter(|_| opened.as_ref().is_some_and(|open| open.id == item.id)),
-                            on_view,
-                            item,
-                            on_delete,
-                            on_tags_changed,
-                            on_favorite_changed,
-                            on_edited,
-                            on_tag_click,
+            for (heading , section_items) in sections {
+                section {
+                    class: "item-feed-section",
+                    key: "{heading.map(DayHeading::key).unwrap_or_default()}",
+                    if let Some(heading) = heading {
+                        h2 { class: "item-feed-heading", {heading.label()} }
+                    }
+                    div { class: "item-grid",
+                        for (index , stack) in masonry_stacks(section_items, current_columns).into_iter().enumerate() {
+                            div { class: "item-grid-column", key: "{index}",
+                                for item in stack {
+                                    ItemCard {
+                                        key: "{item.id}",
+                                        opened: opened.as_ref().filter(|open| open.id == item.id).map(|open| open.mode),
+                                        nav: nav.clone().filter(|_| opened.as_ref().is_some_and(|open| open.id == item.id)),
+                                        on_view,
+                                        item,
+                                        on_delete,
+                                        on_tags_changed,
+                                        on_favorite_changed,
+                                        on_edited,
+                                        on_tag_click,
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// `items` dealt round-robin into `columns` stacks (see `ItemGrid`).
+fn masonry_stacks(items: Vec<ListedItem>, columns: usize) -> Vec<Vec<ListedItem>> {
+    let mut stacks: Vec<Vec<ListedItem>> = vec![Vec::new(); columns];
+    for (index, item) in items.into_iter().enumerate() {
+        stacks[index % columns].push(item);
+    }
+    stacks
+}
+
+/// The heading of a day's section in a chronological listing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DayHeading {
+    Today,
+    Yesterday,
+    /// Any other day, shown as its date.
+    Date(NaiveDate),
+}
+
+impl DayHeading {
+    fn new(day: NaiveDate, today: NaiveDate) -> Self {
+        if day == today {
+            DayHeading::Today
+        } else if today.pred_opt() == Some(day) {
+            DayHeading::Yesterday
+        } else {
+            DayHeading::Date(day)
+        }
+    }
+
+    /// A date reads "26 вересня 2026": the month in the genitive in
+    /// Ukrainian.
+    fn label(self) -> String {
+        match self {
+            DayHeading::Today => t!("items-today"),
+            DayHeading::Yesterday => t!("items-yesterday"),
+            DayHeading::Date(day) => day
+                .format_localized("%-d %B %Y", current_language().chrono_locale())
+                .to_string(),
+        }
+    }
+
+    /// Distinct per day, for the section's key.
+    fn key(self) -> String {
+        match self {
+            DayHeading::Today => "today".to_string(),
+            DayHeading::Yesterday => "yesterday".to_string(),
+            DayHeading::Date(day) => day.to_string(),
+        }
+    }
+}
+
+/// `items` split by the day (in `zone`) each was saved: the days in the
+/// order their first item appears, each day's items in their order, so a
+/// sorted list stays sorted. Items whose timestamp can't be parsed go into
+/// a last section without a heading.
+fn day_sections<Tz: TimeZone>(
+    items: Vec<ListedItem>,
+    zone: &Tz,
+    today: NaiveDate,
+) -> Vec<(Option<DayHeading>, Vec<ListedItem>)> {
+    let mut days: Vec<(NaiveDate, Vec<ListedItem>)> = Vec::new();
+    let mut undated = Vec::new();
+    for item in items {
+        let day = DateTime::parse_from_rfc3339(&item.created_at)
+            .ok()
+            .map(|at| at.with_timezone(zone).date_naive());
+        match day {
+            Some(day) => match days.iter_mut().find(|(existing, _)| *existing == day) {
+                Some((_, day_items)) => day_items.push(item),
+                None => days.push((day, vec![item])),
+            },
+            None => undated.push(item),
+        }
+    }
+    let mut sections: Vec<_> = days
+        .into_iter()
+        .map(|(day, items)| (Some(DayHeading::new(day, today)), items))
+        .collect();
+    if !undated.is_empty() {
+        sections.push((None, undated));
+    }
+    sections
 }
 
 /// When an item was saved, formatted for its card: a short date shown on the
@@ -1978,6 +2082,129 @@ mod tests {
         in_language(Language::English, || {
             assert!(UploadDate::from_api("not a date").is_none());
             assert!(UploadDate::from_api("").is_none());
+        });
+    }
+
+    fn saved_at(id: &str, created_at: &str) -> ListedItem {
+        ListedItem {
+            created_at: created_at.to_string(),
+            ..item(id, "text")
+        }
+    }
+
+    fn section_ids(
+        sections: &[(Option<DayHeading>, Vec<ListedItem>)],
+    ) -> Vec<(Option<DayHeading>, Vec<&str>)> {
+        sections
+            .iter()
+            .map(|(heading, items)| {
+                (
+                    *heading,
+                    items.iter().map(|item| item.id.as_str()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn items_are_grouped_by_day_keeping_their_order() {
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        let today = day(2026, 9, 28);
+        let newest_first = vec![
+            saved_at("a", "2026-09-28T10:00:00Z"),
+            saved_at("b", "2026-09-28T08:00:00Z"),
+            saved_at("c", "2026-09-27T20:00:00Z"),
+            saved_at("d", "2026-09-26T09:00:00Z"),
+            saved_at("e", "2026-09-26T07:00:00Z"),
+        ];
+        assert_eq!(
+            section_ids(&day_sections(newest_first.clone(), &utc, today)),
+            [
+                (Some(DayHeading::Today), vec!["a", "b"]),
+                (Some(DayHeading::Yesterday), vec!["c"]),
+                (Some(DayHeading::Date(day(2026, 9, 26))), vec!["d", "e"]),
+            ]
+        );
+
+        let oldest_first: Vec<_> = newest_first.into_iter().rev().collect();
+        assert_eq!(
+            section_ids(&day_sections(oldest_first, &utc, today)),
+            [
+                (Some(DayHeading::Date(day(2026, 9, 26))), vec!["e", "d"]),
+                (Some(DayHeading::Yesterday), vec!["c"]),
+                (Some(DayHeading::Today), vec!["b", "a"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn days_follow_the_viewers_time_zone() {
+        let kyiv_summer = chrono::FixedOffset::east_opt(3 * 3600).unwrap();
+        // 22:30 UTC on the 27th is already the 28th in Kyiv.
+        let items = vec![
+            saved_at("late", "2026-09-27T22:30:00Z"),
+            saved_at("earlier", "2026-09-27T20:30:00Z"),
+        ];
+        assert_eq!(
+            section_ids(&day_sections(items, &kyiv_summer, day(2026, 9, 28))),
+            [
+                (Some(DayHeading::Today), vec!["late"]),
+                (Some(DayHeading::Yesterday), vec!["earlier"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_is_headed_once_and_undated_items_go_last() {
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        let items = vec![
+            saved_at("a", "2026-09-20T10:00:00Z"),
+            saved_at("broken", "not a date"),
+            saved_at("b", "2026-09-19T10:00:00Z"),
+            saved_at("c", "2026-09-20T09:00:00Z"),
+        ];
+        assert_eq!(
+            section_ids(&day_sections(items, &utc, day(2026, 9, 28))),
+            [
+                (Some(DayHeading::Date(day(2026, 9, 20))), vec!["a", "c"]),
+                (Some(DayHeading::Date(day(2026, 9, 19))), vec!["b"]),
+                (None, vec!["broken"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn day_headings_name_today_and_yesterday_then_the_date() {
+        let today = day(2026, 9, 28);
+        assert_eq!(DayHeading::new(today, today), DayHeading::Today);
+        assert_eq!(
+            DayHeading::new(day(2026, 9, 27), today),
+            DayHeading::Yesterday
+        );
+        // No "the day before yesterday".
+        assert_eq!(
+            DayHeading::new(day(2026, 9, 26), today),
+            DayHeading::Date(day(2026, 9, 26))
+        );
+        in_language(Language::Ukrainian, || {
+            assert_eq!(DayHeading::Today.label(), "Сьогодні");
+            assert_eq!(DayHeading::Yesterday.label(), "Вчора");
+            assert_eq!(
+                DayHeading::Date(day(2026, 9, 26)).label(),
+                "26 вересня 2026"
+            );
+        });
+        in_language(Language::English, || {
+            assert_eq!(DayHeading::Today.label(), "Today");
+            assert_eq!(DayHeading::Yesterday.label(), "Yesterday");
+            assert_eq!(
+                DayHeading::Date(day(2026, 9, 26)).label(),
+                "26 September 2026"
+            );
         });
     }
 

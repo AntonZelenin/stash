@@ -163,6 +163,9 @@ tags-show-tagged = Show items tagged { $name }
 
 ## Items
 
+items-today = Today
+items-yesterday = Yesterday
+
 item-edit = Edit
 item-delete = Delete
 item-more-actions = More actions

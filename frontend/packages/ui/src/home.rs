@@ -164,7 +164,8 @@ pub fn Home() -> Element {
     // Re-runs whenever the filters or order change (they're read below,
     // outside the async block, which is what subscribes to them). `submit`, deletes and
     // tag edits call `.restart()` so changes show up without a reload. No
-    // pagination yet.
+    // pagination yet. Resolves to the order it was fetched in too, as the
+    // previous result stays on screen while a new order loads.
     let mut saved_items = use_resource({
         let session = session.clone();
         move || {
@@ -172,7 +173,7 @@ pub fn Home() -> Element {
             let filters = current_filters();
             let sort = sort();
             shuffle();
-            async move { session.list_items(None, 30, filters, sort).await }
+            async move { (sort, session.list_items(None, 30, filters, sort).await) }
         }
     });
 
@@ -857,19 +858,20 @@ pub fn Home() -> Element {
                                     p { {t!("home-loading")} }
                                 }
                             },
-                            Some(Err(err)) => rsx! {
+                            Some((_, Err(err))) => rsx! {
                                 div { class: "stash-empty",
                                     p { {t!("home-load-failed", error: api_error_message(err))} }
                                 }
                             },
-                            Some(Ok(response)) if response.items.is_empty() && current_filters() == ItemQuery::default() => rsx! {
+                            Some((_, Ok(response))) if response.items.is_empty() && current_filters() == ItemQuery::default() => rsx! {
                                 div { class: "stash-empty",
                                     IconStash {}
                                     p { {t!("home-empty")} }
                                 }
                             },
-                            Some(Ok(response)) => item_results(
+                            Some((sort, Ok(response))) => item_results(
                                 &response.items,
+                                *sort != ItemSort::Random,
                                 t!("home-no-filter-matches"),
                                 delete_item,
                                 refresh_items,
@@ -882,6 +884,7 @@ pub fn Home() -> Element {
                         {match &*search_results.read() {
                             Some(Some((query, Ok(response)))) => item_results(
                                 &response.items,
+                                false,
                                 t!("search-no-results", query: query.as_str()),
                                 delete_item,
                                 refresh_items,
@@ -909,9 +912,11 @@ pub fn Home() -> Element {
 }
 
 /// Renders a list page or search results (already filtered by the
-/// server), or `empty_message` if there are none.
+/// server), or `empty_message` if there are none. `group_by_day` for
+/// chronological listings (see `ItemGrid`).
 fn item_results(
     items: &[ListedItem],
+    group_by_day: bool,
     empty_message: String,
     on_delete: Callback<String>,
     on_tags_changed: Callback<()>,
@@ -929,6 +934,7 @@ fn item_results(
         rsx! {
             ItemGrid {
                 items: items.to_vec(),
+                group_by_day,
                 on_delete,
                 on_tags_changed,
                 on_favorite_changed,

@@ -162,6 +162,9 @@ tags-show-tagged = Показати записи з тегом { $name }
 
 ## Items
 
+items-today = Сьогодні
+items-yesterday = Вчора
+
 item-edit = Редагувати
 item-delete = Видалити
 item-more-actions = Інші дії

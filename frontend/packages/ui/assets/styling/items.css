@@ -12,9 +12,46 @@
     /* Must match COLUMN_GAP_PX in items.rs. */
     gap: 20px;
     width: 100%;
+}
+
+/* The grid, or one grid per day in chronological listings. */
+.item-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    width: 100%;
     /* Same gap as search-to-filters, so search, filters and items read as
        one consistent stack. */
     margin: 12px 0 0;
+}
+
+.item-feed-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* A quiet label: small and muted, so the cards stay the focus. */
+.item-feed-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    /* Between --text-muted and --text-primary. */
+    color: #4b5563;
+}
+
+/* A hairline after the label, running to the end of the row. Only headed
+   (day-grouped) sections get it. A shade darker than --border, so it
+   separates days more clearly than the cards' own borders. */
+.item-feed-heading::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: #cbd0d8;
 }
 
 .item-grid-column {
