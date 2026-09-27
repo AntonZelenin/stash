@@ -83,6 +83,17 @@ async def test_token_solved_elsewhere_is_refused(client: AsyncClient, turnstile:
     _assert_verification_failed(await _register(client, turnstile.issue(action="login")))
 
 
+async def test_testing_key_answers_register(client: AsyncClient, turnstile: FakeSiteverify, session):
+    # Cloudflare's test secret keys (the local stack's) echo no action and
+    # hostname "example.com", whatever the widget was rendered with.
+    turnstile.testing_key = True
+
+    response = await _register(client, turnstile.issue())
+
+    assert response.status_code == 201
+    assert await _users(session) == ["alice@example.com"]
+
+
 async def test_cloudflare_unreachable_fails_closed(client: AsyncClient, turnstile: FakeSiteverify, session):
     turnstile.down = True
 

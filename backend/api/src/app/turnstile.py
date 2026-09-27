@@ -103,6 +103,11 @@ class TurnstileVerifier:
         if not result.get("success"):
             logger.info("Turnstile verification failed", reason="rejected", error_codes=result.get("error-codes"))
             return False
+        # Cloudflare's test secret keys (local development) pass any token
+        # but echo no action and hostname "example.com": nothing to check.
+        # Only a test secret gets this answer, and the secret is ours.
+        if (result.get("metadata") or {}).get("result_with_testing_key"):
+            return True
         if result.get("action") != action:
             logger.info("Turnstile verification failed", reason="wrong_action", action=result.get("action"))
             return False

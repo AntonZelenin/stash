@@ -27,6 +27,7 @@ mod media;
 mod text_kind;
 
 mod settings;
+mod welcome;
 
 mod home;
 pub use home::Home;

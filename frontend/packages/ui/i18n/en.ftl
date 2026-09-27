@@ -198,6 +198,7 @@ item-type-link = Link
 size-bytes = { $size } B
 size-kilobytes = { $size } KB
 size-megabytes = { $size } MB
+size-gigabytes = { $size } GB
 
 ## Settings
 
@@ -217,3 +218,22 @@ settings-confirm-new-password = Confirm new password
 settings-change-password = Change password
 settings-language-description = Choose the language Stash is shown in. Your choice is remembered on this device.
 settings-language-label = Language
+
+## First-login welcome (numbers and sizes are already formatted for the language)
+
+welcome-title = Welcome to Stash
+welcome-body-save = Save notes, links, media and files in one place.
+welcome-body-search = Stash analyses your content and lets you find it later using natural-language search — even when you don't remember exactly what you saved.
+welcome-start = Start using Stash
+welcome-limits-title = Current limits
+welcome-limit-file-size = Max file size
+welcome-limit-image-size = Max image size
+welcome-limit-text-length = Max text length
+welcome-limit-text-length-value = { $formatted } { $count ->
+        [one] character
+       *[other] characters
+    }
+welcome-limit-uploads = Uploads per day
+welcome-limit-upload-volume = Upload volume per day
+welcome-limit-ai-analyses = AI analyses per day
+welcome-limits-note = Text length applies to notes, links and captions. Every image and readable document you upload is analysed by AI so you can find it by what's in it. Daily limits reset at 00:00 UTC.

@@ -155,10 +155,10 @@ class Settings(BaseSettings):
     # attempt also counting against their own IPs. No window is longer
     # than an hour, so no login is blocked for longer.
     login_failure_limit_per_account: str = "20/15m,50/1h"
-    registration_limit_per_ip: str = "5/1h,20/1d"
+    registration_limit_per_ip: str = "10/1h,30/1d"
     # Registration attempts naming one email (also slows probing which
     # emails are registered).
-    registration_limit_per_email: str = "5/1h"
+    registration_limit_per_email: str = "10/1h"
 
     # Cloudflare Turnstile on registration (`app.turnstile`): per-user
     # quotas only hold if accounts aren't free to mass-create. Every

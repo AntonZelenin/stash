@@ -410,7 +410,8 @@ class FakeSiteverify:
     `issue()` a token solved on our hostname for registration (spent once
     verified, like Cloudflare's), `issue(hostname=..., action=...)` one
     solved elsewhere, `expire(token)` one that timed out. Any other token is
-    invalid. `down` makes it unreachable, `requests` is what it was sent."""
+    invalid. `down` makes it unreachable, `requests` is what it was sent.
+    `testing_key` answers like Cloudflare's test secret keys do."""
 
     SECRET = "test-turnstile-secret"
     HOSTNAME = "stash.example"
@@ -419,6 +420,7 @@ class FakeSiteverify:
         self._tokens: dict[str, dict] = {}
         self.requests: list[dict[str, str]] = []
         self.down = False
+        self.testing_key = False
 
     def issue(self, *, hostname: str = HOSTNAME, action: str = "register") -> str:
         token = f"token-{len(self._tokens)}"
@@ -441,6 +443,16 @@ class FakeSiteverify:
         if token["spent"] or token["expired"]:
             return httpx.Response(200, json={"success": False, "error-codes": ["timeout-or-duplicate"]})
         token["spent"] = True
+        if self.testing_key:
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "hostname": "example.com",
+                    "metadata": {"result_with_testing_key": True},
+                    "error-codes": [],
+                },
+            )
         return httpx.Response(
             200, json={"success": True, "hostname": token["hostname"], "action": token["action"], "error-codes": []}
         )

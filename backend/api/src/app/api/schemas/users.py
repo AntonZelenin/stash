@@ -35,9 +35,28 @@ class UserCreateResponse(BaseModel):
     id: UUID
 
 
+class UserLimits(BaseModel):
+    """The limits a user runs into when saving things, for clients to show
+    (the first-login welcome lists them). Daily quotas are the one-day
+    window of each (`app.rate_limits`), `None` when it has none or limits
+    are off; they reset at 00:00 UTC."""
+
+    max_file_bytes: int
+    max_image_bytes: int
+    # Notes, links and captions, in characters.
+    max_text_length: int
+    uploads_per_day: int | None
+    upload_bytes_per_day: int | None
+    # Uploads analyzed by AI: every image, and documents it can read.
+    ai_analyses_per_day: int | None
+
+
 class CurrentUserResponse(BaseModel):
     id: UUID
     email: str
+    # False until the user dismisses the first-login welcome.
+    onboarding_completed: bool
+    limits: UserLimits
 
 
 class ChangePasswordRequest(BaseModel):

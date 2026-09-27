@@ -196,6 +196,15 @@ impl AuthSession {
         .await
     }
 
+    pub async fn complete_onboarding(&self) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            async move { client.complete_onboarding(&access_token).await }
+        })
+        .await
+    }
+
     pub async fn count_items(&self) -> Result<ItemCounts, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {

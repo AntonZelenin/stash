@@ -183,6 +183,8 @@ paths:
                 required:
                   - id
                   - email
+                  - onboarding_completed
+                  - limits
                 properties:
                   id:
                     type: string
@@ -190,6 +192,33 @@ paths:
                   email:
                     type: string
                     format: email
+                  onboarding_completed:
+                    description: >
+                      False until the user dismisses the first-login welcome
+                      (`PUT /users/me/onboarding-completed`); clients show
+                      it while false.
+                    type: boolean
+                  limits:
+                    $ref: "#/components/schemas/UserLimits"
+
+        "401":
+          description: Unauthorized
+
+  /users/me/onboarding-completed:
+    put:
+      summary: Record that the user dismissed the first-login welcome
+      description: >
+        Stored with the account, so the welcome isn't shown again on any
+        device. Idempotent: the first dismissal's time is kept.
+      operationId: completeOnboarding
+      tags: [users]
+
+      security:
+        - bearerAuth: []
+
+      responses:
+        "204":
+          description: Recorded
 
         "401":
           description: Unauthorized
@@ -1265,6 +1294,42 @@ components:
           type: string
         refresh_token:
           type: string
+
+    UserLimits:
+      description: >
+        The limits a user runs into when saving things, as currently
+        enforced. Daily quotas are the one-day window of each rate limit
+        (they reset at 00:00 UTC); null when it has no one-day window or
+        rate limits are off.
+      type: object
+      required:
+        - max_file_bytes
+        - max_image_bytes
+        - max_text_length
+        - uploads_per_day
+        - upload_bytes_per_day
+        - ai_analyses_per_day
+      properties:
+        max_file_bytes:
+          type: integer
+        max_image_bytes:
+          type: integer
+        max_text_length:
+          description: Notes, links and captions, in characters.
+          type: integer
+        uploads_per_day:
+          type:
+            - integer
+            - "null"
+        upload_bytes_per_day:
+          type:
+            - integer
+            - "null"
+        ai_analyses_per_day:
+          description: Uploads analyzed by AI (every image, and documents it can read).
+          type:
+            - integer
+            - "null"
 
     ItemCreated:
       type: object

@@ -528,6 +528,22 @@ impl ApiClient {
         }
     }
 
+    /// Records that the user dismissed the first-login welcome, so it isn't
+    /// shown again on any device. Idempotent.
+    pub async fn complete_onboarding(&self, access_token: &str) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(Method::PUT, "/users/me/onboarding-completed", access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
     pub async fn count_items(&self, access_token: &str) -> Result<ItemCounts, ApiError> {
         let response = self
             .authenticated(Method::GET, "/items/counts", access_token)

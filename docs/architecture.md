@@ -1207,6 +1207,20 @@ again, as on creation.
 opaque, so this is how clients learn who is signed in (the app uses the
 email for the avatar's initials).
 
+It also carries what the first-login welcome needs:
+
+- `onboarding_completed`: whether the user has dismissed it, stored with
+  the account (`users.onboarding_completed_at`, NULL until then), so it's
+  shown once per account, not per device or session.
+  `PUT /users/me/onboarding-completed` records the dismissal (idempotent,
+  the first time is kept). The migration that added the column marked
+  every existing account as done: only new accounts are welcomed.
+- `limits`: the limits users run into saving things, as enforced right
+  now, so clients never show numbers of their own: the upload size limits,
+  the text length limit, and the one-day window of the upload count, upload
+  bytes and AI analysis quotas (null without one, or with rate limits off).
+  Nothing about logins, registration, other throttling or infrastructure.
+
 ### Changing the password
 
 `POST /users/me/password` takes the current password and a new one. It
@@ -1231,8 +1245,8 @@ exceeded`, with `limit`).
 | `LOGIN_LIMIT_PER_IP` | every login attempt | IP | 20/1m, 100/1h, 500/1d |
 | `LOGIN_FAILURE_LIMIT_PER_ACCOUNT_IP` | failed logins | email + IP | 5/5m, 10/30m |
 | `LOGIN_FAILURE_LIMIT_PER_ACCOUNT` | failed logins | email | 20/15m, 50/1h |
-| `REGISTRATION_LIMIT_PER_IP` | registrations | IP | 5/1h, 20/1d |
-| `REGISTRATION_LIMIT_PER_EMAIL` | registrations (409s too) | email | 5/1h |
+| `REGISTRATION_LIMIT_PER_IP` | registrations | IP | 10/1h, 30/1d |
+| `REGISTRATION_LIMIT_PER_EMAIL` | registrations (409s too) | email | 10/1h |
 | `TOKEN_REFRESH_LIMIT_PER_IP` | token refreshes | IP | 60/5m, 1000/1d |
 | `PASSWORD_CHANGE_FAILURE_LIMIT_PER_USER` | wrong current passwords | user | 5/15m, 20/1d |
 | `UPLOAD_LIMIT_PER_USER` | uploads started | user | 100/5m, 1000/1d |

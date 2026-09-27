@@ -77,6 +77,24 @@ impl Language {
         }
     }
 
+    /// `value` with the language's thousands separator (`100,000` in
+    /// English, `100 000` with a no-break space in Ukrainian).
+    pub(crate) fn format_integer(self, value: u64) -> String {
+        let separator = match self {
+            Language::English => ',',
+            Language::Ukrainian => '\u{a0}',
+        };
+        let digits = value.to_string();
+        let mut formatted = String::with_capacity(digits.len() * 2);
+        for (index, digit) in digits.chars().enumerate() {
+            if index > 0 && (digits.len() - index).is_multiple_of(3) {
+                formatted.push(separator);
+            }
+            formatted.push(digit);
+        }
+        formatted
+    }
+
     /// The supported language for a BCP 47 tag such as `"uk-UA"` or
     /// `"en_US"`, matched on its primary language subtag.
     pub fn from_tag(tag: &str) -> Option<Language> {
@@ -348,5 +366,15 @@ pub(crate) mod tests {
     fn decimals_use_the_languages_separator() {
         assert_eq!(Language::English.format_decimal(1.26, 1), "1.3");
         assert_eq!(Language::Ukrainian.format_decimal(1.26, 1), "1,3");
+    }
+
+    #[test]
+    fn integers_use_the_languages_thousands_separator() {
+        assert_eq!(Language::English.format_integer(100_000), "100,000");
+        assert_eq!(Language::English.format_integer(1_234_567), "1,234,567");
+        assert_eq!(Language::English.format_integer(999), "999");
+        assert_eq!(Language::English.format_integer(0), "0");
+        assert_eq!(Language::Ukrainian.format_integer(100_000), "100\u{a0}000");
+        assert_eq!(Language::Ukrainian.format_integer(1_000), "1\u{a0}000");
     }
 }
