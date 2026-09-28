@@ -44,6 +44,9 @@ pub(crate) struct CreateTextItemRequest {
     pub text: String,
     /// Tag names for the new item (existing tags reused, missing created).
     pub tags: Vec<String>,
+    /// Names of collections to put the new item in (existing ones reused,
+    /// missing created).
+    pub collections: Vec<String>,
     /// See `TextItemType`; unset for the server's default (`text`).
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<TextItemType>,
@@ -103,6 +106,8 @@ pub struct NewUpload {
     pub caption: Option<String>,
     /// Tag names for the new item.
     pub tags: Vec<String>,
+    /// Names of collections to put the new item in.
+    pub collections: Vec<String>,
 }
 
 /// Where and how to send an upload's bytes: a short-lived, pre-signed
@@ -189,6 +194,24 @@ pub(crate) struct AssignTagRequest {
     pub name: String,
 }
 
+/// A user's collection: a named group of items. An item can be in any
+/// number of them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ListCollectionsResponse {
+    pub collections: Vec<Collection>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AddToCollectionRequest {
+    pub name: String,
+}
+
 /// A calendar year the user saved things in: the first and last time they
 /// did (RFC 3339). Times rather than a year number, since the server
 /// doesn't know the user's time zone.
@@ -226,7 +249,7 @@ impl ItemSort {
 /// Narrows listing and search: only items of `item_type` (the API's
 /// `type`, e.g. `"link"`; None = any) and of any of `kinds` (the API's
 /// `kind` values, e.g. `"video"`; empty = any), carrying *all* of
-/// `tag_ids`, and with
+/// `tag_ids`, in *any* of `collection_ids` (empty = any), and with
 /// `favorites_only`, only favorites; `created_from` (inclusive) and
 /// `created_before` (exclusive) bound when it was saved, as RFC 3339
 /// timestamps with an offset.
@@ -235,6 +258,7 @@ pub struct ItemQuery {
     pub item_type: Option<String>,
     pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
+    pub collection_ids: Vec<String>,
     pub favorites_only: bool,
     pub created_from: Option<String>,
     pub created_before: Option<String>,
@@ -305,6 +329,9 @@ pub struct ListedItem {
     /// The item's tags, sorted by name.
     #[serde(default)]
     pub tags: Vec<Tag>,
+    /// The collections it's in, sorted by name.
+    #[serde(default)]
+    pub collections: Vec<Collection>,
     #[serde(default)]
     pub is_favorite: bool,
 }
@@ -334,6 +361,7 @@ pub(crate) struct SearchRequest {
     pub item_type: Option<String>,
     pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
+    pub collection_ids: Vec<String>,
     pub favorite: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_from: Option<String>,

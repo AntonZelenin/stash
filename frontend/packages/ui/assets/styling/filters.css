@@ -1,12 +1,12 @@
-/* ---- filter bar controls: type tabs, favorites, and the Tags dropdown ---- */
+/* ---- filter bar controls: type tabs, favorites, and the Filters dropdown ---- */
 
 .filter-control {
     position: relative;
     flex-shrink: 0;
 }
 
-/* The closed Tags control: same height and look as the search box, so the
-   right side of the bar reads as one set of controls. */
+/* The closed Filters control: same height and look as the search box, so
+   the right side of the bar reads as one set of controls. */
 .filter-button {
     display: flex;
     align-items: center;
@@ -36,7 +36,7 @@
     color: #0f172a;
 }
 
-.filter-button > .icon-tag {
+.filter-button > .icon-filter {
     width: 14px;
     height: 14px;
     flex-shrink: 0;
@@ -339,15 +339,15 @@
     color: #fff;
 }
 
-/* ---- Tags ---- */
+/* ---- Filters: collections and tags ---- */
 
 /* Grows with its chips up to a cap, instead of pushing the search aside;
-   past MAX_VISIBLE_TAG_CHIPS the rest show as "+N". */
-.tag-filter {
+   past MAX_VISIBLE_FILTER_CHIPS the rest show as "+N". */
+.filters-menu {
     max-width: 300px;
 }
 
-.tag-filter-chips {
+.filters-chips {
     display: flex;
     flex: 1;
     align-items: center;
@@ -356,12 +356,12 @@
     overflow: hidden;
 }
 
-.tag-filter-chips .tag-chip {
+.filters-chips .tag-chip {
     flex-shrink: 1;
     min-width: 0;
 }
 
-.tag-filter-more {
+.filters-more {
     flex-shrink: 0;
     padding: 0 4px;
     color: var(--text-muted);
@@ -369,12 +369,73 @@
     font-weight: 600;
 }
 
-.tag-filter-panel {
+.filters-panel {
     right: 0;
-    width: 260px;
+    width: 280px;
+    max-height: min(560px, calc(100vh - 160px));
+    overflow-y: auto;
 }
 
-.tag-filter-search {
+/* One accordion section: a header row, and while expanded its search box
+   and options. */
+.filters-section + .filters-section {
+    margin-top: 2px;
+    padding-top: 2px;
+    border-top: 1px solid #f1f5f9;
+}
+
+.filters-section-expanded {
+    padding-bottom: 4px;
+}
+
+.filters-section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: 34px;
+    padding: 0 8px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: #334155;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.filters-section-header:hover {
+    background: #f8fafc;
+}
+
+.filters-section-chevron {
+    display: flex;
+    color: #94a3b8;
+    transition: transform 0.15s;
+}
+
+.filters-section-chevron .icon,
+.filters-section-chevron svg {
+    width: 14px;
+    height: 14px;
+}
+
+.filters-section-expanded .filters-section-chevron {
+    transform: rotate(90deg);
+}
+
+.filters-section-title {
+    flex: 1;
+}
+
+.filters-section-count {
+    background: #f3e8ff;
+    color: #7c3aed;
+}
+
+.filters-search {
     width: 100%;
     height: 36px;
     padding: 0 10px;
@@ -386,17 +447,18 @@
     color: var(--text-primary);
 }
 
-.tag-filter-search:focus {
+.filters-search:focus {
     border-color: #c084fc;
 }
 
-.tag-filter-options {
-    max-height: 260px;
+.filters-options {
+    max-height: 220px;
     margin-top: 6px;
     overflow-y: auto;
 }
 
-.tag-filter-option {
+/* A checkbox option: here and in the collection picker. */
+.filter-option {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -407,11 +469,11 @@
     cursor: pointer;
 }
 
-.tag-filter-option:hover {
+.filter-option:hover {
     background: #faf5ff;
 }
 
-.tag-filter-option input {
+.filter-option input {
     width: 16px;
     height: 16px;
     margin: 0;
@@ -419,27 +481,32 @@
     cursor: pointer;
 }
 
-.tag-filter-option span {
+.filter-option span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.tag-filter-empty {
+.filter-empty {
     margin: 0;
     padding: 10px 8px;
     color: var(--text-muted);
     font-size: 13px;
 }
 
-/* Narrow screens: keep the Tags control and its panel within the screen. */
+.filters-more-hint {
+    font-size: 12px;
+}
+
+/* Narrow screens: keep the Filters control and its panel within the
+   screen. */
 @media (max-width: 639px) {
-    .tag-filter {
+    .filters-menu {
         max-width: 180px;
     }
 
-    .tag-filter-panel {
-        width: min(260px, calc(100vw - 48px));
+    .filters-panel {
+        width: min(280px, calc(100vw - 48px));
     }
 }
 

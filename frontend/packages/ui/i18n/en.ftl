@@ -161,6 +161,24 @@ tags-name-placeholder = Tag name
 tags-create = Create “{ $name }”
 tags-show-tagged = Show items tagged { $name }
 
+## Collections
+
+collections-label = Collections
+collections-add = Collection
+collections-add-title = Add to collections
+collections-remove = Remove from collection
+collections-remove-named = Remove from collection { $name }
+collections-search-placeholder = Search collections...
+collections-none-yet = No collections yet — create one when saving or editing an item.
+collections-no-matches = No matching collections
+collections-load-failed = Could not load collections: { $error }
+collections-create = + Create collection “{ $name }”
+
+## Filters (collections and tags)
+
+filters-label = Filters
+filters-refine-search = Only the first ones are listed — search to find more.
+
 ## Items
 
 items-today = Today
@@ -189,6 +207,7 @@ item-field-filename = Filename
 item-field-text = Text
 item-field-caption = Caption
 item-field-tags = Tags
+item-field-collections = Collections
 item-field-type = Type
 item-caption-placeholder = Add a caption
 item-save-as = Save as

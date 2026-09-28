@@ -14,10 +14,12 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = Field(default=20, ge=1, le=100)
     # Same filters as `GET /items`: only this type, only items of any of
-    # these kinds, and only items carrying all of these tags.
+    # these kinds, only items carrying all of these tags, and only items in
+    # any of these collections.
     type: ItemType | None = None
     kinds: list[ItemKind] = Field(default_factory=list, max_length=6)
     tag_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    collection_ids: list[UUID] = Field(default_factory=list, max_length=50)
     # True: only the user's favorites.
     favorite: bool = False
     # Only items saved at or after `created_from` and before `created_before`.

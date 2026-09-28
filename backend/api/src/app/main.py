@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from stash_shared import metrics, tracing
 from stash_shared.log import configure_logging, get_logger
 
-from app.api.routers import auth, items, search, tags, users
+from app.api.routers import auth, collections, items, search, tags, users
 from app.body_size import MaxBodySizeMiddleware
 from app.config import get_settings
 from app.db import engine
@@ -40,6 +40,7 @@ app = FastAPI(
         {"name": "items"},
         {"name": "search"},
         {"name": "tags"},
+        {"name": "collections"},
     ],
 )
 
@@ -89,6 +90,7 @@ app.include_router(auth.router)
 app.include_router(items.router)
 app.include_router(search.router)
 app.include_router(tags.router)
+app.include_router(collections.router)
 
 
 @app.get("/health", include_in_schema=False)

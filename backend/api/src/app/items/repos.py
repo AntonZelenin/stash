@@ -25,6 +25,7 @@ from stash_shared.embeddings import EMBEDDING_DIMENSIONS, to_pgvector
 
 from app.items.files import FILE_KIND_CONTENT_TYPES, ContentKind, kind_of
 from app.items.models import (
+    Collection,
     Description,
     FileMetadata,
     ImageMetadata,
@@ -36,6 +37,7 @@ from app.items.models import (
     Tag,
     TextContent,
     Vector,
+    item_collections,
     item_tags,
 )
 
@@ -47,6 +49,7 @@ _LISTED_ITEM_LOADS = (
     selectinload(Item.image),
     selectinload(Item.file),
     selectinload(Item.tags),
+    selectinload(Item.collections),
 )
 
 
@@ -62,7 +65,9 @@ class ItemSort(str, Enum):
 @dataclass(frozen=True)
 class ItemFilters:
     """Narrows listing and search. `tag_ids`: the item must carry *all* of
-    them (each selected tag narrows the results further). `favorites_only`:
+    them (each selected tag narrows the results further). `collection_ids`:
+    the item must be in *any* of them (each selected collection adds its
+    items), and together with tags, both must hold. `favorites_only`:
     just the user's favorites. `created_from`/`created_before`: saved in
     that half-open range (clients send the bounds of a local year, month
     or day, so "2025" means 2025 in the user's time zone). `kinds`: only
@@ -72,6 +77,7 @@ class ItemFilters:
     item_type: ItemType | None = None
     kinds: tuple[ContentKind, ...] = ()
     tag_ids: tuple[uuid.UUID, ...] = ()
+    collection_ids: tuple[uuid.UUID, ...] = ()
     favorites_only: bool = False
     created_from: datetime | None = None
     created_before: datetime | None = None
@@ -90,6 +96,13 @@ class ItemFilters:
         for tag_id in self.tag_ids:
             stmt = stmt.where(
                 exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
+            )
+        if self.collection_ids:
+            stmt = stmt.where(
+                exists().where(
+                    item_collections.c.item_id == Item.id,
+                    item_collections.c.collection_id.in_(self.collection_ids),
+                )
             )
         return stmt
 
@@ -147,6 +160,8 @@ class DeletedItem:
     storage_keys: list[str]
     # Tags the item had, which may now be unused.
     tag_ids: list[uuid.UUID]
+    # Collections it was in, which may now be empty.
+    collection_ids: list[uuid.UUID]
 
 
 class ItemRepository:
@@ -154,7 +169,13 @@ class ItemRepository:
         self._session = session
 
     async def create_text_item(
-        self, *, user_id: uuid.UUID, text: str, item_type: ItemType, tags: list[Tag] = ()
+        self,
+        *,
+        user_id: uuid.UUID,
+        text: str,
+        item_type: ItemType,
+        tags: list[Tag] = (),
+        collections: list[Collection] = (),
     ) -> Item:
         # Nothing to analyze asynchronously for text/links, so they're
         # finished the moment they're stored. The text itself doubles as the
@@ -168,6 +189,7 @@ class ItemRepository:
             text_content=TextContent(text=text),
             description=Description(text=text),
             tags=list(tags),
+            collections=list(collections),
         )
         self._session.add(item)
         await self._session.flush()
@@ -186,6 +208,7 @@ class ItemRepository:
         filename: str | None = None,
         text: str | None = None,
         tags: list[Tag] = (),
+        collections: list[Collection] = (),
     ) -> Item:
         item = Item(
             id=item_id,
@@ -200,6 +223,7 @@ class ItemRepository:
                 size_bytes=size_bytes,
             ),
             tags=list(tags),
+            collections=list(collections),
         )
         if text is not None:
             # The user's caption. Also seeded as the description so the
@@ -225,6 +249,7 @@ class ItemRepository:
         text: str | None = None,
         status: ItemStatus = ItemStatus.completed,
         tags: list[Tag] = (),
+        collections: list[Collection] = (),
     ) -> Item:
         # `pending` if it will be analyzed, otherwise finished as soon as
         # it's stored, like text items.
@@ -242,6 +267,7 @@ class ItemRepository:
                 size_bytes=size_bytes,
             ),
             tags=list(tags),
+            collections=list(collections),
         )
         if text is not None:
             # Optional caption, same as for images (and searchable the same
@@ -337,10 +363,11 @@ class ItemRepository:
         hanging off it. Returns None if there's no such item *owned by this
         user* — someone else's item is indistinguishable from a missing one.
 
-        The item row is locked first. Linking a tag to it needs a lock that
-        conflicts with this one, so no tag can be linked between reading the
-        item's tags here and the delete. The returned `tag_ids` are
-        therefore every link the delete removes.
+        The item row is locked first. Linking a tag or collection to it
+        needs a lock that conflicts with this one, so none can be linked
+        between reading the item's tags and collections here and the delete.
+        The returned `tag_ids` and `collection_ids` are therefore every link
+        the delete removes.
         """
         row = (
             await self._session.execute(
@@ -361,9 +388,18 @@ class ItemRepository:
         tag_ids = list(
             (await self._session.execute(select(item_tags.c.tag_id).where(item_tags.c.item_id == item_id))).scalars()
         )
+        collection_ids = list(
+            (
+                await self._session.execute(
+                    select(item_collections.c.collection_id).where(item_collections.c.item_id == item_id)
+                )
+            ).scalars()
+        )
         await self._session.execute(delete(Item).where(Item.id == item_id))
         keys = (row.storage_key, row.thumbnail_key, row.file_key)
-        return DeletedItem(storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids)
+        return DeletedItem(
+            storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids, collection_ids=collection_ids
+        )
 
     async def search_by_chunks(
         self,

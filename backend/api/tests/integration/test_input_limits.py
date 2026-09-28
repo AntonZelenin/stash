@@ -9,6 +9,7 @@ from fastapi.routing import APIRoute
 from httpx import AsyncClient
 
 from app.api.schemas.items import MAX_FILENAME_LENGTH, MAX_TEXT_LENGTH
+from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM
 from app.body_size import BodyLimit, BodyLimitedRoute, body_limit_of
 from app.config import get_settings
 from app.main import app
@@ -117,6 +118,20 @@ async def test_tag_name_limits(client: AsyncClient):
     assert (on_create.status_code, listing.status_code) == (422, 422)
 
 
+async def test_collection_name_limits(client: AsyncClient):
+    _, token = await register_and_login(client)
+
+    on_create = await client.post(
+        "/items/text", json={"text": "note", "collections": ["x" * 201]}, headers=_auth(token)
+    )
+    on_upload = await start_upload(
+        client, token, type="file", filename="a.txt", size_bytes=1, collections=["x" * 201]
+    )
+    listing = await client.get("/collections", params={"query": "x" * 201}, headers=_auth(token))
+
+    assert (on_create.status_code, on_upload.status_code, listing.status_code) == (422, 422, 422)
+
+
 async def test_search_query_limit(client: AsyncClient):
     _, token = await register_and_login(client)
 
@@ -176,6 +191,9 @@ async def test_longest_caption_filename_and_tags_fit_on_upload_and_edit(client: 
             "filename": EMOJI * (MAX_FILENAME_LENGTH - 4) + ".txt",
             "text": EMOJI * MAX_TEXT_LENGTH,
             "tags": [f"{EMOJI * (MAX_TAG_NAME_LENGTH - 3)} {n}" for n in range(MAX_TAGS_PER_ITEM)],
+            "collections": [
+                f"{EMOJI * (MAX_COLLECTION_NAME_LENGTH - 3)} {n}" for n in range(MAX_COLLECTIONS_PER_ITEM)
+            ],
         }
     )
 
@@ -203,9 +221,10 @@ async def test_the_largest_possible_content_body_is_under_the_limit(client: Asyn
             "content_type": EMOJI * 255,
             "text": EMOJI * MAX_TEXT_LENGTH,
             "tags": [EMOJI * (4 * MAX_TAG_NAME_LENGTH)] * MAX_TAGS_PER_ITEM,
+            "collections": [EMOJI * (4 * MAX_COLLECTION_NAME_LENGTH)] * MAX_COLLECTIONS_PER_ITEM,
         }
     )
-    assert 1_260_000 < len(body) <= 0.65 * get_settings().max_content_request_body_bytes
+    assert 1_300_000 < len(body) <= 0.65 * get_settings().max_content_request_body_bytes
 
     response = await client.post("/uploads", content=body, headers={**_auth(token), **_JSON})
 
@@ -220,7 +239,14 @@ async def test_the_largest_possible_small_bodies_are_under_the_default_limit(cli
         {"email": "a@" + "b" * 60 + ".com", "password": EMOJI * 72, "turnstile_token": EMOJI * 2048}
     )
     # `limit` 0 is invalid: rejected once parsed, before any search runs.
-    search = json.dumps({"query": EMOJI * 1_000, "tag_ids": [str(uuid.uuid4())] * 20, "limit": 0})
+    search = json.dumps(
+        {
+            "query": EMOJI * 1_000,
+            "tag_ids": [str(uuid.uuid4())] * 20,
+            "collection_ids": [str(uuid.uuid4())] * 50,
+            "limit": 0,
+        }
+    )
     assert max(len(delete), len(registration), len(search)) <= get_settings().max_request_body_bytes / 2
 
     deleted = await client.post("/items/delete", content=delete, headers={**_auth(token), **_JSON})

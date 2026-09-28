@@ -20,6 +20,7 @@ pub use auth_session::AuthSession;
 mod turnstile;
 pub use turnstile::TurnstileSiteKey;
 
+mod collections;
 mod date_filter;
 mod filters;
 mod items;

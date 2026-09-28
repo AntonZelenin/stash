@@ -9,8 +9,8 @@ Three credentials reach the database on AWS:
   `alembic_version`).
 - `worker`: every processing worker. Only the tables, and for updates only
   the columns, that processing touches (`WORKER_PRIVILEGES`). It can't read
-  users, tokens, pending uploads, tags or rate-limit counters, and can't
-  change an item's owner, type or storage keys, only its status and
+  users, tokens, pending uploads, tags, collections or rate-limit counters,
+  and can't change an item's owner, type or storage keys, only its status and
   thumbnail.
 
 Neither runtime role owns anything, is a superuser or may create roles or

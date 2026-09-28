@@ -2,11 +2,20 @@ use std::future::Future;
 use std::sync::Arc;
 
 use api::{
-    ApiClient, ApiError, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
-    ListItemsResponse, ListedItem, NewUpload, PlaybackUrl, SavedYear, SearchResponse, Tag,
-    TextItemType, TokenPair, TokenStore, UploadType,
+    ApiClient, ApiError, Collection, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort,
+    ItemUpdate, ListItemsResponse, ListedItem, NewUpload, PlaybackUrl, SavedYear, SearchResponse,
+    Tag, TextItemType, TokenPair, TokenStore, UploadType,
 };
 use dioxus::prelude::*;
+
+/// What a new item is saved with besides its content: names of tags to put
+/// on it and of collections to put it in (existing ones reused, missing ones
+/// created).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ItemLabels {
+    pub tags: Vec<String>,
+    pub collections: Vec<String>,
+}
 
 /// Shared, reactive auth state. A platform entrypoint constructs one (with
 /// its own `TokenStore` implementation) and provides it via
@@ -102,7 +111,7 @@ impl AuthSession {
     pub async fn create_text_item(
         &self,
         text: &str,
-        tags: Vec<String>,
+        labels: ItemLabels,
         item_type: Option<TextItemType>,
     ) -> Result<ItemCreated, ApiError> {
         let client = self.client.clone();
@@ -110,10 +119,16 @@ impl AuthSession {
         self.call_authenticated(move |access_token| {
             let client = client.clone();
             let text = text.clone();
-            let tags = tags.clone();
+            let labels = labels.clone();
             async move {
                 client
-                    .create_text_item(&access_token, &text, &tags, item_type)
+                    .create_text_item(
+                        &access_token,
+                        &text,
+                        &labels.tags,
+                        &labels.collections,
+                        item_type,
+                    )
                     .await
             }
         })
@@ -126,10 +141,17 @@ impl AuthSession {
         content_type: &str,
         data: Vec<u8>,
         text: Option<String>,
-        tags: Vec<String>,
+        labels: ItemLabels,
     ) -> Result<ItemCreated, ApiError> {
-        self.upload_item(UploadType::Image, file_name, content_type, data, text, tags)
-            .await
+        self.upload_item(
+            UploadType::Image,
+            file_name,
+            content_type,
+            data,
+            text,
+            labels,
+        )
+        .await
     }
 
     /// Uploads any file (PDF, e-book, archive, anything). The backend decides the
@@ -140,10 +162,17 @@ impl AuthSession {
         content_type: &str,
         data: Vec<u8>,
         text: Option<String>,
-        tags: Vec<String>,
+        labels: ItemLabels,
     ) -> Result<ItemCreated, ApiError> {
-        self.upload_item(UploadType::File, file_name, content_type, data, text, tags)
-            .await
+        self.upload_item(
+            UploadType::File,
+            file_name,
+            content_type,
+            data,
+            text,
+            labels,
+        )
+        .await
     }
 
     /// Saves an image or file: the API authorizes the upload, the bytes go
@@ -156,7 +185,7 @@ impl AuthSession {
         content_type: &str,
         data: Vec<u8>,
         caption: Option<String>,
-        tags: Vec<String>,
+        labels: ItemLabels,
     ) -> Result<ItemCreated, ApiError> {
         let upload = NewUpload {
             upload_type,
@@ -164,7 +193,8 @@ impl AuthSession {
             content_type: content_type.to_string(),
             size_bytes: data.len() as u64,
             caption,
-            tags,
+            tags: labels.tags,
+            collections: labels.collections,
         };
         let client = self.client.clone();
         let started = self
@@ -306,6 +336,63 @@ impl AuthSession {
             let item_id = item_id.clone();
             let name = name.clone();
             async move { client.assign_tag(&access_token, &item_id, &name).await }
+        })
+        .await
+    }
+
+    pub async fn list_collections(
+        &self,
+        query: String,
+        limit: u32,
+    ) -> Result<Vec<Collection>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let query = query.clone();
+            async move {
+                client
+                    .list_collections(&access_token, &query, limit)
+                    .await
+                    .map(|response| response.collections)
+            }
+        })
+        .await
+    }
+
+    pub async fn add_to_collection(
+        &self,
+        item_id: String,
+        name: String,
+    ) -> Result<Collection, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            let name = name.clone();
+            async move {
+                client
+                    .add_to_collection(&access_token, &item_id, &name)
+                    .await
+            }
+        })
+        .await
+    }
+
+    pub async fn remove_from_collection(
+        &self,
+        item_id: String,
+        collection_id: String,
+    ) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let item_id = item_id.clone();
+            let collection_id = collection_id.clone();
+            async move {
+                client
+                    .remove_from_collection(&access_token, &item_id, &collection_id)
+                    .await
+            }
         })
         .await
     }

@@ -21,10 +21,21 @@ from stash_shared.queue.base import (
     ProcessingJob,
 )
 
+from app.collections.names import normalize_collection_names
+from app.collections.repos import CollectionRepository
 from app.config import get_settings
 from app.items import files
 from app.items.files import ContentKind
-from app.items.models import Description, Item, ItemStatus, ItemType, PendingUpload, Tag, TextContent
+from app.items.models import (
+    Collection,
+    Description,
+    Item,
+    ItemStatus,
+    ItemType,
+    PendingUpload,
+    Tag,
+    TextContent,
+)
 from app.items.repos import ItemFilters, ItemRepository, ItemSort, SemanticMatch
 from app.query_normalization import QueryNormalizer
 from app.rate_limits.limiter import Charge, RateLimiter
@@ -482,6 +493,7 @@ class ItemService:
             item_type=filters.item_type,
             item_kinds=[kind.value for kind in filters.kinds],
             tag_filter_count=len(filters.tag_ids),
+            collection_filter_count=len(filters.collection_ids),
             favorites_only=filters.favorites_only,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
@@ -663,26 +675,36 @@ class ItemService:
         it's atomic. Removing the file afterwards is best-effort — if it
         fails, the only cost is an orphaned object in storage, never an item
         pointing at a missing file. A job still queued for the item finds it
-        gone and is dropped by the worker. Tags no other item uses are
-        deleted with it, in the same transaction.
+        gone and is dropped by the worker. Tags no other item uses, and
+        collections no other item is in, are deleted with it, in the same
+        transaction.
         """
         bind_context(item_id=item_id)
         deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
         if deleted is None:
             raise ItemNotFoundError()
         await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=deleted.tag_ids)
+        await CollectionRepository(self._session).delete_orphans(
+            user_id=user_id, collection_ids=deleted.collection_ids
+        )
         await self._session.commit()
-        logger.info("Item deleted", storage_object_count=len(deleted.storage_keys), tag_count=len(deleted.tag_ids))
+        logger.info(
+            "Item deleted",
+            storage_object_count=len(deleted.storage_keys),
+            tag_count=len(deleted.tag_ids),
+            collection_count=len(deleted.collection_ids),
+        )
         await self._delete_stored_objects(deleted.storage_keys)
 
     async def delete_items(self, *, user_id: uuid.UUID, item_ids: list[uuid.UUID]) -> None:
         """Deletes several of the user's items at once, like `delete_item`,
         in one transaction. Ids that aren't the user's items (someone else's,
-        missing, already deleted) are skipped, and repeats are fine. Items
-        and then tags are locked in id order, so two overlapping calls
-        can't deadlock."""
+        missing, already deleted) are skipped, and repeats are fine. Items,
+        then tags, then collections are locked in id order, so two
+        overlapping calls can't deadlock."""
         storage_keys: list[str] = []
         tag_ids: set[uuid.UUID] = set()
+        collection_ids: set[uuid.UUID] = set()
         deleted_count = 0
         for item_id in sorted(set(item_ids)):
             deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
@@ -691,7 +713,11 @@ class ItemService:
             deleted_count += 1
             storage_keys.extend(deleted.storage_keys)
             tag_ids.update(deleted.tag_ids)
+            collection_ids.update(deleted.collection_ids)
         await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=sorted(tag_ids))
+        await CollectionRepository(self._session).delete_orphans(
+            user_id=user_id, collection_ids=sorted(collection_ids)
+        )
         await self._session.commit()
         logger.info(
             "Items deleted",
@@ -699,6 +725,7 @@ class ItemService:
             deleted_count=deleted_count,
             storage_object_count=len(storage_keys),
             tag_count=len(tag_ids),
+            collection_count=len(collection_ids),
         )
         await self._delete_stored_objects(storage_keys)
 
@@ -760,23 +787,39 @@ class ItemService:
 
     @_tracer.start_as_current_span("items.create_text")
     async def create_text_item(
-        self, *, user_id: uuid.UUID, text: str, tags: list[str] = (), item_type: ItemType | None = None
+        self,
+        *,
+        user_id: uuid.UUID,
+        text: str,
+        tags: list[str] = (),
+        collections: list[str] = (),
+        item_type: ItemType | None = None,
     ) -> Item:
-        """`tags` are tag names to put on the new item (see `_link_tags`).
+        """`tags` are tag names to put on the new item (see `_link_tags`),
+        `collections` names of collections to put it in (see
+        `_get_collections`).
         `item_type` (`text` or `link`) is used only if the text mixes text
         and URLs, defaulting to `text`; otherwise the text decides (see
         `resolve_text_item_type`)."""
+        collection_names = normalize_collection_names(list(collections))
         resolved_tags = await self._link_tags(user_id, normalize_tag_names(list(tags)))
+        resolved_collections = await self._get_collections(user_id, collection_names)
         item_type = resolve_text_item_type(text, requested=item_type, default=ItemType.text)
         item = await self._repo.create_text_item(
-            user_id=user_id, text=text, item_type=item_type, tags=resolved_tags
+            user_id=user_id,
+            text=text,
+            item_type=item_type,
+            tags=resolved_tags,
+            collections=resolved_collections,
         )
         # No analysis for text/links (stored already `completed`); their
         # text is their description, so it goes straight to embedding.
         await self._add_embedding_job(item)
         await self._session.commit()
         bind_context(item_id=item.id)
-        _log_created(item, text_chars=len(text), tag_count=len(resolved_tags))
+        _log_created(
+            item, text_chars=len(text), tag_count=len(resolved_tags), collection_count=len(resolved_collections)
+        )
         await self._publish_jobs()
         return item
 
@@ -791,13 +834,14 @@ class ItemService:
         content_type: str | None = None,
         text: str | None = None,
         tags: list[str] = (),
+        collections: list[str] = (),
         limiter: RateLimiter,
     ) -> StartedUpload:
         """Authorizes one image or file upload straight to storage; the
         bytes never go through the API.
 
         Everything the client declares is checked before a URL is issued:
-        the size, an image's type, the caption and tags. Then the upload is
+        the size, an image's type, the caption, tags and collections. Then the upload is
         charged to the user's quotas (`limiter`: uploads, bytes, and an AI
         analysis if it will be analyzed), which raises `RateLimitExceeded`
         if it doesn't fit; an invalid request charges nothing. It's charged
@@ -816,9 +860,11 @@ class ItemService:
         files, whose type comes from `filename`'s extension and, on
         finalize, their content. `filename` names downloads (for images
         that's all it does). `text` is an optional caption (blank is
-        none), `tags` are tag names to put on the item."""
+        none), `tags` are tag names to put on the item and `collections`
+        names of collections to put it in."""
         caption = _clean_caption(text)
         tag_names = normalize_tag_names(list(tags))
+        collection_names = normalize_collection_names(list(collections))
 
         settings = get_settings()
         upload_id = uuid.uuid4()
@@ -867,6 +913,7 @@ class ItemService:
             filename=filename,
             caption=caption,
             tag_names=tag_names,
+            collection_names=collection_names,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
         )
         purged = await self._repo.delete_abandoned_uploads(
@@ -997,6 +1044,7 @@ class ItemService:
             extension=_IMAGE_EXTENSIONS_BY_CONTENT_TYPE[upload.content_type],
         )
         resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
+        resolved_collections = await self._get_collections(upload.user_id, upload.collection_names)
         item = await self._repo.create_image_item(
             item_id=upload.id,
             user_id=upload.user_id,
@@ -1008,6 +1056,7 @@ class ItemService:
             filename=upload.filename,
             text=upload.caption,
             tags=resolved_tags,
+            collections=resolved_collections,
         )
         # Identifiers only: the worker reads the key from the item's row.
         await self._add_job(
@@ -1025,6 +1074,7 @@ class ItemService:
             size_bytes=stored.size_bytes,
             has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
+            collection_count=len(resolved_collections),
         )
         await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
@@ -1052,6 +1102,7 @@ class ItemService:
             extension=files.expected_format(filename).extension,
         )
         resolved_tags = await self._link_tags(upload.user_id, upload.tag_names)
+        resolved_collections = await self._get_collections(upload.user_id, upload.collection_names)
         item = await self._repo.create_file_item(
             item_id=upload.id,
             user_id=upload.user_id,
@@ -1064,6 +1115,7 @@ class ItemService:
             text=upload.caption,
             status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
             tags=resolved_tags,
+            collections=resolved_collections,
         )
         if classified.analyzable:
             await self._add_job(
@@ -1083,6 +1135,7 @@ class ItemService:
             analyzable=classified.analyzable,
             has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
+            collection_count=len(resolved_collections),
         )
         await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
@@ -1134,6 +1187,16 @@ class ItemService:
         if not names:
             return []
         return await TagRepository(self._session).get_or_create_for_linking(user_id=user_id, names=names)
+
+    async def _get_collections(self, user_id: uuid.UUID, names: list[str]) -> list[Collection]:
+        """The user's collections with these names (already normalized, see
+        `normalize_collection_names`), existing ones reused and missing ones
+        created, and locked, in the new item's own transaction, like tags
+        (see `_link_tags`). Called after `_link_tags`: tags are always
+        locked before collections, so two transactions can't deadlock."""
+        if not names:
+            return []
+        return await CollectionRepository(self._session).get_or_create_for_linking(user_id=user_id, names=names)
 
     async def _add_embedding_job(self, item: Item) -> None:
         """Asks the embedding worker to (re)embed the item's description,

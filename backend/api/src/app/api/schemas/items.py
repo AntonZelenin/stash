@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM
 from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM
 
 # Longest note/link text or caption: a long document's worth of notes.
@@ -15,6 +16,8 @@ MAX_FILENAME_LENGTH = 1_000
 # A tag name as sent: trimmed and whitespace-collapsed server-side, where
 # the result must be 1-MAX_TAG_NAME_LENGTH characters.
 TagNameInput = Annotated[str, Field(max_length=4 * MAX_TAG_NAME_LENGTH)]
+# Likewise for a collection name.
+CollectionNameInput = Annotated[str, Field(max_length=4 * MAX_COLLECTION_NAME_LENGTH)]
 
 
 class ItemType(str, Enum):
@@ -96,6 +99,9 @@ class CreateTextItemRequest(BaseModel):
     # Tag names to put on the new item (existing tags reused, missing ones
     # created).
     tags: list[TagNameInput] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+    # Names of collections to put the new item in (existing ones reused,
+    # missing ones created).
+    collections: list[CollectionNameInput] = Field(default_factory=list, max_length=MAX_COLLECTIONS_PER_ITEM)
     # Only used when the text mixes text and URLs (default `text`); a bare
     # URL is always a link and text without URLs always a note.
     type: TextItemType | None = None
@@ -158,6 +164,8 @@ class StartUploadRequest(BaseModel):
     text: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     # Tag names to put on the new item.
     tags: list[TagNameInput] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
+    # Names of collections to put the new item in.
+    collections: list[CollectionNameInput] = Field(default_factory=list, max_length=MAX_COLLECTIONS_PER_ITEM)
 
 
 class PresignedUpload(BaseModel):
@@ -185,6 +193,11 @@ class ListedTag(BaseModel):
     name: str
 
 
+class ListedCollection(BaseModel):
+    id: UUID
+    name: str
+
+
 class ListedFile(BaseModel):
     filename: str
     content_type: str
@@ -208,6 +221,8 @@ class ListedItem(BaseModel):
     file: ListedFile | None = None
     # The user's tags on this item, by name.
     tags: list[ListedTag] = Field(default_factory=list)
+    # The user's collections this item is in, by name.
+    collections: list[ListedCollection] = Field(default_factory=list)
     is_favorite: bool = False
     # Temporary, pre-signed URL of a small WebP version for display. Set
     # only for images, once the thumbnail worker has produced it; until then

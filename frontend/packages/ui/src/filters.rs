@@ -1,28 +1,34 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use api::{ItemCounts, ItemKindCounts, ItemSort, Tag};
+use api::{ApiError, Collection, ItemCounts, ItemKindCounts, ItemSort, Tag};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::collections::{COLLECTIONS_CSS, CollectionChip};
 use crate::i18n::api_error_message;
 use crate::icons::{
-    IconCheck, IconChevronDown, IconClose, IconHeart, IconHeartFilled, IconSort, IconTag,
+    IconCheck, IconChevronDown, IconChevronRight, IconClose, IconFilter, IconHeart,
+    IconHeartFilled, IconSort,
 };
 
-const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
+/// Also holds the checkbox options (`filter-option`) the collection picker
+/// shares.
+pub(crate) const FILTERS_CSS: Asset = asset!("/assets/styling/filters.css");
 /// Tag chips, shared with the other tag UI (see tags.css).
 const TAGS_CSS: Asset = asset!("/assets/styling/tags.css");
 
-/// How long typing in a tag search box must pause before tags are fetched.
+/// How long typing in a tag or collection search box must pause before
+/// they're fetched.
 pub(crate) const TAG_SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
-/// Selected tags shown as chips in the closed Tags control before the rest
-/// collapse into "+N".
-const MAX_VISIBLE_TAG_CHIPS: usize = 2;
-/// How many of the user's tags a tag list asks for: the Tags filter's and
-/// the one under an item's "Add tag" input. Both lists scroll.
+/// Selected collections and tags shown as chips in the closed Filters
+/// control before the rest collapse into "+N".
+const MAX_VISIBLE_FILTER_CHIPS: usize = 2;
+/// How many of the user's tags or collections a list asks for: the Filters
+/// sections, the collection picker and the list under an item's "Add tag"
+/// input. All of them scroll, and searching finds the rest.
 pub(crate) const TAG_LIST_LIMIT: u32 = 50;
 
 /// What an image or file item holds (the API's `kind`): the options of the
@@ -410,29 +416,108 @@ pub fn FavoritesToggle(value: Signal<bool>, count: Option<u32>) -> Element {
     }
 }
 
-/// `[ Python ×  Architecture ×  +2 ▾ ]`: searchable multi-select of the
-/// user's tags. The closed control shows the selection as removable chips
-/// (the first few, then "+N"); the open panel has the search box and a
-/// checkbox per matching tag.
-#[component]
-pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
-    let mut open = use_signal(|| false);
-    let mut selected = selected;
+/// Which of the user's things a `FiltersMenu` section lists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FilterSection {
+    Collections,
+    Tags,
+}
 
-    let chosen = selected();
-    let hidden = chosen.len().saturating_sub(MAX_VISIBLE_TAG_CHIPS);
+impl FilterSection {
+    fn title(self) -> String {
+        match self {
+            FilterSection::Collections => t!("collections-label"),
+            FilterSection::Tags => t!("tags-label"),
+        }
+    }
+
+    fn search_placeholder(self) -> String {
+        match self {
+            FilterSection::Collections => t!("collections-search-placeholder"),
+            FilterSection::Tags => t!("tags-search-placeholder"),
+        }
+    }
+
+    fn none_yet(self) -> String {
+        match self {
+            FilterSection::Collections => t!("collections-none-yet"),
+            FilterSection::Tags => t!("tags-none-yet"),
+        }
+    }
+
+    fn no_matches(self) -> String {
+        match self {
+            FilterSection::Collections => t!("collections-no-matches"),
+            FilterSection::Tags => t!("tags-no-matches"),
+        }
+    }
+
+    fn load_failed(self, error: String) -> String {
+        match self {
+            FilterSection::Collections => t!("collections-load-failed", error: error),
+            FilterSection::Tags => t!("tags-load-failed", error: error),
+        }
+    }
+
+    /// The user's collections or tags containing `query`, as options.
+    async fn fetch(self, session: &AuthSession, query: String) -> Result<Vec<Tag>, ApiError> {
+        match self {
+            FilterSection::Tags => session.list_tags(query, TAG_LIST_LIMIT).await,
+            // Same shape as a tag; the section only needs ids and names.
+            FilterSection::Collections => Ok(session
+                .list_collections(query, TAG_LIST_LIMIT)
+                .await?
+                .into_iter()
+                .map(|collection| Tag {
+                    id: collection.id,
+                    name: collection.name,
+                })
+                .collect()),
+        }
+    }
+}
+
+/// `[ ≡ Filters ▾ ]`: the collection and tag filters. Closed, it shows the
+/// selection as removable chips (collections, then tags: the first few,
+/// then "+N"), highlighted like the other active filters. Open, a panel of
+/// two collapsible sections, Collections and Tags, each with its own search
+/// box and a checkbox per match; any number of either can be selected.
+#[component]
+pub fn FiltersMenu(tags: Signal<Vec<Tag>>, collections: Signal<Vec<Collection>>) -> Element {
+    let mut open = use_signal(|| false);
+    let mut tags = tags;
+    let mut collections = collections;
+
+    let chosen_collections = collections();
+    let chosen_tags = tags();
+    let total = chosen_collections.len() + chosen_tags.len();
+    let hidden = total.saturating_sub(MAX_VISIBLE_FILTER_CHIPS);
+    let visible_collections: Vec<Collection> = chosen_collections
+        .iter()
+        .take(MAX_VISIBLE_FILTER_CHIPS)
+        .cloned()
+        .collect();
+    let visible_tags: Vec<Tag> = chosen_tags
+        .iter()
+        .take(MAX_VISIBLE_FILTER_CHIPS - visible_collections.len())
+        .cloned()
+        .collect();
 
     rsx! {
         document::Link { rel: "stylesheet", href: FILTERS_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
+        document::Link { rel: "stylesheet", href: COLLECTIONS_CSS }
 
-        div { class: "filter-control tag-filter",
+        div { class: "filter-control filters-menu",
             // A div rather than a button: it contains the chips' own ×
             // buttons, and buttons can't nest.
             div {
-                class: if chosen.is_empty() { "filter-button" } else { "filter-button filter-button-active" },
+                class: if total == 0 { "filter-button" } else { "filter-button filter-button-active" },
                 role: "button",
                 tabindex: "0",
+                title: t!("filters-label"),
+                aria_haspopup: "dialog",
+                aria_expanded: if open() { "true" } else { "false" },
                 onclick: move |_| open.toggle(),
                 onkeydown: move |evt| {
                     if evt.key() == Key::Enter || evt.key() == Key::Character(" ".into()) {
@@ -440,13 +525,20 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                         open.toggle();
                     }
                 },
-                IconTag {}
-                if chosen.is_empty() {
-                    span { class: "filter-button-label", {t!("tags-label")} }
+                IconFilter {}
+                if total == 0 {
+                    span { class: "filter-button-label", {t!("filters-label")} }
                 } else {
-                    span { class: "tag-filter-chips",
-                        for tag in chosen.iter().take(MAX_VISIBLE_TAG_CHIPS).cloned() {
-                            span { class: "tag-chip", key: "{tag.id}", title: "{tag.name}",
+                    span { class: "filters-chips",
+                        for collection in visible_collections {
+                            CollectionChip {
+                                key: "c-{collection.id}",
+                                name: collection.name.clone(),
+                                on_remove: move |_| collections.write().retain(|c| c.id != collection.id),
+                            }
+                        }
+                        for tag in visible_tags {
+                            span { class: "tag-chip", key: "t-{tag.id}", title: "{tag.name}",
                                 span { class: "tag-chip-name", "{tag.name}" }
                                 button {
                                     class: "tag-chip-remove",
@@ -456,14 +548,14 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
                                     onclick: move |evt| {
                                         // Don't also toggle the dropdown.
                                         evt.stop_propagation();
-                                        selected.write().retain(|t| t.id != tag.id);
+                                        tags.write().retain(|t| t.id != tag.id);
                                     },
                                     IconClose {}
                                 }
                             }
                         }
                         if hidden > 0 {
-                            span { class: "tag-filter-more", "+{hidden}" }
+                            span { class: "filters-more", "+{hidden}" }
                         }
                     }
                 }
@@ -471,19 +563,102 @@ pub fn TagFilter(selected: Signal<Vec<Tag>>) -> Element {
             }
             if open() {
                 div { class: "filter-backdrop", onclick: move |_| open.set(false) }
-                TagFilterPanel { selected }
+                div {
+                    class: "filter-panel filters-panel",
+                    role: "dialog",
+                    aria_label: t!("filters-label"),
+                    onkeydown: move |evt| {
+                        if evt.key() == Key::Escape {
+                            open.set(false);
+                        }
+                    },
+                    // Sections with a selection start expanded; with none
+                    // at all, Tags does, as the old Tags dropdown did.
+                    FilterSectionPanel {
+                        section: FilterSection::Collections,
+                        initially_expanded: !chosen_collections.is_empty(),
+                        selected: chosen_collections
+                            .iter()
+                            .map(|c| Tag { id: c.id.clone(), name: c.name.clone() })
+                            .collect::<Vec<_>>(),
+                        on_toggle: move |option: Tag| {
+                            let already = collections.read().iter().any(|c| c.id == option.id);
+                            if already {
+                                collections.write().retain(|c| c.id != option.id);
+                            } else {
+                                collections.write().push(Collection { id: option.id, name: option.name });
+                            }
+                        },
+                    }
+                    FilterSectionPanel {
+                        section: FilterSection::Tags,
+                        initially_expanded: !chosen_tags.is_empty() || chosen_collections.is_empty(),
+                        selected: chosen_tags.clone(),
+                        on_toggle: move |tag: Tag| {
+                            let already = tags.read().iter().any(|t| t.id == tag.id);
+                            if already {
+                                tags.write().retain(|t| t.id != tag.id);
+                            } else {
+                                tags.write().push(tag);
+                            }
+                        },
+                    }
+                }
             }
         }
     }
 }
 
-/// The open Tags dropdown: search box on top, matching tags as checkboxes.
-/// Mounted only while open, so it fetches the current tag list each time.
+/// One collapsible section of the open `FiltersMenu`: a header with a
+/// chevron (right when collapsed, down when expanded) and how many are
+/// selected; expanded, a search box and the matching options as checkboxes
+/// (with nothing typed, the ones selected when it expanded first). `on_toggle` gets an
+/// option (de)selected. Fetches as it expands and as the search changes.
 #[component]
-fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
+fn FilterSectionPanel(
+    section: FilterSection,
+    initially_expanded: bool,
+    selected: Vec<Tag>,
+    on_toggle: EventHandler<Tag>,
+) -> Element {
+    let mut expanded = use_signal(|| initially_expanded);
+    let selected_count = selected.len();
+
+    rsx! {
+        div { class: if expanded() { "filters-section filters-section-expanded" } else { "filters-section" },
+            button {
+                class: "filters-section-header",
+                r#type: "button",
+                aria_expanded: if expanded() { "true" } else { "false" },
+                onclick: move |_| expanded.toggle(),
+                span { class: "filters-section-chevron", IconChevronRight {} }
+                span { class: "filters-section-title", "{section.title()}" }
+                if selected_count > 0 {
+                    span { class: "filter-count filters-section-count", "{selected_count}" }
+                }
+            }
+            if expanded() {
+                FilterSectionOptions { section, selected, on_toggle }
+            }
+        }
+    }
+}
+
+/// The expanded part of a `FilterSectionPanel`. Mounted only while
+/// expanded, so it fetches the current list each time it opens.
+#[component]
+fn FilterSectionOptions(
+    section: FilterSection,
+    selected: Vec<Tag>,
+    on_toggle: EventHandler<Tag>,
+) -> Element {
     let session = use_context::<AuthSession>();
     let mut query = use_signal(String::new);
-    let mut selected = selected;
+    // What was selected when the section expanded, listed first.
+    let pinned = use_hook({
+        let selected = selected.clone();
+        move || selected
+    });
 
     // Re-runs as the query changes; the delay debounces typing (a newer
     // query drops the pending fetch).
@@ -494,57 +669,77 @@ fn TagFilterPanel(selected: Signal<Vec<Tag>>) -> Element {
             if !query.is_empty() {
                 Delay::new(TAG_SEARCH_DEBOUNCE).await;
             }
-            session.list_tags(query, TAG_LIST_LIMIT).await
+            section.fetch(&session, query).await
         }
     });
 
-    let is_selected = move |tag: &Tag| selected.read().iter().any(|t| t.id == tag.id);
+    let searching = !query().trim().is_empty();
+    let is_selected = |option: &Tag| selected.iter().any(|s| s.id == option.id);
 
     rsx! {
-        div { class: "filter-panel tag-filter-panel",
-            input {
-                class: "tag-filter-search",
-                r#type: "search",
-                placeholder: t!("tags-search-placeholder"),
-                value: "{query}",
-                oninput: move |evt| query.set(evt.value()),
-                onmounted: move |evt| async move {
-                    let _ = evt.set_focus(true).await;
-                },
-            }
-            div { class: "tag-filter-options",
-                match &*matches.read() {
-                    Some(Ok(tags)) if tags.is_empty() => rsx! {
-                        p { class: "tag-filter-empty",
-                            if query().trim().is_empty() { {t!("tags-none-yet")} } else { {t!("tags-no-matches")} }
-                        }
-                    },
-                    Some(Ok(tags)) => rsx! {
-                        for tag in tags.clone() {
-                            label { class: "tag-filter-option", key: "{tag.id}",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: is_selected(&tag),
-                                    onchange: move |_| {
-                                        let already = selected.read().iter().any(|t| t.id == tag.id);
-                                        if already {
-                                            selected.write().retain(|t| t.id != tag.id);
-                                        } else {
-                                            selected.write().push(tag.clone());
-                                        }
-                                    },
-                                }
-                                span { "{tag.name}" }
+        input {
+            class: "filters-search",
+            r#type: "search",
+            placeholder: section.search_placeholder(),
+            value: "{query}",
+            oninput: move |evt| query.set(evt.value()),
+            onmounted: move |evt| async move {
+                let _ = evt.set_focus(true).await;
+            },
+        }
+        div { class: "filters-options",
+            match &*matches.read() {
+                Some(Ok(found)) => {
+                    // While browsing, the ones selected when the section
+                    // expanded first, so they stay in reach however many
+                    // there are, and selecting more doesn't move anything
+                    // under the pointer; just matches while searching.
+                    let options: Vec<Tag> = if searching {
+                        found.clone()
+                    } else {
+                        let is_pinned = |option: &Tag| pinned.iter().any(|p| p.id == option.id);
+                        pinned
+                            .iter()
+                            .cloned()
+                            .chain(found.iter().filter(|option| !is_pinned(option)).cloned())
+                            .collect()
+                    };
+                    let truncated = found.len() >= TAG_LIST_LIMIT as usize;
+                    if options.is_empty() {
+                        rsx! {
+                            p { class: "filter-empty",
+                                if searching { "{section.no_matches()}" } else { "{section.none_yet()}" }
                             }
                         }
-                    },
-                    Some(Err(err)) => rsx! {
-                        p { class: "tag-filter-empty", {t!("tags-load-failed", error: api_error_message(err))} }
-                    },
-                    None => rsx! {
-                        p { class: "tag-filter-empty", {t!("common-loading")} }
-                    },
+                    } else {
+                        rsx! {
+                            for option in options {
+                                label { class: "filter-option", key: "{option.id}",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: is_selected(&option),
+                                        onchange: {
+                                            let option = option.clone();
+                                            move |_| on_toggle.call(option.clone())
+                                        },
+                                    }
+                                    span { "{option.name}" }
+                                }
+                            }
+                            // Only the first page is listed: searching finds
+                            // the rest.
+                            if truncated {
+                                p { class: "filter-empty filters-more-hint", {t!("filters-refine-search")} }
+                            }
+                        }
+                    }
                 }
+                Some(Err(err)) => rsx! {
+                    p { class: "filter-empty", "{section.load_failed(api_error_message(err))}" }
+                },
+                None => rsx! {
+                    p { class: "filter-empty", {t!("common-loading")} }
+                },
             }
         }
     }

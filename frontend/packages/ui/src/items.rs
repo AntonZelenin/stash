@@ -1,10 +1,13 @@
-use api::{ItemUpdate, ListedItem, Tag, TextItemType};
+use api::{Collection, ItemUpdate, ListedItem, Tag, TextItemType};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::collections::{
+    COLLECTIONS_CSS, CollectionChip, CollectionPicker, contains_name, toggled,
+};
 use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::i18n::{Language, api_error_message, current_language};
 use crate::icons::{
@@ -143,6 +146,7 @@ pub fn ItemGrid(
     rsx! {
         document::Link { rel: "stylesheet", href: ITEMS_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
+        document::Link { rel: "stylesheet", href: COLLECTIONS_CSS }
 
         // Measured here rather than on each section's grid: every section
         // has the same width, so the same column count.
@@ -742,6 +746,13 @@ fn OpenedItem(
             match mode {
                 ViewMode::Viewing => rsx! {
                     ItemDetails { item: item.clone() }
+                    if !item.collections.is_empty() {
+                        div { class: "item-collections",
+                            for collection in item.collections.clone() {
+                                CollectionChip { key: "{collection.id}", name: collection.name }
+                            }
+                        }
+                    }
                     ItemTags {
                         item_id: item.id.clone(),
                         tags: item.tags.clone(),
@@ -805,14 +816,15 @@ fn ItemDetails(item: ListedItem) -> Element {
 /// from its edited text (a bare URL is a link, text without URLs a note);
 /// for text mixing both, a Text/Link choice is shown, starting at the
 /// item's current type. The text or caption field has focus when the form
-/// opens. Below it, the item's tags, each with a × to remove it, and an
-/// "Add tag" control; tag changes are only applied on Save, so Cancel
-/// undoes them too.
+/// opens. Below it, the collections the item is in and its tags, each with
+/// a × to remove it, and "+ Collection" (a multi-select picker) and "Add
+/// tag" controls; these changes are only applied on Save, so Cancel undoes
+/// them too.
 ///
 /// Only changed fields are sent. `on_saved` gets the updated item, or None
-/// if nothing had changed; `on_cancel` drops the changes. If a tag change
-/// fails, the form stays open and `on_tags_changed` lets the page refetch,
-/// as the tag changes before it were applied.
+/// if nothing had changed; `on_cancel` drops the changes. If a collection
+/// or tag change fails, the form stays open and `on_tags_changed` lets the
+/// page refetch, as the changes before it were applied.
 #[component]
 fn ItemEditor(
     item: ListedItem,
@@ -834,6 +846,43 @@ fn ItemEditor(
     let mut removed_tag_ids = use_signal(Vec::<String>::new);
     let mut added_tag_names = use_signal(Vec::<String>::new);
     let mut adding_tag = use_signal(|| false);
+    // Likewise for collections: ids of the ones the item is taken out of,
+    // and names of the ones it's put in.
+    let mut removed_collection_ids = use_signal(Vec::<String>::new);
+    let mut added_collection_names = use_signal(Vec::<String>::new);
+    let mut picking_collection = use_signal(|| false);
+    let kept_collections: Vec<Collection> = item
+        .collections
+        .iter()
+        .filter(|collection| !removed_collection_ids.read().contains(&collection.id))
+        .cloned()
+        .collect();
+    let shown_collection_names: Vec<String> = kept_collections
+        .iter()
+        .map(|collection| collection.name.clone())
+        .chain(added_collection_names())
+        .collect();
+    // Checking a collection in the picker puts the item in it, unchecking
+    // takes it out; either way back to what it was just undoes the change.
+    let toggle_collection = {
+        let collections = item.collections.clone();
+        let shown = shown_collection_names.clone();
+        move |name: String| {
+            let lowercase = name.to_lowercase();
+            let original = collections
+                .iter()
+                .find(|collection| collection.name.to_lowercase() == lowercase);
+            match (original, contains_name(&shown, &name)) {
+                (Some(collection), true) => {
+                    removed_collection_ids.write().push(collection.id.clone())
+                }
+                (Some(collection), false) => removed_collection_ids
+                    .write()
+                    .retain(|id| *id != collection.id),
+                (None, _) => added_collection_names.set(toggled(&added_collection_names(), &name)),
+            }
+        }
+    };
     let kept_tags: Vec<Tag> = item
         .tags
         .iter()
@@ -882,31 +931,64 @@ fn ItemEditor(
     let save = use_callback({
         let item = item.clone();
         let kept_tags = kept_tags.clone();
+        let kept_collections = kept_collections.clone();
         move |()| {
             if saving() || invalid {
                 return;
             }
             let removed = removed_tag_ids();
             let added = added_tag_names();
-            if update == ItemUpdate::default() && removed.is_empty() && added.is_empty() {
+            let left_collections = removed_collection_ids();
+            let joined_collections = added_collection_names();
+            if update == ItemUpdate::default()
+                && removed.is_empty()
+                && added.is_empty()
+                && left_collections.is_empty()
+                && joined_collections.is_empty()
+            {
                 on_saved.call(None);
                 return;
             }
             let session = session.clone();
             let item = item.clone();
             let kept_tags = kept_tags.clone();
+            let kept_collections = kept_collections.clone();
             let update = update.clone();
             spawn(async move {
                 saving.set(true);
-                // Tags first, so an updated item from the server below
-                // already has them right. Both calls are no-ops when
-                // repeated, so saving again after a failure is safe.
+                // Collections and tags first, so an updated item from the
+                // server below already has them right. Every call is a
+                // no-op when repeated, so saving again after a failure is
+                // safe.
+                let mut collections = kept_collections;
                 let mut tags = kept_tags;
                 let mut failure = None;
-                for tag_id in removed {
-                    if let Err(err) = session.remove_tag(item.id.clone(), tag_id).await {
+                for collection_id in left_collections {
+                    if let Err(err) = session
+                        .remove_from_collection(item.id.clone(), collection_id)
+                        .await
+                    {
                         failure = Some(err);
                         break;
+                    }
+                }
+                if failure.is_none() {
+                    for name in joined_collections {
+                        match session.add_to_collection(item.id.clone(), name).await {
+                            Ok(collection) => collections.push(collection),
+                            Err(err) => {
+                                failure = Some(err);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if failure.is_none() {
+                    for tag_id in removed {
+                        if let Err(err) = session.remove_tag(item.id.clone(), tag_id).await {
+                            failure = Some(err);
+                            break;
+                        }
                     }
                 }
                 if failure.is_none() {
@@ -927,10 +1009,15 @@ fn ItemEditor(
                     return;
                 }
                 if update == ItemUpdate::default() {
-                    // Only tags changed: the item as it now is, its tags
-                    // sorted by name as the server lists them.
+                    // Only collections or tags changed: the item as it now
+                    // is, both sorted by name as the server lists them.
+                    collections.sort_by(|a, b| a.name.cmp(&b.name));
                     tags.sort_by_key(|tag| tag.name.to_lowercase());
-                    on_saved.call(Some(ListedItem { tags, ..item }));
+                    on_saved.call(Some(ListedItem {
+                        tags,
+                        collections,
+                        ..item
+                    }));
                     return;
                 }
                 match session.update_item(item.id, update).await {
@@ -999,6 +1086,51 @@ fn ItemEditor(
                             let _ = evt.set_focus(true).await;
                         },
                         onkeydown: save_on_shortcut,
+                    }
+                }
+            }
+            div { class: "item-editor-field",
+                span { class: "item-editor-label", {t!("item-field-collections")} }
+                // The anchor is the whole row, not the button: picking a
+                // collection adds a chip before the button, which would
+                // move an open picker hung from it.
+                div { class: "item-editor-tags collection-picker-anchor",
+                    for collection in kept_collections {
+                        CollectionChip {
+                            key: "{collection.id}",
+                            name: collection.name.clone(),
+                            disabled: saving(),
+                            on_remove: move |_| removed_collection_ids.write().push(collection.id.clone()),
+                        }
+                    }
+                    for name in added_collection_names() {
+                        CollectionChip {
+                            key: "added-{name}",
+                            name: name.clone(),
+                            disabled: saving(),
+                            on_remove: move |_| {
+                                added_collection_names.set(toggled(&added_collection_names(), &name));
+                            },
+                        }
+                    }
+                    button {
+                        class: "tag-add",
+                        r#type: "button",
+                        title: t!("collections-add-title"),
+                        aria_haspopup: "dialog",
+                        aria_expanded: if picking_collection() { "true" } else { "false" },
+                        disabled: saving(),
+                        onclick: move |_| picking_collection.toggle(),
+                        "+ "
+                        {t!("collections-add")}
+                    }
+                    if picking_collection() {
+                        CollectionPicker {
+                            selected: shown_collection_names,
+                            busy: saving(),
+                            on_toggle: toggle_collection,
+                            on_close: move |_| picking_collection.set(false),
+                        }
                     }
                 }
             }
@@ -1840,6 +1972,7 @@ mod tests {
             thumbnail_url: None,
             file: None,
             tags: Vec::new(),
+            collections: Vec::new(),
             is_favorite: false,
         }
     }

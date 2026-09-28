@@ -307,6 +307,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    /* A chip's height even when empty (see home.rs). */
+    min-height: 32px;
     padding: 4px 4px 4px 12px;
 }
 
@@ -386,40 +388,6 @@
     cursor: not-allowed;
 }
 
-.home-input-tag-add {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-    margin-bottom: 5px;
-    padding: 6px 12px;
-    border: none;
-    border-radius: 12px;
-    background: #f1f5f9;
-    color: #334155;
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-
-.home-input-tag-add:hover:not(:disabled) {
-    background: #e2e8f0;
-}
-
-.home-input-tag-add:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.home-input-tag-plus {
-    color: #94a3b8;
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1;
-}
-
 .home-input-attach {
     display: flex;
     align-items: center;
@@ -496,16 +464,26 @@
     }
 }
 
-/* SUGGESTED: #tag • #tag … under a hairline; scrolls sideways rather than
-   wrapping on narrow screens. */
-.home-suggested {
+/* The bottom row, under a hairline: suggested tags on the left, "+ Add
+   tag" and "+ Collection" on the right. */
+.home-options-row {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-top: 8px;
-    padding: 8px 8px 0;
-    overflow-x: auto;
+    padding: 6px 4px 0 8px;
     border-top: 1px solid #f1f5f9;
+}
+
+/* SUGGESTED: #tag • #tag …; scrolls sideways rather than wrapping on
+   narrow screens. */
+.home-suggested {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow-x: auto;
     color: #64748b;
     font-size: 11px;
     white-space: nowrap;
@@ -541,6 +519,63 @@
 .home-suggested-tag:hover:not(:disabled) {
     color: var(--violet-strong);
     text-decoration: underline;
+}
+
+.home-options-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+}
+
+/* "+ Add tag" and "+ Collection": small pills. */
+.home-option-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    height: 26px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 10px;
+    background: #f1f5f9;
+    color: #334155;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.home-option-add:hover:not(:disabled) {
+    background: #e2e8f0;
+}
+
+.home-option-add:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Collections are picked for what's sent next. */
+.home-option-add-active {
+    background: #e6f6f3;
+    color: #0f766e;
+}
+
+.home-option-add-active:hover:not(:disabled) {
+    background: #ccefe8;
+}
+
+.home-option-plus {
+    color: #94a3b8;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.home-option-add-active .home-option-plus {
+    color: inherit;
 }
 
 .home-status {

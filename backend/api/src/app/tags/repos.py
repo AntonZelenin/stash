@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.items.models import Item, Tag, item_tags
 
 
-def _escape_like(value: str) -> str:
+def escape_like(value: str) -> str:
     """Makes user input match literally inside a LIKE pattern."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -105,7 +105,7 @@ class TagRepository:
         stmt = select(Tag).where(Tag.user_id == user_id)
         order = [func.lower(Tag.name)]
         if query:
-            needle = _escape_like(query.lower())
+            needle = escape_like(query.lower())
             stmt = stmt.where(func.lower(Tag.name).like(f"%{needle}%", escape="\\"))
             starts_with = func.lower(Tag.name).like(f"{needle}%", escape="\\")
             order.insert(0, case((starts_with, 0), else_=1))

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use api::{ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType};
+use api::{Collection, ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
@@ -8,8 +8,12 @@ use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::auth_session::ItemLabels;
+use crate::collections::{COLLECTIONS_CSS, CollectionChip, CollectionPicker, toggled};
 use crate::date_filter::{DateFilter, DateSelection};
-use crate::filters::{FavoritesToggle, SortMenu, TagFilter, TypeFilter, TypeTabs};
+use crate::filters::{
+    FavoritesToggle, FiltersMenu, SortMenu, TAG_LIST_LIMIT, TypeFilter, TypeTabs,
+};
 use crate::i18n::api_error_message;
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
@@ -134,10 +138,12 @@ pub fn Home() -> Element {
         });
     }
 
-    // Type, favorites, date and tag filters. Applied by the server, to the
-    // list and to search alike; changing any refetches whichever is showing.
+    // Type, favorites, date, collection and tag filters. Applied by the
+    // server, to the list and to search alike; changing any refetches
+    // whichever is showing.
     let active_type = use_signal(|| TypeFilter::All);
     let mut selected_tags = use_signal(Vec::<Tag>::new);
+    let mut selected_collections = use_signal(Vec::<Collection>::new);
     let favorites_only = use_signal(|| false);
     let saved_on = use_signal(|| None::<DateSelection>);
     let current_filters = move || {
@@ -150,6 +156,10 @@ pub fn Home() -> Element {
                 .map(str::to_string)
                 .collect(),
             tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
+            collection_ids: selected_collections()
+                .iter()
+                .map(|collection| collection.id.clone())
+                .collect(),
             favorites_only: favorites_only(),
             created_from,
             created_before,
@@ -231,6 +241,11 @@ pub fn Home() -> Element {
     // file), and whether the tag picker is open.
     let mut pending_tags = use_signal(Vec::<String>::new);
     let mut picking_tag = use_signal(|| false);
+    // Likewise the names of the collections to put it in (all of the staged
+    // files, when several are sent at once), and whether their picker is
+    // open.
+    let mut pending_collections = use_signal(Vec::<String>::new);
+    let mut picking_collection = use_signal(|| false);
     // The user's suggested tags (recently, then frequently used), minus any
     // already added. Refetched as pending tags change (including being
     // cleared once something is saved with them) and when a card's tags
@@ -247,6 +262,53 @@ pub fn Home() -> Element {
     // Deletes from a card's menu, then refetches whichever view is showing
     // (list and search), so the card disappears from both, and the
     // suggested tags, since the item may have been a tag's only use.
+    // Collections and tags go away with their last item (deleted, or
+    // edited out of them), so after either, drops any gone from the active
+    // filters, which would otherwise keep a chip for something that no
+    // longer exists. Looked up by name (the lists are searched, not
+    // fetched whole), and written only if something went.
+    let prune_filters = use_callback({
+        let session = session.clone();
+        move |()| {
+            let collections = selected_collections();
+            let tags = selected_tags();
+            if collections.is_empty() && tags.is_empty() {
+                return;
+            }
+            let session = session.clone();
+            spawn(async move {
+                let mut kept_collections = Vec::new();
+                for collection in &collections {
+                    match session
+                        .list_collections(collection.name.clone(), TAG_LIST_LIMIT)
+                        .await
+                    {
+                        Ok(found) if !found.iter().any(|c| c.id == collection.id) => {}
+                        // Kept on errors: better a stale chip than a lost filter.
+                        _ => kept_collections.push(collection.clone()),
+                    }
+                }
+                let mut kept_tags = Vec::new();
+                for tag in &tags {
+                    match session.list_tags(tag.name.clone(), TAG_LIST_LIMIT).await {
+                        Ok(found) if !found.iter().any(|t| t.id == tag.id) => {}
+                        _ => kept_tags.push(tag.clone()),
+                    }
+                }
+                if kept_collections.len() < collections.len() {
+                    selected_collections
+                        .write()
+                        .retain(|c| kept_collections.iter().any(|kept| kept.id == c.id));
+                }
+                if kept_tags.len() < tags.len() {
+                    selected_tags
+                        .write()
+                        .retain(|t| kept_tags.iter().any(|kept| kept.id == t.id));
+                }
+            });
+        }
+    });
+
     let delete_item = use_callback({
         let session = session.clone();
         move |item_id: String| {
@@ -258,6 +320,7 @@ pub fn Home() -> Element {
                         search_results.restart();
                         item_counts.restart();
                         suggested.restart();
+                        prune_filters.call(());
                     }
                     Err(err) => status.set(Some(t!(
                         "home-delete-failed",
@@ -276,6 +339,7 @@ pub fn Home() -> Element {
         search_results.restart();
         item_counts.restart();
         suggested.restart();
+        prune_filters.call(());
     });
 
     // A card's favorite state changed. The card already shows it, so only
@@ -333,7 +397,10 @@ pub fn Home() -> Element {
             if !files.is_empty() {
                 let session = session.clone();
                 let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
-                let tags = pending_tags();
+                let labels = ItemLabels {
+                    tags: pending_tags(),
+                    collections: pending_collections(),
+                };
                 spawn(async move {
                     is_submitting.set(true);
                     status.set(None);
@@ -349,7 +416,7 @@ pub fn Home() -> Element {
                                     file.content_type,
                                     file.data,
                                     caption.clone(),
-                                    tags.clone(),
+                                    labels.clone(),
                                 )
                                 .await
                         } else {
@@ -359,7 +426,7 @@ pub fn Home() -> Element {
                                     file.content_type,
                                     file.data,
                                     caption.clone(),
-                                    tags.clone(),
+                                    labels.clone(),
                                 )
                                 .await
                         };
@@ -367,11 +434,12 @@ pub fn Home() -> Element {
                             last_error = Some(api_error_message(&err));
                         }
                     }
-                    // Keep the text and tags if anything failed, so they
-                    // aren't lost.
+                    // Keep the text, tags and collections if anything
+                    // failed, so they aren't lost.
                     if last_error.is_none() {
                         note.set(String::new());
                         pending_tags.set(Vec::new());
+                        pending_collections.set(Vec::new());
                     }
                     status.set(last_error);
                     saved_items.restart();
@@ -394,14 +462,16 @@ pub fn Home() -> Element {
 
                 let text = note().trim().to_string();
                 let chosen_type = (text_kind(&text) == TextKind::Mixed).then_some(note_type());
-                match session
-                    .create_text_item(&text, pending_tags(), chosen_type)
-                    .await
-                {
+                let labels = ItemLabels {
+                    tags: pending_tags(),
+                    collections: pending_collections(),
+                };
+                match session.create_text_item(&text, labels, chosen_type).await {
                     Ok(_) => {
                         note.set(String::new());
                         note_type.set(TextItemType::Text);
                         pending_tags.set(Vec::new());
+                        pending_collections.set(Vec::new());
                         saved_items.restart();
                         search_results.restart();
                         item_counts.restart();
@@ -566,6 +636,7 @@ pub fn Home() -> Element {
         }
         document::Link { rel: "stylesheet", href: HOME_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
+        document::Link { rel: "stylesheet", href: COLLECTIONS_CSS }
 
         div {
             class: if drag_depth() > 0 { "home home-dragging" } else { "home" },
@@ -655,10 +726,25 @@ pub fn Home() -> Element {
                                 }
                             }
                         }
-                        // Tags for what's sent next: chips (× removes)
-                        // and, while picking, the tag picker.
-                        if !pending_tags().is_empty() || picking_tag() {
+                        // Collections and tags for what's sent next: chips
+                        // (× removes) and, while picking, the tag picker.
+                        // Kept (empty) while the collection picker is open,
+                        // so the first chip doesn't push the picker down
+                        // under the pointer.
+                        if !pending_collections().is_empty() || !pending_tags().is_empty()
+                            || picking_tag() || picking_collection()
+                        {
                             div { class: "home-tags-row",
+                                for name in pending_collections() {
+                                    CollectionChip {
+                                        key: "collection-{name}",
+                                        name: name.clone(),
+                                        disabled: is_submitting(),
+                                        on_remove: move |_| {
+                                            pending_collections.set(toggled(&pending_collections(), &name));
+                                        },
+                                    }
+                                }
                                 for (index , name) in pending_tags().into_iter().enumerate() {
                                     span { class: "tag-chip", key: "{name}", title: "{name}",
                                         span { class: "tag-chip-name", "{name}" }
@@ -743,15 +829,6 @@ pub fn Home() -> Element {
                                     on_change: move |value| note_type.set(value),
                                 }
                             }
-                            button {
-                                class: "home-input-tag-add",
-                                r#type: "button",
-                                title: t!("tags-add-title"),
-                                disabled: is_submitting() || picking_tag(),
-                                onclick: move |_| picking_tag.set(true),
-                                span { class: "home-input-tag-plus", "+" }
-                                {t!("tags-add")}
-                            }
                             label {
                                 class: "home-input-attach",
                                 r#for: FILE_UPLOAD_INPUT_ID,
@@ -766,12 +843,15 @@ pub fn Home() -> Element {
                                 IconArrowUp {}
                             }
                         }
-                        // One click adds a suggestion to the pending tags;
-                        // ones already added are left out. Hidden while the
-                        // user has no tags to suggest.
-                        if !suggestions.is_empty() {
+                        // [ SUGGESTED: #tag • #tag … ]  [ + Add tag ] [ + Collection ]
+                        div { class: "home-options-row",
+                            // One click adds a suggestion to the pending
+                            // tags; ones already added are left out. Empty
+                            // while the user has no tags to suggest.
                             div { class: "home-suggested",
-                                span { class: "home-suggested-label", {t!("tags-suggested-label")} }
+                                if !suggestions.is_empty() {
+                                    span { class: "home-suggested-label", {t!("tags-suggested-label")} }
+                                }
                                 for (index , name) in suggestions.into_iter().enumerate() {
                                     if index > 0 {
                                         span { class: "home-suggested-sep", "•" }
@@ -785,6 +865,47 @@ pub fn Home() -> Element {
                                             move |_| pending_tags.write().push(name.clone())
                                         },
                                         "#{name}"
+                                    }
+                                }
+                            }
+                            div { class: "home-options-actions",
+                                button {
+                                    class: "home-option-add",
+                                    r#type: "button",
+                                    title: t!("tags-add-title"),
+                                    disabled: is_submitting() || picking_tag(),
+                                    onclick: move |_| {
+                                        picking_collection.set(false);
+                                        picking_tag.set(true);
+                                    },
+                                    span { class: "home-option-plus", "+" }
+                                    {t!("tags-add")}
+                                }
+                                div { class: "collection-picker-anchor",
+                                    button {
+                                        class: if pending_collections().is_empty() { "home-option-add" } else { "home-option-add home-option-add-active" },
+                                        r#type: "button",
+                                        title: t!("collections-add-title"),
+                                        aria_haspopup: "dialog",
+                                        aria_expanded: if picking_collection() { "true" } else { "false" },
+                                        disabled: is_submitting(),
+                                        onclick: move |_| {
+                                            picking_tag.set(false);
+                                            picking_collection.toggle();
+                                        },
+                                        span { class: "home-option-plus", "+" }
+                                        {t!("collections-add")}
+                                    }
+                                    if picking_collection() {
+                                        CollectionPicker {
+                                            selected: pending_collections(),
+                                            busy: is_submitting(),
+                                            align_right: true,
+                                            on_toggle: move |name: String| {
+                                                pending_collections.set(toggled(&pending_collections(), &name));
+                                            },
+                                            on_close: move |_| picking_collection.set(false),
+                                        }
                                     }
                                 }
                             }
@@ -803,10 +924,10 @@ pub fn Home() -> Element {
             // kept to a centered — but wider-than-the-hero — reading width.
             div { class: "stash-main",
                 div { class: "stash-section",
-                    // [ All | Notes | Media ▾ | Links | Files ▾ | ♥ ]  [ Date ▾ ] [ Search ] [ Tags ▾ ] [ ⇅ ]
+                    // [ All | Notes | Media ▾ | Links | Files ▾ | ♥ ]  [ Date ▾ ] [ Search ] [ Filters ▾ ] [ ⇅ ]
                     // — typing in the search swaps the list below for
-                    // semantic search results; the type, favorites, date
-                    // and tag filters apply to either.
+                    // semantic search results; the type, favorites, date,
+                    // collection and tag filters apply to either.
                     div { class: "stash-controls",
                         div { class: "stash-controls-group",
                             TypeTabs { value: active_type, counts }
@@ -842,7 +963,7 @@ pub fn Home() -> Element {
                                     }
                                 }
                             }
-                            TagFilter { selected: selected_tags }
+                            FiltersMenu { tags: selected_tags, collections: selected_collections }
                             SortMenu {
                                 value: sort,
                                 on_reshuffle: move |()| shuffle += 1,

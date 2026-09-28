@@ -85,6 +85,10 @@ class Item(Base):
     )
     # Sorted by name so every client shows them in the same order.
     tags: Mapped[list["Tag"]] = relationship(secondary="item_tags", order_by="Tag.name")
+    # Likewise sorted by name.
+    collections: Mapped[list["Collection"]] = relationship(
+        secondary="item_collections", order_by="Collection.name"
+    )
 
 
 class TextContent(Base):
@@ -172,9 +176,11 @@ class PendingUpload(Base):
     # The cleaned filename, for display and downloads (images: None if the
     # client sent none).
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
-    # The new item's caption and tag names (already normalized).
+    # The new item's caption, and tag and collection names (already
+    # normalized).
     caption: Mapped[str | None] = mapped_column(String, nullable=True)
     tag_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    collection_names: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # When the upload URL stops being accepted.
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -225,6 +231,45 @@ class Tag(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
     # As first entered (e.g. "Python"); matched case-insensitively.
+    name: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# Many-to-many: which items are in which collections. Rows go away with
+# either side (ON DELETE CASCADE).
+item_collections = Table(
+    "item_collections",
+    Base.metadata,
+    Column("item_id", Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True),
+    Column("collection_id", Uuid, ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True),
+    # When the item was added to the collection.
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    ),
+    # The primary key covers lookups by item; this covers filtering by
+    # collection.
+    Index("ix_item_collections_collection_id", "collection_id"),
+)
+
+
+class Collection(Base):
+    """A user's named group of items. Like tags, private to their owner,
+    unique per user case-insensitively, an item can be in any number of
+    them, and one exists only while some item is in it (see
+    `CollectionRepository`)."""
+
+    __tablename__ = "collections"
+    __table_args__ = (
+        Index("uq_collections_user_id_lower_name", "user_id", text("lower(name)"), unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
+    # As first entered; matched case-insensitively.
     name: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

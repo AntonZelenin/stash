@@ -23,6 +23,7 @@ from stash_shared.queue.base import (
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import (
+    Collection,
     Description,
     FileMetadata,
     ImageMetadata,
@@ -31,6 +32,7 @@ from app.items.models import (
     SearchChunk,
     Tag,
     TextContent,
+    item_collections,
     item_tags,
 )
 from app.main import app
@@ -58,6 +60,8 @@ _TEST_TABLES = [
     SearchChunk.__table__,
     Tag.__table__,
     item_tags,
+    Collection.__table__,
+    item_collections,
     outbox_events,
     PendingUpload.__table__,
 ]

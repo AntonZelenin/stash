@@ -18,6 +18,7 @@ from app.api.schemas.items import (
     ItemStatus,
     ItemType,
     ItemTypeCounts,
+    ListedCollection,
     ListedFile,
     ListedItem,
     ListedTag,
@@ -31,6 +32,7 @@ from app.api.schemas.items import (
     UploadStarted,
     PlaybackUrl,
 )
+from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM, InvalidCollectionNameError
 from app.config import get_settings
 from app.body_size import BodyLimitedRoute, content_body
 from app.db import DbSession
@@ -64,6 +66,9 @@ from app.users.models import User
 router = APIRouter(tags=["items"], route_class=BodyLimitedRoute)
 
 _INVALID_TAGS = f"Tag names must be 1-{MAX_TAG_NAME_LENGTH} characters, at most {MAX_TAGS_PER_ITEM} tags"
+_INVALID_COLLECTIONS = (
+    f"Collection names must be 1-{MAX_COLLECTION_NAME_LENGTH} characters, at most {MAX_COLLECTIONS_PER_ITEM} collections"
+)
 
 _RATE_LIMITED = {429: {"description": "Too many requests, or a quota is used up; retry after `Retry-After` seconds"}}
 
@@ -92,10 +97,16 @@ async def create_text_item(
     await limiter.consume(Charge(limiter.limits.item_writes_per_user, str(current_user.id)))
     try:
         item = await ItemService(session, storage, outbox).create_text_item(
-            user_id=current_user.id, text=payload.text, tags=payload.tags, item_type=_domain_text_type(payload.type)
+            user_id=current_user.id,
+            text=payload.text,
+            tags=payload.tags,
+            collections=payload.collections,
+            item_type=_domain_text_type(payload.type),
         )
     except InvalidTagNameError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
+    except InvalidCollectionNameError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_COLLECTIONS) from None
     return ItemCreated(id=item.id, status=ItemStatus(item.status))
 
 
@@ -125,6 +136,7 @@ async def start_upload(
             content_type=payload.content_type,
             text=payload.text,
             tags=payload.tags,
+            collections=payload.collections,
             limiter=limiter,
         )
     except _UPLOAD_ERRORS as exc:
@@ -183,6 +195,7 @@ _UPLOAD_ERRORS = (
     EmptyFileError,
     FileTooLargeError,
     InvalidTagNameError,
+    InvalidCollectionNameError,
 )
 
 
@@ -196,6 +209,8 @@ def _invalid_upload(exc: Exception) -> HTTPException:
             detail = "File is empty"
         case UnsupportedImageTypeError():
             detail = "Unsupported image type"
+        case InvalidCollectionNameError():
+            detail = _INVALID_COLLECTIONS
         case _:
             detail = _INVALID_TAGS
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
@@ -322,6 +337,7 @@ async def list_items(
     type: ItemType | None = None,
     kind: list[ItemKind] = Query(default=[], max_length=6),
     tag_id: list[UUID] = Query(default=[], max_length=20),
+    collection_id: list[UUID] = Query(default=[], max_length=50),
     favorite: bool = False,
     created_from: AwareDatetime | None = None,
     created_before: AwareDatetime | None = None,
@@ -330,7 +346,7 @@ async def list_items(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ListItemsResponse:
-    filters = item_filters(type, kind, tag_id, favorite, created_from, created_before)
+    filters = item_filters(type, kind, tag_id, collection_id, favorite, created_from, created_before)
     try:
         listed_items, next_cursor = await ItemService(session, storage).list_items(
             user_id=current_user.id,
@@ -456,6 +472,7 @@ def item_filters(
     item_type: ItemType | None,
     kinds: list[ItemKind],
     tag_ids: list[UUID],
+    collection_ids: list[UUID],
     favorites_only: bool,
     created_from: datetime | None,
     created_before: datetime | None,
@@ -465,6 +482,7 @@ def item_filters(
         item_type=DomainItemType(item_type.value) if item_type is not None else None,
         kinds=tuple(dict.fromkeys(ContentKind(kind.value) for kind in kinds)),
         tag_ids=tuple(dict.fromkeys(tag_ids)),
+        collection_ids=tuple(dict.fromkeys(collection_ids)),
         favorites_only=favorites_only,
         created_from=created_from,
         created_before=created_before,
@@ -493,5 +511,8 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
             else None
         ),
         tags=[ListedTag(id=tag.id, name=tag.name) for tag in listed.item.tags],
+        collections=[
+            ListedCollection(id=collection.id, name=collection.name) for collection in listed.item.collections
+        ],
         is_favorite=listed.item.is_favorite,
     )

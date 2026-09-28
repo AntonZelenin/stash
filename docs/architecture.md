@@ -169,7 +169,7 @@ Stores:
 - Descriptions — one per item, the single text source search reads from:
   AI-generated for images (by the worker), the item's own text for
   notes/links (written by the API on save).
-- Tags.
+- Tags and collections.
 - Search chunks — each description split into short pieces, each with its
   embedding (`item_search_chunks`).
 - Processing status.
@@ -1097,7 +1097,7 @@ only with `SEARCH_LOG_CHUNK_TEXT=true`, allowed only with `ENVIRONMENT=local`),
 and one `Search result` line per returned item with `match_sources`: every
 tier that found it (`filename`, `user_text`, `description`, `semantic`).
 
-### Tags, favorites and filtering
+### Tags, collections, favorites and filtering
 
 Users label items with their own tags (`tags`: one row per user and name,
 unique per user case-insensitively; `item_tags`: the many-to-many link).
@@ -1105,6 +1105,7 @@ Tags are private to their owner. Assigning by name reuses the user's
 existing tag of that name or creates it. Listing (`GET /items`) and
 semantic search (`POST /search`) share the same server-side filters: an
 item type, item kinds (below; an item may be of any of them), any number of tags (an item must carry all of them),
+any number of collections (an item must be in any of them; see below),
 favorites only (`items.is_favorite`, toggled per item), and a saved-date
 range (`created_from` inclusive, `created_before` exclusive, both with a
 time zone offset). The server has no notion of the user's time zone:
@@ -1168,6 +1169,26 @@ on that item are left out. Usage is computed on each request from
 keep in sync. The user is resolved on `tags` (`user_id` leads its unique
 index), and `ix_item_tags_tag_id_created_at` covers the per-tag count and
 latest use; `item_tags` has no `user_id` of its own.
+
+Collections group items (`collections`: one row per user and name, unique
+per user case-insensitively; `item_collections`: the many-to-many link, so
+an item can be in any number of them). Like tags they're private and
+assigned by name, reusing the user's collection of that name or creating
+it, on their own (`POST /items/{id}/collections`) or as an item is saved
+(`collections` on `POST /items/text` and `POST /uploads`; the client sends
+the same names with every file of a batch). Like a tag, a collection
+exists only while some item is in it: taking the last item out, or
+deleting it, deletes the collection in the same transaction, with the same
+row locks as tags (`app.collections.repos.CollectionRepository`). Where a
+transaction locks both, tags come first, so the two can't deadlock.
+
+One thing differs from tags: filtering by several collections matches
+items in *any* of them (a union, like opening several folders), where
+several tags narrow. With both, an item must satisfy both
+(`app.items.repos.ItemFilters`).
+
+`GET /collections` lists them (containing a query, prefix matches first,
+then by name), for the clients' collection picker and filter.
 
 ### Notes and links
 

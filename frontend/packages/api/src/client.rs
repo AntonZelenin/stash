@@ -3,11 +3,12 @@ use serde::Deserialize;
 
 use crate::error::{ApiError, FieldError};
 use crate::models::{
-    AssignTagRequest, ChangePasswordRequest, CreateTextItemRequest, CurrentUser, ItemCounts,
-    ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListTagsResponse, ListedItem,
-    LoginRequest, NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest,
-    RegisterResponse, SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag,
-    TextItemType, TokenPair, UploadStarted,
+    AddToCollectionRequest, AssignTagRequest, ChangePasswordRequest, Collection,
+    CreateTextItemRequest, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
+    ListCollectionsResponse, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
+    NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
+    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
+    UploadStarted,
 };
 
 #[derive(Clone)]
@@ -132,12 +133,14 @@ impl ApiClient {
             .bearer_auth(access_token)
     }
 
-    /// `tags`: names of tags to put on the new item.
+    /// `tags`: names of tags to put on the new item; `collections`: names
+    /// of collections to put it in.
     pub async fn create_text_item(
         &self,
         access_token: &str,
         text: &str,
         tags: &[String],
+        collections: &[String],
         item_type: Option<TextItemType>,
     ) -> Result<ItemCreated, ApiError> {
         let response = self
@@ -145,6 +148,7 @@ impl ApiClient {
             .json(&CreateTextItemRequest {
                 text: text.to_string(),
                 tags: tags.to_vec(),
+                collections: collections.to_vec(),
                 item_type,
             })
             .send()
@@ -254,6 +258,84 @@ impl ApiClient {
             .authenticated(
                 Method::DELETE,
                 &format!("/items/{item_id}/tags/{tag_id}"),
+                access_token,
+            )
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// The user's collections containing `query` (all of them if empty),
+    /// names starting with it first.
+    pub async fn list_collections(
+        &self,
+        access_token: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<ListCollectionsResponse, ApiError> {
+        let response = self
+            .authenticated(Method::GET, "/collections", access_token)
+            .query(&[("query", query.to_string()), ("limit", limit.to_string())])
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Puts the item in the collection called `name`, reusing the user's
+    /// existing collection of that name (ignoring case) or creating it.
+    /// Returns the collection.
+    pub async fn add_to_collection(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        name: &str,
+    ) -> Result<Collection, ApiError> {
+        let response = self
+            .authenticated(
+                Method::POST,
+                &format!("/items/{item_id}/collections"),
+                access_token,
+            )
+            .json(&AddToCollectionRequest {
+                name: name.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Takes the item out of the collection; the collection itself stays.
+    pub async fn remove_from_collection(
+        &self,
+        access_token: &str,
+        item_id: &str,
+        collection_id: &str,
+    ) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(
+                Method::DELETE,
+                &format!("/items/{item_id}/collections/{collection_id}"),
                 access_token,
             )
             .send()
@@ -415,6 +497,7 @@ impl ApiClient {
                 item_type: filters.item_type.clone(),
                 kinds: filters.kinds.clone(),
                 tag_ids: filters.tag_ids.clone(),
+                collection_ids: filters.collection_ids.clone(),
                 favorite: filters.favorites_only,
                 created_from: filters.created_from.clone(),
                 created_before: filters.created_before.clone(),
@@ -584,6 +667,9 @@ impl ApiClient {
         }
         for tag_id in &filters.tag_ids {
             params.push(("tag_id", tag_id.clone()));
+        }
+        for collection_id in &filters.collection_ids {
+            params.push(("collection_id", collection_id.clone()));
         }
         if filters.favorites_only {
             params.push(("favorite", "true".to_string()));

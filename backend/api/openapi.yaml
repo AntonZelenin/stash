@@ -288,6 +288,16 @@ paths:
                   items:
                     type: string
                     maxLength: 200
+                collections:
+                  description: >-
+                    Names of collections to put the new item in (existing
+                    ones reused case-insensitively, missing ones created); at
+                    most 20, each 1-50 characters.
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
+                    maxLength: 200
                 type:
                   $ref: "#/components/schemas/TextItemType"
 
@@ -389,7 +399,7 @@ paths:
         "422":
           description: >-
             Invalid request: empty file, unsupported image type, invalid
-            tags, or unknown fields (such as a storage key).
+            tags or collections, or unknown fields (such as a storage key).
 
         "429":
           description: >-
@@ -410,8 +420,8 @@ paths:
       description: >-
         Step 3 of saving an image or file (see `POST /uploads`): once the
         upload to storage succeeded, creates the item (its id is the
-        `upload_id`) with the caption and tags given when the upload
-        started, and starts its processing. The uploaded content is checked
+        `upload_id`) with the caption, tags and collections given when the
+        upload started, and starts its processing. The uploaded content is checked
         first: if it's empty, too large or (for images) not the declared
         type, the upload is discarded and no item is created. Valid content
         becomes the item's for good: the checked upload is copied to the
@@ -655,6 +665,145 @@ paths:
       responses:
         "204":
           description: Tag removed
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+  /collections:
+    get:
+      summary: List or search the current user's collections
+      description: >-
+        Collections are per user, and exist only while some item is in them.
+        Returns the user's collections whose name contains `query`
+        (case-insensitive; all of them if empty), names starting with it
+        first, then alphabetically.
+      operationId: listCollections
+      tags: [collections]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            default: ""
+            maxLength: 200
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+
+      responses:
+        "200":
+          description: Matching collections
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - collections
+                properties:
+                  collections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Collection"
+
+        "401":
+          description: Unauthorized
+
+  /items/{item_id}/collections:
+    post:
+      summary: Add an item to a collection
+      description: >-
+        Puts the item in the user's collection called `name`, reusing the
+        user's existing collection with that name (compared
+        case-insensitively, after trimming and collapsing whitespace) or
+        creating it. A no-op if the item is already in it. Returns the
+        collection.
+      operationId: addToCollection
+      tags: [collections]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  description: 1-50 characters after trimming.
+                  type: string
+
+      responses:
+        "200":
+          description: The collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Collection"
+
+        "401":
+          description: Unauthorized
+
+        "404":
+          description: No such item for the current user
+
+        "422":
+          description: Invalid collection name
+
+  /items/{item_id}/collections/{collection_id}:
+    delete:
+      summary: Remove an item from a collection
+      description: >-
+        Takes the item out of the collection (a no-op if it wasn't in it).
+        If no other item is in it any more, the collection itself is deleted
+        too.
+      operationId: removeFromCollection
+      tags: [collections]
+
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+      responses:
+        "204":
+          description: Item removed from the collection
 
         "401":
           description: Unauthorized
@@ -1068,6 +1217,20 @@ paths:
               format: uuid
           style: form
           explode: true
+        - name: collection_id
+          in: query
+          required: false
+          description: >-
+            Only items in this collection. Repeatable: with several, an item
+            must be in any of them. Combined with `tag_id`, both must hold.
+          schema:
+            type: array
+            maxItems: 50
+            items:
+              type: string
+              format: uuid
+          style: form
+          explode: true
         - name: favorite
           in: query
           required: false
@@ -1167,6 +1330,15 @@ paths:
                   description: Only items carrying all of these tags (same as `GET /items`).
                   type: array
                   maxItems: 20
+                  items:
+                    type: string
+                    format: uuid
+                collection_ids:
+                  description: >-
+                    Only items in any of these collections (same as
+                    `collection_id` on `GET /items`).
+                  type: array
+                  maxItems: 50
                   items:
                     type: string
                     format: uuid
@@ -1328,6 +1500,16 @@ components:
           items:
             type: string
             maxLength: 200
+        collections:
+          description: >-
+            Names of collections to put the new item in (existing ones reused
+            case-insensitively, missing ones created); at most 20, each 1-50
+            characters.
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 200
 
     UploadStarted:
       type: object
@@ -1463,6 +1645,18 @@ components:
         name:
           type: string
 
+    Collection:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
     ListedFile:
       type: object
       required:
@@ -1539,6 +1733,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Tag"
+        collections:
+          description: The collections the item is in, sorted by name.
+          type: array
+          items:
+            $ref: "#/components/schemas/Collection"
         is_favorite:
           type: boolean
         thumbnail_url:

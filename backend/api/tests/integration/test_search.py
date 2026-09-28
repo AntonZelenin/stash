@@ -348,6 +348,18 @@ async def test_search_applies_the_kind_filter(client: AsyncClient, storage: Fake
     assert set(await _search(client, token, "trip", kinds=["image", "video", "audio"])) == {image, video}
 
 
+
+async def test_search_applies_the_collection_filter(
+    client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None
+):
+    _, token = await register_and_login(client)
+    inside = await _file(client, storage, token, "trip.pdf", collections=["Trips"])
+    await _file(client, storage, token, "trip-notes.pdf")
+    collections = (await client.get("/collections", headers={"Authorization": f"Bearer {token}"})).json()
+    [collection] = collections["collections"]
+
+    assert await _search(client, token, "trip", collection_ids=[collection["id"]]) == [inside]
+
 async def test_filename_search_never_matches_other_users_items(
     client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None
 ):

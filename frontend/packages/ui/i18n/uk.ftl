@@ -160,6 +160,24 @@ tags-name-placeholder = Назва тегу
 tags-create = Створити «{ $name }»
 tags-show-tagged = Показати записи з тегом { $name }
 
+## Collections
+
+collections-label = Колекції
+collections-add = Колекція
+collections-add-title = Додати до колекцій
+collections-remove = Прибрати з колекції
+collections-remove-named = Прибрати з колекції { $name }
+collections-search-placeholder = Пошук колекцій...
+collections-none-yet = Колекцій поки немає — створіть першу під час збереження чи редагування запису.
+collections-no-matches = Немає відповідних колекцій
+collections-load-failed = Не вдалося завантажити колекції: { $error }
+collections-create = + Створити колекцію «{ $name }»
+
+## Filters (collections and tags)
+
+filters-label = Фільтри
+filters-refine-search = Показано лише перші — скористайтеся пошуком, щоб знайти інші.
+
 ## Items
 
 items-today = Сьогодні
@@ -188,6 +206,7 @@ item-field-filename = Назва файлу
 item-field-text = Текст
 item-field-caption = Підпис
 item-field-tags = Теги
+item-field-collections = Колекції
 item-field-type = Тип
 item-caption-placeholder = Додайте підпис
 item-save-as = Зберегти як
