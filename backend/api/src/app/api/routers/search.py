@@ -12,7 +12,7 @@ from app.items.services import ItemService, SearchUnavailableError
 from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.rate_limits.limiter import Charge, RateLimiter, get_rate_limiter
 from app.storage.base import ObjectStorage
-from app.storage.minio import get_object_storage
+from app.storage.s3 import get_object_storage
 from app.users.models import User
 
 router = APIRouter(tags=["search"], route_class=BodyLimitedRoute)

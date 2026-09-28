@@ -43,7 +43,7 @@ from app.queue import get_queue_resolver
 from app.rate_limits.limiter import Limit, RateLimiter, RateLimits, get_rate_limiter
 from app.rate_limits.models import RateLimitCounter
 from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
-from app.storage.minio import get_object_storage
+from app.storage.s3 import get_object_storage
 from app.turnstile import TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
 

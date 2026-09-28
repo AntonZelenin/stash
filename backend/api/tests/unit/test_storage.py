@@ -17,7 +17,7 @@ from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from app.storage.base import ObjectChangedError, StoredObject
-from app.storage.minio import MinioStorage
+from app.storage.s3 import S3Storage
 
 
 def _clients(monkeypatch, **settings) -> list[dict]:
@@ -28,7 +28,7 @@ def _clients(monkeypatch, **settings) -> list[dict]:
         return object()
 
     monkeypatch.setattr(boto3, "client", fake_client)
-    MinioStorage(bucket="stash", **settings)
+    S3Storage(bucket="stash", **settings)
     return created
 
 
@@ -51,8 +51,8 @@ def test_separate_public_endpoint_gets_its_own_client(monkeypatch):
     assert public["aws_access_key_id"] == "key" and public["aws_secret_access_key"] == "secret"
 
 
-def _storage() -> MinioStorage:
-    return MinioStorage(
+def _storage() -> S3Storage:
+    return S3Storage(
         bucket="stash",
         endpoint_url="http://minio:9000",
         public_endpoint_url="http://localhost:9000",
@@ -199,7 +199,7 @@ _COPY_PARAMS = {
 }
 
 
-async def _copy(storage: MinioStorage) -> str:
+async def _copy(storage: S3Storage) -> str:
     return await storage.copy_immutable(
         source_key="uploads/u/i", source_etag='"e1"', dest_key="users/u/files/i/v.pdf", content_type="application/pdf"
     )

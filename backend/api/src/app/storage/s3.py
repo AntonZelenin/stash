@@ -21,8 +21,8 @@ _MISSING_CODES = ("404", "NoSuchKey", "NotFound")
 _CONDITION_FAILED_CODES = ("PreconditionFailed", "412", "ConditionalRequestConflict")
 
 
-class MinioStorage(ObjectStorage):
-    """Object storage backed by MinIO's S3-compatible API.
+class S3Storage(ObjectStorage):
+    """Object storage backed by an S3-compatible API (AWS S3, MinIO, ...).
 
     The API's own calls go through `endpoint_url` — reachable
     server-to-server (e.g. the `minio` Docker-network hostname locally).
@@ -233,7 +233,7 @@ def _s3_client(endpoint_url: str, access_key: str, secret_key: str):
 @lru_cache
 def get_object_storage() -> ObjectStorage:
     settings = get_settings()
-    return MinioStorage(
+    return S3Storage(
         endpoint_url=settings.s3_endpoint_url,
         public_endpoint_url=settings.s3_public_endpoint_url,
         access_key=settings.s3_access_key,

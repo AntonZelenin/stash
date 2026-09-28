@@ -60,7 +60,7 @@ from app.queue import get_outbox
 from app.rate_limits.limiter import Charge, RateLimiter, get_rate_limiter
 from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM, InvalidTagNameError
 from app.storage.base import ObjectStorage
-from app.storage.minio import get_object_storage
+from app.storage.s3 import get_object_storage
 from app.users.models import User
 
 router = APIRouter(tags=["items"], route_class=BodyLimitedRoute)

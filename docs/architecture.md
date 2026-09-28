@@ -291,7 +291,7 @@ that already played as expiry: it fetches a new one and continues from the
 same position.
 
 Behind `app.storage.base.ObjectStorage` (the S3 implementation,
-`MinioStorage`, serves MinIO and AWS S3 alike); item logic never calls
+`S3Storage`, serves MinIO and AWS S3 alike); item logic never calls
 boto3 or knows which backend it's on.
 
 ### Uploads
