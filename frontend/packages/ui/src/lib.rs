@@ -21,10 +21,12 @@ mod turnstile;
 pub use turnstile::TurnstileSiteKey;
 
 mod collections;
+mod confirm;
 mod date_filter;
 mod filters;
 mod items;
 mod media;
+mod selection;
 mod text_kind;
 mod viewer_nav;
 

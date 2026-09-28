@@ -1,0 +1,88 @@
+/* ---- confirmation dialog (see confirm.rs) ---- */
+
+/* Like the settings window's overlay, but above an open item's view
+   (.lightbox, z-index 100), which a delete can be asked from. */
+.confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    background: rgba(20, 22, 27, 0.72);
+    outline: none;
+}
+
+.confirm-window {
+    width: 400px;
+    max-width: 100%;
+    padding: 24px;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+    font-family: var(--font-display);
+}
+
+.confirm-title {
+    margin: 0 0 8px;
+    color: var(--text-primary);
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.confirm-message {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.confirm-error {
+    margin: 12px 0 0;
+    color: #dc2626;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+/* The item editor's Cancel / Save buttons, with a red confirm. */
+.confirm-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+}
+
+.confirm-button {
+    height: 36px;
+    padding: 0 18px;
+    border: none;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.confirm-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.confirm-cancel {
+    background: #f1f2f5;
+    color: var(--text-primary);
+}
+
+.confirm-cancel:hover:not(:disabled) {
+    background: #e6e8ed;
+}
+
+.confirm-danger {
+    background: #dc2626;
+    color: #fff;
+}
+
+.confirm-danger:hover:not(:disabled) {
+    background: #b91c1c;
+}

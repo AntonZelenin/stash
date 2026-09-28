@@ -240,3 +240,30 @@ settings-confirm-new-password = Підтвердьте новий пароль
 settings-change-password = Змінити пароль
 settings-language-description = Мова, якою показано Stash. Ваш вибір запам’ятовується на цьому пристрої.
 settings-language-label = Мова
+
+## Вибір записів (прямокутником по картках) і дії з усіма вибраними
+
+selection-count = { $count } вибрано
+selection-select = Вибрати
+selection-deselect = Зняти вибір
+selection-cancel-title = Скасувати вибір (Esc)
+selection-tags-title = Додати або прибрати теги у вибраних записів
+selection-collections-title = Додати вибрані записи до колекцій або прибрати з них
+selection-favorite-add = Додати вибрані записи до обраного
+selection-favorite-remove = Прибрати вибрані записи з обраного
+selection-delete-title = Видалити вибрані записи
+selection-failed = Не вдалося змінити деякі записи: { $error }
+
+## Підтвердження видалення
+
+delete-confirm-title = { $count ->
+        [1] Видалити цей запис?
+       *[other] Видалити { $count } { $count ->
+            [one] запис
+            [few] записи
+           *[many] записів
+        }?
+    }
+delete-confirm-message = Цю дію не можна скасувати.
+delete-confirm-deleting = Видалення…
+delete-failed-some = Не вдалося видалити деякі записи: { $error }

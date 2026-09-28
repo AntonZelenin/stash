@@ -1,0 +1,164 @@
+/* ---- selecting items (see selection.rs) ---- */
+
+/* The rectangle dragged over the cards: the accent violet, faintly
+   filled. */
+.selection-marquee {
+    position: fixed;
+    z-index: 90;
+    border: 1px solid rgba(124, 58, 237, 0.7);
+    border-radius: 4px;
+    background: rgba(124, 58, 237, 0.08);
+    pointer-events: none;
+}
+
+/* No text gets selected while dragging over the cards. */
+.selection-dragging,
+.selection-dragging * {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+/* ---- the filter bar in selection mode: [ N selected  Cancel ] … actions ---- */
+
+.selection-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding-left: 8px;
+}
+
+.selection-count {
+    flex-shrink: 0;
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.selection-cancel {
+    flex-shrink: 0;
+    height: 30px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 10px;
+    background: none;
+    color: #7c3aed;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.selection-cancel:hover {
+    background: #faf5ff;
+}
+
+.selection-error {
+    min-width: 0;
+    overflow: hidden;
+    color: #dc2626;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.selection-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+/* The Filters control's look, sized to its label. */
+.selection-button {
+    width: auto;
+}
+
+.selection-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.selection-button > .icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: #64748b;
+}
+
+.selection-favorites-active > .icon {
+    color: #ef4444;
+}
+
+.selection-delete {
+    color: #dc2626;
+}
+
+.selection-delete > .icon {
+    color: #dc2626;
+}
+
+.selection-delete:hover:not(:disabled) {
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+
+/* ---- the Tags / Collections lists: three-state checkboxes ---- */
+
+.selection-panel {
+    right: 0;
+    width: 280px;
+}
+
+/* A `filter-option` row, as a button. */
+.selection-option {
+    width: 100%;
+    border: none;
+    background: none;
+    font-family: inherit;
+    text-align: left;
+}
+
+.selection-option:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* Drawn rather than a native checkbox, which can't show "mixed" without
+   script. The native one's size and accent colour. */
+.filter-option .selection-check {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #94a3b8;
+    border-radius: 4px;
+    background: #fff;
+    color: #fff;
+}
+
+.filter-option .selection-check-on,
+.filter-option .selection-check-mixed {
+    border-color: #7c3aed;
+    background: #7c3aed;
+}
+
+.selection-check .icon {
+    width: 12px;
+    height: 12px;
+}
+
+.filter-option .selection-check-dash {
+    width: 8px;
+    height: 2px;
+    border-radius: 1px;
+    background: #fff;
+}
+
+@media (max-width: 639px) {
+    .selection-panel {
+        width: min(280px, calc(100vw - 48px));
+    }
+}

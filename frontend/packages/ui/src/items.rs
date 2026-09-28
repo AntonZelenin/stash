@@ -11,8 +11,8 @@ use crate::collections::{
 use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::i18n::{Language, api_error_message, current_language};
 use crate::icons::{
-    IconChevronLeft, IconChevronRight, IconClose, IconFile, IconHeart, IconHeartFilled, IconLink,
-    IconMoreHorizontal, IconPencil, IconTrash,
+    IconCheck, IconChevronLeft, IconChevronRight, IconClose, IconFile, IconHeart, IconHeartFilled,
+    IconLink, IconMoreHorizontal, IconPencil, IconTrash,
 };
 use crate::media::{AudioBody, AudioStage, MediaKind, MediaPlayer, VideoBody};
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
@@ -77,17 +77,23 @@ fn column_count(grid_width: f64) -> usize {
 ///
 /// `on_delete` receives the id of an item the user chose to delete from
 /// its card menu, `on_tags_changed` fires after a tag was added to or
-/// removed from a card, `on_favorite_changed` after a card's favorite
-/// state was saved, and `on_edited` after an item's content was edited; the
+/// removed from a card, `on_favorite_changed` with a card's id and favorite
+/// state once saved, and `on_edited` after an item's content was edited; the
 /// caller acts on them and refreshes `items` as needed. `on_tag_click`
 /// receives a tag the user clicked on a card, to filter by it.
+///
+/// `selected`: the ids of the selected items. While any are, the grid is in
+/// selection mode: every card shows a selection circle, and a click on a
+/// card calls `on_toggle_selected` with its id instead of opening it.
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
     #[props(default)] group_by_day: bool,
+    selected: Vec<String>,
+    on_toggle_selected: EventHandler<String>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
-    on_favorite_changed: EventHandler<()>,
+    on_favorite_changed: EventHandler<(String, bool)>,
     on_edited: EventHandler<()>,
     on_tag_click: EventHandler<Tag>,
 ) -> Element {
@@ -137,6 +143,7 @@ pub fn ItemGrid(
     });
 
     let current_columns = columns();
+    let selecting = !selected.is_empty();
     let sections = if group_by_day {
         day_sections(items, &Local, Local::now().date_naive())
     } else {
@@ -173,6 +180,9 @@ pub fn ItemGrid(
                                 for item in stack {
                                     ItemCard {
                                         key: "{item.id}",
+                                        selecting,
+                                        selected: selected.contains(&item.id),
+                                        on_toggle_selected,
                                         opened: opened.as_ref().filter(|open| open.id == item.id).map(|open| open.mode),
                                         nav: nav.clone().filter(|_| opened.as_ref().is_some_and(|open| open.id == item.id)),
                                         on_view,
@@ -408,18 +418,26 @@ fn neighbour_images(items: &[ListedItem], current: &str) -> Vec<String> {
 /// (in a mode) or close it (None).
 ///
 /// `on_tags_changed` fires after a tag was added to or removed from it,
-/// `on_favorite_changed` after its favorite state was saved, and
+/// `on_favorite_changed` with its id and favorite state once saved, and
 /// `on_edited` after an edit was saved, and `on_tag_click` with a tag
 /// clicked on the card or in its view (which then closes).
+///
+/// While `selecting` (see `ItemGrid`), a layer over the card takes every
+/// click on it, so nothing inside opens: a click anywhere on the card, or on
+/// its selection circle in the top-left corner, calls `on_toggle_selected`.
+/// The ⋯ menu stays above the layer, usable.
 #[component]
 fn ItemCard(
     item: ListedItem,
+    selecting: bool,
+    selected: bool,
+    on_toggle_selected: EventHandler<String>,
     opened: Option<ViewMode>,
     nav: Option<ViewerNav>,
     on_view: Callback<(String, Option<ViewMode>)>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
-    on_favorite_changed: EventHandler<()>,
+    on_favorite_changed: EventHandler<(String, bool)>,
     on_edited: EventHandler<()>,
     on_tag_click: EventHandler<Tag>,
 ) -> Element {
@@ -432,8 +450,10 @@ fn ItemCard(
         Some((before, after)) if before == props_item => after,
         _ => props_item.clone(),
     };
-    let (is_favorite, toggle_favorite) =
-        use_favorite(item.id.clone(), item.is_favorite, on_favorite_changed);
+    let (is_favorite, toggle_favorite) = use_favorite(item.id.clone(), item.is_favorite, {
+        let item_id = item.id.clone();
+        move |favorite| on_favorite_changed.call((item_id.clone(), favorite))
+    });
     // Opens the item in its `ItemView` (or closes it: None).
     let view = use_callback({
         let item_id = item.id.clone();
@@ -534,8 +554,27 @@ fn ItemCard(
     };
 
     let item_id = item.id.clone();
+    let shell_class = match (selecting, selected) {
+        (false, _) => "item-card-shell",
+        (true, false) => "item-card-shell item-card-selecting",
+        (true, true) => "item-card-shell item-card-selecting item-card-selected",
+    };
+    let toggle_selected = {
+        let item_id = item.id.clone();
+        move |evt: MouseEvent| {
+            evt.stop_propagation();
+            on_toggle_selected.call(item_id.clone());
+        }
+    };
+    let select_label = if selected {
+        t!("selection-deselect")
+    } else {
+        t!("selection-select")
+    };
     rsx! {
-        div { class: "item-card-shell",
+        // `data-item-id`: how the marquee selection (see `selection.rs`)
+        // finds the cards it covers.
+        div { class: shell_class, "data-item-id": "{item.id}",
             div { class: "item-card {kind}",
                 {body}
                 div { class: "item-card-footer",
@@ -549,6 +588,25 @@ fn ItemCard(
                     div { class: "item-card-meta",
                         FavoriteButton { is_favorite, on_toggle: toggle_favorite }
                         CardDate { date }
+                    }
+                }
+            }
+            if selecting {
+                div {
+                    class: "item-card-select-layer",
+                    onclick: toggle_selected.clone(),
+                }
+                // Top-left, clear of the ⋯ menu.
+                button {
+                    class: "item-select-toggle",
+                    r#type: "button",
+                    role: "checkbox",
+                    aria_checked: if selected { "true" } else { "false" },
+                    title: select_label.clone(),
+                    aria_label: select_label,
+                    onclick: toggle_selected,
+                    if selected {
+                        IconCheck {}
                     }
                 }
             }
@@ -606,7 +664,9 @@ pub fn ItemViewer(
     let mut current = use_signal(|| item.clone());
     let item = current();
     let (is_favorite, toggle_favorite) =
-        use_favorite(item.id.clone(), item.is_favorite, on_changed);
+        use_favorite(item.id.clone(), item.is_favorite, move |_| {
+            on_changed.call(())
+        });
 
     // A tag was added or removed: fetch the item again for its tags.
     let tags_changed = {
@@ -649,16 +709,25 @@ pub fn ItemViewer(
 
 /// The item's favorite state for its controls, and a toggle that saves it.
 /// The user's latest choice is shown immediately (optimistically) while it
-/// saves, and reverted if saving fails; `on_changed` fires once it's saved.
+/// saves, and reverted if saving fails; `on_changed` gets the new state
+/// once it's saved. A new `saved` (e.g. after a bulk change to the selected
+/// items) replaces the user's earlier choice.
 fn use_favorite(
     item_id: String,
     saved: bool,
-    on_changed: EventHandler<()>,
+    on_changed: impl FnMut(bool) + 'static,
 ) -> (bool, Callback<()>) {
     let session = use_context::<AuthSession>();
+    let on_changed = use_callback(on_changed);
     // None until the user toggles, i.e. show the server's value.
     let mut favorite_override = use_signal(|| None::<bool>);
     let mut favorite_saving = use_signal(|| false);
+    use_effect(use_reactive!(|saved| {
+        let _ = saved;
+        if favorite_override.peek().is_some() {
+            favorite_override.set(None);
+        }
+    }));
     let is_favorite = favorite_override().unwrap_or(saved);
 
     let toggle = use_callback(move |()| {
@@ -673,7 +742,7 @@ fn use_favorite(
         spawn(async move {
             favorite_saving.set(true);
             match session.set_favorite(item_id, wanted).await {
-                Ok(()) => on_changed.call(()),
+                Ok(()) => on_changed.call(wanted),
                 // Didn't stick: show the real state again.
                 Err(_) => favorite_override.set(Some(previous)),
             }
@@ -688,7 +757,8 @@ fn use_favorite(
 /// (editing).
 ///
 /// `on_mode` asks to switch mode, or to close (None). `on_delete` asks to
-/// delete the item (the view closes first), `on_saved` receives the item
+/// delete the item (the view stays open behind the confirmation, and closes
+/// once the item is gone), `on_saved` receives the item
 /// as saved by an edit, and `on_tag_click` a clicked tag (the view closes
 /// first, so the filtered results behind it show).
 #[component]
@@ -736,10 +806,7 @@ fn OpenedItem(
                     ItemMenu {
                         can_edit: mode == ViewMode::Viewing,
                         on_edit: move |_| on_mode.call(Some(ViewMode::Editing)),
-                        on_delete: move |_| {
-                            on_mode.call(None);
-                            on_delete.call(());
-                        },
+                        on_delete: move |_| on_delete.call(()),
                     }
                 }
             }
@@ -1391,7 +1458,7 @@ fn ItemTags(
 
 /// Collapses whitespace like the server does, for comparing what's typed
 /// with existing tag names.
-fn clean_tag_name(raw: &str) -> String {
+pub(crate) fn clean_tag_name(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

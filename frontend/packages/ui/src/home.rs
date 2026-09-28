@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use api::{Collection, ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType};
@@ -10,6 +11,7 @@ use futures_timer::Delay;
 use crate::AuthSession;
 use crate::auth_session::ItemLabels;
 use crate::collections::{COLLECTIONS_CSS, CollectionChip, CollectionPicker, toggled};
+use crate::confirm::ConfirmDialog;
 use crate::date_filter::{DateFilter, DateSelection};
 use crate::filters::{
     FavoritesToggle, FiltersMenu, SortMenu, TAG_LIST_LIMIT, TypeFilter, TypeTabs,
@@ -20,6 +22,9 @@ use crate::icons::{
 };
 use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_tags};
 use crate::routes::Route;
+use crate::selection::{
+    SelectionBar, SelectionEvent, merged, toggled_id, use_selection_events, with_local_edits,
+};
 use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
 
@@ -65,6 +70,14 @@ fn sniffed_image_content_type(data: &[u8]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Items waiting for the user to confirm their deletion: one, from its
+/// menu, or the `selection` (which is left once they're deleted).
+#[derive(Clone, PartialEq)]
+struct PendingDelete {
+    ids: Vec<String>,
+    selection: bool,
 }
 
 /// A file the user has picked or dropped but not yet sent.
@@ -224,6 +237,78 @@ pub fn Home() -> Element {
         }
     });
 
+    // Items changed here but not refetched (a card's favorite, a bulk
+    // change to the selection), as they now are, by id: shown in place of
+    // the fetched ones until the next fetch arrives, which has the change
+    // too. Keeps a card from showing its old state meanwhile, and the
+    // selection's bulk actions working from the current one.
+    let mut local_edits = use_signal(HashMap::<String, ListedItem>::new);
+    use_effect(move || {
+        let _ = saved_items.read();
+        let _ = search_results.read();
+        if !local_edits.peek().is_empty() {
+            local_edits.write().clear();
+        }
+    });
+    // The items on screen as fetched: the list, or the search results while
+    // searching. None while loading, or if that failed.
+    let fetched_items = move || -> Option<Vec<ListedItem>> {
+        if search_query().trim().is_empty() {
+            match &*saved_items.read() {
+                Some((_, Ok(response))) => Some(response.items.clone()),
+                _ => None,
+            }
+        } else {
+            match &*search_results.read() {
+                Some(Some((_, Ok(response)))) => Some(response.items.clone()),
+                _ => None,
+            }
+        }
+    };
+    let shown_items =
+        move || fetched_items().map(|items| with_local_edits(&items, &local_edits.read()));
+
+    // The ids of the selected items; any selected is selection mode (see
+    // `selection.rs`). A rectangle dragged over the cards selects the ones
+    // it covers, added to `marquee_base`: nothing, or the selection when it
+    // started with Shift/Ctrl/⌘ held. Escape clears the selection.
+    let mut selection = use_signal(Vec::<String>::new);
+    let mut marquee_base = use_signal(Vec::<String>::new);
+    use_selection_events(move |event| match event {
+        SelectionEvent::MarqueeStarted { additive } => {
+            let base = if additive {
+                selection.peek().clone()
+            } else {
+                Vec::new()
+            };
+            marquee_base.set(base);
+        }
+        SelectionEvent::MarqueeCovers(ids) => {
+            let ids = merged(&marquee_base.peek(), &ids);
+            selection.set(ids);
+        }
+        SelectionEvent::Escape => {
+            if !selection.peek().is_empty() {
+                selection.set(Vec::new());
+            }
+        }
+    });
+    let toggle_selected = use_callback(move |item_id: String| {
+        let ids = toggled_id(&selection.peek(), &item_id);
+        selection.set(ids);
+    });
+    // Items no longer shown (deleted, or changed so they no longer match
+    // the filters) leave the selection.
+    use_effect(move || {
+        let Some(items) = fetched_items() else {
+            return;
+        };
+        let shown = |id: &String| items.iter().any(|item| item.id == *id);
+        if !selection.peek().iter().all(shown) {
+            selection.write().retain(shown);
+        }
+    });
+
     let mut note = use_signal(String::new);
     // The type chosen for a note mixing text and URLs (see `text_kind`);
     // a bare URL is always a link and text without URLs always a note, so
@@ -259,9 +344,10 @@ pub fn Home() -> Element {
         }
     });
 
-    // Deletes from a card's menu, then refetches whichever view is showing
-    // (list and search), so the card disappears from both, and the
-    // suggested tags, since the item may have been a tag's only use.
+    // "Surprise me": one of the user's items, picked at random by the
+    // server and open in its own view until closed.
+    let mut surprise = use_signal(|| None::<ListedItem>);
+
     // Collections and tags go away with their last item (deleted, or
     // edited out of them), so after either, drops any gone from the active
     // filters, which would otherwise keep a chip for something that no
@@ -309,23 +395,89 @@ pub fn Home() -> Element {
         }
     });
 
-    let delete_item = use_callback({
+    // Deleting always asks first (see `ConfirmDialog`): Delete in a card's
+    // or an open item's menu asks about that item, and in selection mode
+    // about the selection. Confirmed, they're deleted one by one; then
+    // whichever view is showing (list and search) is refetched, so the
+    // cards disappear from both, and the suggested tags, since an item may
+    // have been a tag's only use. The dialog stays open with the error, and
+    // the items that are left, if any couldn't be deleted.
+    let mut pending_delete = use_signal(|| None::<PendingDelete>);
+    let mut deleting = use_signal(|| false);
+    let mut delete_error = use_signal(|| None::<String>);
+    let delete_item = use_callback(move |item_id: String| {
+        delete_error.set(None);
+        pending_delete.set(Some(PendingDelete {
+            ids: vec![item_id],
+            selection: false,
+        }));
+    });
+    let delete_selected = use_callback(move |()| {
+        delete_error.set(None);
+        pending_delete.set(Some(PendingDelete {
+            ids: selection(),
+            selection: true,
+        }));
+    });
+    let confirm_delete = use_callback({
         let session = session.clone();
-        move |item_id: String| {
+        move |()| {
+            let Some(pending) = pending_delete() else {
+                return;
+            };
+            if deleting() {
+                return;
+            }
             let session = session.clone();
             spawn(async move {
-                match session.delete_item(item_id).await {
-                    Ok(()) => {
-                        saved_items.restart();
-                        search_results.restart();
-                        item_counts.restart();
-                        suggested.restart();
-                        prune_filters.call(());
+                deleting.set(true);
+                let mut deleted = Vec::new();
+                let mut failed = Vec::new();
+                let mut failure = None;
+                for item_id in &pending.ids {
+                    match session.delete_item(item_id.clone()).await {
+                        Ok(()) => deleted.push(item_id.clone()),
+                        Err(err) => {
+                            failed.push(item_id.clone());
+                            failure = Some(err);
+                        }
                     }
-                    Err(err) => status.set(Some(t!(
-                        "home-delete-failed",
-                        error: api_error_message(&err)
-                    ))),
+                }
+                if !deleted.is_empty() {
+                    if surprise
+                        .peek()
+                        .as_ref()
+                        .is_some_and(|item| deleted.contains(&item.id))
+                    {
+                        surprise.set(None);
+                    }
+                    selection.write().retain(|id| !deleted.contains(id));
+                    saved_items.restart();
+                    search_results.restart();
+                    item_counts.restart();
+                    suggested.restart();
+                    prune_filters.call(());
+                }
+                deleting.set(false);
+                match failure {
+                    None => {
+                        pending_delete.set(None);
+                        if pending.selection {
+                            selection.set(Vec::new());
+                        }
+                    }
+                    Some(err) => {
+                        let error = api_error_message(&err);
+                        delete_error.set(Some(if pending.ids.len() == 1 {
+                            t!("home-delete-failed", error: error)
+                        } else {
+                            t!("delete-failed-some", error: error)
+                        }));
+                        pending_delete.set(Some(PendingDelete {
+                            ids: failed,
+                            selection: pending.selection,
+                        }));
+                    }
                 }
             });
         }
@@ -344,8 +496,40 @@ pub fn Home() -> Element {
 
     // A card's favorite state changed. The card already shows it, so only
     // refetch items when showing favorites only, where it may need to drop
-    // out; the favorites count always changes.
-    let favorite_changed = use_callback(move |()| {
+    // out; the favorites count always changes. Kept as a local edit, so the
+    // selection's Favorites action knows it.
+    let favorite_changed = use_callback(move |(item_id, favorite): (String, bool)| {
+        let item =
+            shown_items().and_then(|items| items.into_iter().find(|item| item.id == item_id));
+        if let Some(item) = item {
+            local_edits.write().insert(
+                item_id,
+                ListedItem {
+                    is_favorite: favorite,
+                    ..item
+                },
+            );
+        }
+        item_counts.restart();
+        if favorites_only() {
+            saved_items.restart();
+            search_results.restart();
+        }
+    });
+
+    // A bulk action changed the selected items' tags or collections, or
+    // their favorite state: shown right away, refetched like a card's
+    // change.
+    let selection_labels_changed = use_callback(move |items: Vec<ListedItem>| {
+        local_edits
+            .write()
+            .extend(items.into_iter().map(|item| (item.id.clone(), item)));
+        refresh_items.call(());
+    });
+    let selection_favorites_changed = use_callback(move |items: Vec<ListedItem>| {
+        local_edits
+            .write()
+            .extend(items.into_iter().map(|item| (item.id.clone(), item)));
         item_counts.restart();
         if favorites_only() {
             saved_items.restart();
@@ -361,9 +545,6 @@ pub fn Home() -> Element {
         }
     });
 
-    // "Surprise me": one of the user's items, picked at random by the
-    // server and open in its own view until closed.
-    let mut surprise = use_signal(|| None::<ListedItem>);
     let surprise_me = use_callback({
         let session = session.clone();
         move |()| {
@@ -548,6 +729,14 @@ pub fn Home() -> Element {
         Some(Ok(user)) => email_initials(&user.email),
         _ => String::new(),
     };
+
+    let selected: Vec<String> = selection();
+    let selected_items: Vec<ListedItem> = shown_items()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| selected.contains(&item.id))
+        .collect();
+    let edits = local_edits();
 
     // Ctrl+F / ⌘F focuses the search box. One document-level listener,
     // registered once per page load.
@@ -927,47 +1116,58 @@ pub fn Home() -> Element {
                     // [ All | Notes | Media ▾ | Links | Files ▾ | ♥ ]  [ Date ▾ ] [ Search ] [ Filters ▾ ] [ ⇅ ]
                     // — typing in the search swaps the list below for
                     // semantic search results; the type, favorites, date,
-                    // collection and tag filters apply to either.
+                    // collection and tag filters apply to either. In
+                    // selection mode, the selection's bulk actions instead.
                     div { class: "stash-controls",
-                        div { class: "stash-controls-group",
-                            TypeTabs { value: active_type, counts }
-                            div { class: "stash-controls-divider" }
-                            FavoritesToggle { value: favorites_only, count: counts.map(|c| c.favorites) }
-                        }
-                        div { class: "stash-controls-query",
-                            DateFilter { value: saved_on }
-                            div { class: "stash-search-wrap",
-                                IconSearch {}
-                                input {
-                                    id: SEARCH_INPUT_ID,
-                                    class: "stash-search-input",
-                                    r#type: "search",
-                                    placeholder: t!("search-placeholder"),
-                                    value: "{search_query}",
-                                    oninput: move |evt| search_query.set(evt.value()),
-                                }
-                                if !search_query().is_empty() {
-                                    button {
-                                        class: "stash-search-clear",
-                                        r#type: "button",
-                                        title: t!("search-clear"),
-                                        aria_label: t!("search-clear"),
-                                        onclick: move |_| {
-                                            search_query.set(String::new());
-                                            // Keep the cursor in the box so the user can type a new query.
-                                            document::eval(&format!(
-                                                r#"document.getElementById("{SEARCH_INPUT_ID}")?.focus();"#
-                                            ));
-                                        },
-                                        IconClose {}
+                        if !selected.is_empty() {
+                            SelectionBar {
+                                items: selected_items,
+                                on_cancel: move |_| selection.set(Vec::new()),
+                                on_labels_changed: selection_labels_changed,
+                                on_favorites_changed: selection_favorites_changed,
+                                on_delete: delete_selected,
+                            }
+                        } else {
+                            div { class: "stash-controls-group",
+                                TypeTabs { value: active_type, counts }
+                                div { class: "stash-controls-divider" }
+                                FavoritesToggle { value: favorites_only, count: counts.map(|c| c.favorites) }
+                            }
+                            div { class: "stash-controls-query",
+                                DateFilter { value: saved_on }
+                                div { class: "stash-search-wrap",
+                                    IconSearch {}
+                                    input {
+                                        id: SEARCH_INPUT_ID,
+                                        class: "stash-search-input",
+                                        r#type: "search",
+                                        placeholder: t!("search-placeholder"),
+                                        value: "{search_query}",
+                                        oninput: move |evt| search_query.set(evt.value()),
+                                    }
+                                    if !search_query().is_empty() {
+                                        button {
+                                            class: "stash-search-clear",
+                                            r#type: "button",
+                                            title: t!("search-clear"),
+                                            aria_label: t!("search-clear"),
+                                            onclick: move |_| {
+                                                search_query.set(String::new());
+                                                // Keep the cursor in the box so the user can type a new query.
+                                                document::eval(&format!(
+                                                    r#"document.getElementById("{SEARCH_INPUT_ID}")?.focus();"#
+                                                ));
+                                            },
+                                            IconClose {}
+                                        }
                                     }
                                 }
-                            }
-                            FiltersMenu { tags: selected_tags, collections: selected_collections }
-                            SortMenu {
-                                value: sort,
-                                on_reshuffle: move |()| shuffle += 1,
-                                disabled: !search_query().trim().is_empty(),
+                                FiltersMenu { tags: selected_tags, collections: selected_collections }
+                                SortMenu {
+                                    value: sort,
+                                    on_reshuffle: move |()| shuffle += 1,
+                                    disabled: !search_query().trim().is_empty(),
+                                }
                             }
                         }
                     }
@@ -991,9 +1191,11 @@ pub fn Home() -> Element {
                                 }
                             },
                             Some((sort, Ok(response))) => item_results(
-                                &response.items,
+                                &with_local_edits(&response.items, &edits),
                                 *sort != ItemSort::Random,
                                 t!("home-no-filter-matches"),
+                                selected.clone(),
+                                toggle_selected,
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
@@ -1004,9 +1206,11 @@ pub fn Home() -> Element {
                     } else {
                         {match &*search_results.read() {
                             Some(Some((query, Ok(response)))) => item_results(
-                                &response.items,
+                                &with_local_edits(&response.items, &edits),
                                 false,
                                 t!("search-no-results", query: query.as_str()),
+                                selected.clone(),
+                                toggle_selected,
                                 delete_item,
                                 refresh_items,
                                 favorite_changed,
@@ -1028,20 +1232,40 @@ pub fn Home() -> Element {
                     }
                 }
             }
+
+            if let Some(pending) = pending_delete() {
+                ConfirmDialog {
+                    title: t!("delete-confirm-title", count: pending.ids.len()),
+                    message: t!("delete-confirm-message"),
+                    confirm_label: t!("item-delete"),
+                    busy_label: t!("delete-confirm-deleting"),
+                    busy: deleting(),
+                    error: delete_error(),
+                    on_confirm: confirm_delete,
+                    on_cancel: move |_| {
+                        pending_delete.set(None);
+                        delete_error.set(None);
+                    },
+                }
+            }
         }
     }
 }
 
 /// Renders a list page or search results (already filtered by the
 /// server), or `empty_message` if there are none. `group_by_day` for
-/// chronological listings (see `ItemGrid`).
+/// chronological listings (see `ItemGrid`). `selected`: the selected
+/// items' ids, any of which puts the grid in selection mode.
+#[allow(clippy::too_many_arguments)]
 fn item_results(
     items: &[ListedItem],
     group_by_day: bool,
     empty_message: String,
+    selected: Vec<String>,
+    on_toggle_selected: Callback<String>,
     on_delete: Callback<String>,
     on_tags_changed: Callback<()>,
-    on_favorite_changed: Callback<()>,
+    on_favorite_changed: Callback<(String, bool)>,
     on_edited: Callback<()>,
     on_tag_click: Callback<Tag>,
 ) -> Element {
@@ -1056,6 +1280,8 @@ fn item_results(
             ItemGrid {
                 items: items.to_vec(),
                 group_by_day,
+                selected,
+                on_toggle_selected,
                 on_delete,
                 on_tags_changed,
                 on_favorite_changed,
@@ -1164,5 +1390,33 @@ mod tests {
         assert_eq!(email_initials("a.b@example.com"), "AB");
         assert_eq!(email_initials("x@example.com"), "XE");
         assert_eq!(email_initials(""), "");
+    }
+
+    #[test]
+    fn delete_confirmation_says_how_many_items_go() {
+        use crate::i18n::Language;
+        use crate::i18n::tests::in_language;
+
+        let title = |language, count: usize| {
+            in_language(language, || t!("delete-confirm-title", count: count))
+        };
+        assert_eq!(title(Language::English, 1), "Delete this item?");
+        assert_eq!(
+            title(Language::English, 3),
+            "Delete \u{2068}3\u{2069} items?"
+        );
+        assert_eq!(title(Language::Ukrainian, 1), "Видалити цей запис?");
+        assert_eq!(
+            title(Language::Ukrainian, 3),
+            "Видалити \u{2068}3\u{2069} \u{2068}записи\u{2069}?"
+        );
+        assert_eq!(
+            title(Language::Ukrainian, 21),
+            "Видалити \u{2068}21\u{2069} \u{2068}запис\u{2069}?"
+        );
+        assert_eq!(
+            title(Language::Ukrainian, 5),
+            "Видалити \u{2068}5\u{2069} \u{2068}записів\u{2069}?"
+        );
     }
 }

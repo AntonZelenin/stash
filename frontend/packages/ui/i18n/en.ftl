@@ -240,3 +240,26 @@ settings-confirm-new-password = Confirm new password
 settings-change-password = Change password
 settings-language-description = Choose the language Stash is shown in. Your choice is remembered on this device.
 settings-language-label = Language
+
+## Selecting items (drag a rectangle over the cards) and acting on them all
+
+selection-count = { $count } selected
+selection-select = Select
+selection-deselect = Deselect
+selection-cancel-title = Clear the selection (Esc)
+selection-tags-title = Add or remove tags on the selected items
+selection-collections-title = Add the selected items to collections or take them out
+selection-favorite-add = Add the selected items to favorites
+selection-favorite-remove = Remove the selected items from favorites
+selection-delete-title = Delete the selected items
+selection-failed = Some items could not be changed: { $error }
+
+## Delete confirmation
+
+delete-confirm-title = { $count ->
+        [1] Delete this item?
+       *[other] Delete { $count } items?
+    }
+delete-confirm-message = This can't be undone.
+delete-confirm-deleting = Deleting…
+delete-failed-some = Some items could not be deleted: { $error }
