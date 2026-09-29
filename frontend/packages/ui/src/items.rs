@@ -1687,6 +1687,33 @@ enum ViewMedia {
     Audio { item_id: String, title: String },
 }
 
+/// Installs, once per page load, a document-level listener that hands
+/// Escape to the open viewer (`.lightbox`) when the viewer can't get it
+/// itself: after a click on the native video/audio player, focus is either
+/// on the player (whose controls may keep the key to themselves) or back on
+/// the page's body, outside the viewer. Anywhere else the key reaches the
+/// viewer (or a picker inside it) as usual.
+const VIEWER_ESCAPE_SCRIPT: &str = r#"
+    if (!window.__stashViewerEscape) {
+        window.__stashViewerEscape = true;
+        document.addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") {
+                return;
+            }
+            const viewer = document.querySelector(".lightbox");
+            const target = e.target;
+            const stranded = target === document.body || target === document.documentElement;
+            const player = target instanceof HTMLMediaElement && viewer?.contains(target);
+            if (!viewer || !(stranded || player)) {
+                return;
+            }
+            e.stopPropagation();
+            viewer.focus();
+            viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        }, true);
+    }
+"#;
+
 /// An item opened over the whole page, on a dimmed backdrop: a panel with
 /// `children` (the item's content and controls) and, for an image, video
 /// or audio file, the `media` itself (scaled down to fit the screen if
@@ -1730,6 +1757,9 @@ fn ItemView(
     let mut arrival_button = use_signal(|| None::<std::rc::Rc<MountedData>>);
     let mut arrival_focused = use_signal(|| false);
     let nav = nav.filter(|_| !editing);
+    use_hook(|| {
+        document::eval(VIEWER_ESCAPE_SCRIPT);
+    });
 
     // Keep keyboard focus on the dialog whenever it's not being edited, so
     // Escape and ← → reach it: on opening, and after leaving edit mode, when
