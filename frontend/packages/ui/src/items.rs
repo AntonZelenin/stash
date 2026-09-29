@@ -6,7 +6,7 @@ use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::collections::{
-    COLLECTIONS_CSS, CollectionChip, CollectionPicker, contains_name, toggled,
+    COLLECTIONS_CSS, COLLECTIONS_ENABLED, CollectionChip, CollectionPicker, contains_name, toggled,
 };
 use crate::filters::{TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::i18n::{Language, api_error_message, current_language};
@@ -837,7 +837,7 @@ fn OpenedItem(
             match mode {
                 ViewMode::Viewing => rsx! {
                     ItemDetails { item: item.clone(), urls }
-                    if !item.collections.is_empty() {
+                    if COLLECTIONS_ENABLED && !item.collections.is_empty() {
                         div { class: "item-collections",
                             for collection in item.collections.clone() {
                                 CollectionChip { key: "{collection.id}", name: collection.name }
@@ -1181,47 +1181,49 @@ fn ItemEditor(
                     }
                 }
             }
-            div { class: "item-editor-field",
-                span { class: "item-editor-label", {t!("item-field-collections")} }
-                // The anchor is the whole row, not the button: picking a
-                // collection adds a chip before the button, which would
-                // move an open picker hung from it.
-                div { class: "item-editor-tags collection-picker-anchor",
-                    for collection in kept_collections {
-                        CollectionChip {
-                            key: "{collection.id}",
-                            name: collection.name.clone(),
-                            disabled: saving(),
-                            on_remove: move |_| removed_collection_ids.write().push(collection.id.clone()),
+            if COLLECTIONS_ENABLED {
+                div { class: "item-editor-field",
+                    span { class: "item-editor-label", {t!("item-field-collections")} }
+                    // The anchor is the whole row, not the button: picking a
+                    // collection adds a chip before the button, which would
+                    // move an open picker hung from it.
+                    div { class: "item-editor-tags collection-picker-anchor",
+                        for collection in kept_collections {
+                            CollectionChip {
+                                key: "{collection.id}",
+                                name: collection.name.clone(),
+                                disabled: saving(),
+                                on_remove: move |_| removed_collection_ids.write().push(collection.id.clone()),
+                            }
                         }
-                    }
-                    for name in added_collection_names() {
-                        CollectionChip {
-                            key: "added-{name}",
-                            name: name.clone(),
-                            disabled: saving(),
-                            on_remove: move |_| {
-                                added_collection_names.set(toggled(&added_collection_names(), &name));
-                            },
+                        for name in added_collection_names() {
+                            CollectionChip {
+                                key: "added-{name}",
+                                name: name.clone(),
+                                disabled: saving(),
+                                on_remove: move |_| {
+                                    added_collection_names.set(toggled(&added_collection_names(), &name));
+                                },
+                            }
                         }
-                    }
-                    button {
-                        class: "tag-add",
-                        r#type: "button",
-                        title: t!("collections-add-title"),
-                        aria_haspopup: "dialog",
-                        aria_expanded: if picking_collection() { "true" } else { "false" },
-                        disabled: saving(),
-                        onclick: move |_| picking_collection.toggle(),
-                        "+ "
-                        {t!("collections-add")}
-                    }
-                    if picking_collection() {
-                        CollectionPicker {
-                            selected: shown_collection_names,
-                            busy: saving(),
-                            on_toggle: toggle_collection,
-                            on_close: move |_| picking_collection.set(false),
+                        button {
+                            class: "tag-add",
+                            r#type: "button",
+                            title: t!("collections-add-title"),
+                            aria_haspopup: "dialog",
+                            aria_expanded: if picking_collection() { "true" } else { "false" },
+                            disabled: saving(),
+                            onclick: move |_| picking_collection.toggle(),
+                            "+ "
+                            {t!("collections-add")}
+                        }
+                        if picking_collection() {
+                            CollectionPicker {
+                                selected: shown_collection_names,
+                                busy: saving(),
+                                on_toggle: toggle_collection,
+                                on_close: move |_| picking_collection.set(false),
+                            }
                         }
                     }
                 }

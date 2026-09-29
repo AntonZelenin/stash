@@ -7,7 +7,7 @@ use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::collections::{COLLECTIONS_CSS, CollectionChip};
+use crate::collections::{COLLECTIONS_CSS, COLLECTIONS_ENABLED, CollectionChip};
 use crate::i18n::api_error_message;
 use crate::icons::{
     IconCheck, IconChevronDown, IconChevronRight, IconClose, IconFilter, IconHeart,
@@ -574,21 +574,23 @@ pub fn FiltersMenu(tags: Signal<Vec<Tag>>, collections: Signal<Vec<Collection>>)
                     },
                     // Sections with a selection start expanded; with none
                     // at all, Tags does, as the old Tags dropdown did.
-                    FilterSectionPanel {
-                        section: FilterSection::Collections,
-                        initially_expanded: !chosen_collections.is_empty(),
-                        selected: chosen_collections
-                            .iter()
-                            .map(|c| Tag { id: c.id.clone(), name: c.name.clone() })
-                            .collect::<Vec<_>>(),
-                        on_toggle: move |option: Tag| {
-                            let already = collections.read().iter().any(|c| c.id == option.id);
-                            if already {
-                                collections.write().retain(|c| c.id != option.id);
-                            } else {
-                                collections.write().push(Collection { id: option.id, name: option.name });
-                            }
-                        },
+                    if COLLECTIONS_ENABLED {
+                        FilterSectionPanel {
+                            section: FilterSection::Collections,
+                            initially_expanded: !chosen_collections.is_empty(),
+                            selected: chosen_collections
+                                .iter()
+                                .map(|c| Tag { id: c.id.clone(), name: c.name.clone() })
+                                .collect::<Vec<_>>(),
+                            on_toggle: move |option: Tag| {
+                                let already = collections.read().iter().any(|c| c.id == option.id);
+                                if already {
+                                    collections.write().retain(|c| c.id != option.id);
+                                } else {
+                                    collections.write().push(Collection { id: option.id, name: option.name });
+                                }
+                            },
+                        }
                     }
                     FilterSectionPanel {
                         section: FilterSection::Tags,

@@ -14,7 +14,7 @@ use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
-use crate::collections::COLLECTIONS_CSS;
+use crate::collections::{COLLECTIONS_CSS, COLLECTIONS_ENABLED};
 use crate::filters::{FILTERS_CSS, TAG_LIST_LIMIT, TAG_SEARCH_DEBOUNCE};
 use crate::i18n::api_error_message;
 use crate::icons::{IconCheck, IconChevronDown, IconHeart, IconHeartFilled, IconTrash};
@@ -557,7 +557,10 @@ pub(crate) fn SelectionBar(
             }
         }
         div { class: "selection-actions",
-            for kind in [LabelKind::Tags, LabelKind::Collections] {
+            for kind in [LabelKind::Tags, LabelKind::Collections]
+                .into_iter()
+                .filter(|kind| COLLECTIONS_ENABLED || *kind != LabelKind::Collections)
+            {
                 BulkLabelMenu {
                     key: "{kind:?}",
                     kind,

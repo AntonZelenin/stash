@@ -13,7 +13,9 @@ use futures_timer::Delay;
 
 use crate::AuthSession;
 use crate::auth_session::ItemLabels;
-use crate::collections::{COLLECTIONS_CSS, CollectionChip, CollectionPicker, toggled};
+use crate::collections::{
+    COLLECTIONS_CSS, COLLECTIONS_ENABLED, CollectionChip, CollectionPicker, toggled,
+};
 use crate::confirm::ConfirmDialog;
 use crate::date_filter::{DateFilter, DateSelection};
 use crate::duplicates::{Duplicate, DuplicateDialog, DuplicateFile, duplicate_positions};
@@ -1188,30 +1190,32 @@ pub fn Home() -> Element {
                                     span { class: "home-option-plus", "+" }
                                     {t!("tags-add")}
                                 }
-                                div { class: "collection-picker-anchor",
-                                    button {
-                                        class: if pending_collections().is_empty() { "home-option-add" } else { "home-option-add home-option-add-active" },
-                                        r#type: "button",
-                                        title: t!("collections-add-title"),
-                                        aria_haspopup: "dialog",
-                                        aria_expanded: if picking_collection() { "true" } else { "false" },
-                                        disabled: is_submitting(),
-                                        onclick: move |_| {
-                                            picking_tag.set(false);
-                                            picking_collection.toggle();
-                                        },
-                                        span { class: "home-option-plus", "+" }
-                                        {t!("collections-add")}
-                                    }
-                                    if picking_collection() {
-                                        CollectionPicker {
-                                            selected: pending_collections(),
-                                            busy: is_submitting(),
-                                            align_right: true,
-                                            on_toggle: move |name: String| {
-                                                pending_collections.set(toggled(&pending_collections(), &name));
+                                if COLLECTIONS_ENABLED {
+                                    div { class: "collection-picker-anchor",
+                                        button {
+                                            class: if pending_collections().is_empty() { "home-option-add" } else { "home-option-add home-option-add-active" },
+                                            r#type: "button",
+                                            title: t!("collections-add-title"),
+                                            aria_haspopup: "dialog",
+                                            aria_expanded: if picking_collection() { "true" } else { "false" },
+                                            disabled: is_submitting(),
+                                            onclick: move |_| {
+                                                picking_tag.set(false);
+                                                picking_collection.toggle();
                                             },
-                                            on_close: move |_| picking_collection.set(false),
+                                            span { class: "home-option-plus", "+" }
+                                            {t!("collections-add")}
+                                        }
+                                        if picking_collection() {
+                                            CollectionPicker {
+                                                selected: pending_collections(),
+                                                busy: is_submitting(),
+                                                align_right: true,
+                                                on_toggle: move |name: String| {
+                                                    pending_collections.set(toggled(&pending_collections(), &name));
+                                                },
+                                                on_close: move |_| picking_collection.set(false),
+                                            }
                                         }
                                     }
                                 }

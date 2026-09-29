@@ -11,6 +11,11 @@ use crate::i18n::api_error_message;
 use crate::icons::{IconClose, IconFolder};
 use crate::viewer_nav::keep_step_keys;
 
+/// Whether collections show anywhere in the UI: the capture box, the item
+/// card and editor, the Filters menu and the selection bar. Off hides them
+/// all; the API and the code behind them stay.
+pub(crate) const COLLECTIONS_ENABLED: bool = false;
+
 /// Collection chips and the picker; loaded by every component that shows
 /// either, so none relies on another being on the page.
 pub(crate) const COLLECTIONS_CSS: Asset = asset!("/assets/styling/collections.css");
