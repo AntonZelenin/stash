@@ -1,0 +1,128 @@
+/* ---- duplicate uploads dialog (see duplicates.rs) ---- */
+/* Built on the confirmation dialog's window and buttons (confirm.css). */
+
+.duplicates-window {
+    width: 560px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 48px);
+}
+
+.duplicates-primary {
+    background: var(--violet, #7c3aed);
+    color: #fff;
+}
+
+.duplicates-primary:hover:not(:disabled) {
+    background: var(--violet-strong, #9333ea);
+}
+
+/* Copy count and dates, under the message or a row's name. */
+.duplicates-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.duplicates-row .duplicates-summary {
+    margin-top: 2px;
+    font-size: 12px;
+}
+
+.duplicates-bulk {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.duplicates-bulk-button {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.duplicates-bulk-button:hover {
+    background: #f1f2f5;
+}
+
+.duplicates-list {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.duplicates-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.duplicates-row-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.duplicates-row-name {
+    display: block;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A two-way switch: Skip | Upload copy. */
+.duplicates-choice {
+    display: flex;
+    flex-shrink: 0;
+    padding: 2px;
+    border-radius: 999px;
+    background: #f1f2f5;
+}
+
+.duplicates-choice-button {
+    height: 28px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.duplicates-choice-selected {
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+    color: var(--text-primary);
+}
+
+@media (max-width: 520px) {
+    .duplicates-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .duplicates-choice {
+        align-self: flex-start;
+    }
+}

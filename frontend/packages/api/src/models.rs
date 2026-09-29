@@ -81,7 +81,7 @@ impl TextItemType {
 }
 
 /// What an upload becomes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UploadType {
     Image,
@@ -118,6 +118,44 @@ pub struct PresignedUpload {
     pub method: String,
     /// Sent exactly as given; they're part of the signature.
     pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct FindDuplicatesRequest<'a> {
+    pub files: &'a [UploadCandidate],
+}
+
+/// A file about to be uploaded, as `NewUpload` will describe it: what a
+/// duplicate check (`POST /uploads/duplicates`) compares. Never its
+/// content.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct UploadCandidate {
+    #[serde(rename = "type")]
+    pub upload_type: UploadType,
+    #[serde(rename = "filename")]
+    pub file_name: String,
+    pub size_bytes: u64,
+}
+
+/// The user's items with one file's type, exact filename and exact size
+/// (`POST /uploads/duplicates`): the file as it was asked about, how
+/// many items match it, and when the first and the most recent were saved
+/// (RFC 3339).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DuplicateGroup {
+    #[serde(rename = "type")]
+    pub upload_type: UploadType,
+    #[serde(rename = "filename")]
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub count: u32,
+    pub first_created_at: String,
+    pub last_created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DuplicatesResponse {
+    pub duplicates: Vec<DuplicateGroup>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

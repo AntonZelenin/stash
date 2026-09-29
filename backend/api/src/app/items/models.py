@@ -102,6 +102,9 @@ class TextContent(Base):
 
 class ImageMetadata(Base):
     __tablename__ = "item_images"
+    # Finding earlier uploads with the same name and size before an upload
+    # (`ItemRepository.duplicate_groups`).
+    __table_args__ = (Index("ix_item_images_filename_size_bytes", "filename", "size_bytes"),)
 
     item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     # The canonical, write-once copy of the validated upload; never a
@@ -128,6 +131,8 @@ class ImageMetadata(Base):
 
 class FileMetadata(Base):
     __tablename__ = "item_files"
+    # Like `ImageMetadata`'s.
+    __table_args__ = (Index("ix_item_files_filename_size_bytes", "filename", "size_bytes"),)
 
     item_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
     # Canonical and write-once, like `ImageMetadata.storage_key`.

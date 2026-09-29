@@ -17,6 +17,7 @@ from sqlalchemy import (
     literal_column,
     or_,
     select,
+    union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -164,9 +165,71 @@ class DeletedItem:
     collection_ids: list[uuid.UUID]
 
 
+@dataclass(frozen=True)
+class DuplicateGroupRow:
+    # An upload's type, stored filename and size, and the user's items
+    # with exactly those.
+    item_type: ItemType
+    filename: str
+    size_bytes: int
+    count: int
+    first_created_at: datetime
+    last_created_at: datetime
+
+
 class ItemRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def duplicate_groups(
+        self, *, user_id: uuid.UUID, candidates: list[tuple[ItemType, str, int]]
+    ) -> list[DuplicateGroupRow]:
+        """For each of `candidates` (image or file, stored filename, size in
+        bytes) that some of the user's items have exactly, how many do and
+        when the first and last were saved; the others are left out. Only
+        metadata is compared, never content. Images saved before their
+        filename was kept never match."""
+        selects = []
+        for item_type, table in ((ItemType.image, ImageMetadata), (ItemType.file, FileMetadata)):
+            keys = [(filename, size) for kind, filename, size in candidates if kind == item_type]
+            if keys:
+                selects.append(
+                    select(
+                        table.item_id,
+                        literal_column(f"'{item_type.name}'").label("item_type"),
+                        table.filename.label("filename"),
+                        table.size_bytes.label("size_bytes"),
+                    ).where(
+                        or_(*(and_(table.filename == filename, table.size_bytes == size) for filename, size in keys))
+                    )
+                )
+        if not selects:
+            return []
+        matches = (union_all(*selects) if len(selects) > 1 else selects[0]).subquery()
+        result = await self._session.execute(
+            select(
+                matches.c.item_type,
+                matches.c.filename,
+                matches.c.size_bytes,
+                func.count(),
+                func.min(Item.created_at),
+                func.max(Item.created_at),
+            )
+            .join(Item, Item.id == matches.c.item_id)
+            .where(Item.user_id == user_id)
+            .group_by(matches.c.item_type, matches.c.filename, matches.c.size_bytes)
+        )
+        return [
+            DuplicateGroupRow(
+                item_type=ItemType[item_type],
+                filename=filename,
+                size_bytes=size_bytes,
+                count=count,
+                first_created_at=first,
+                last_created_at=last,
+            )
+            for item_type, filename, size_bytes, count, first, last in result
+        ]
 
     async def create_text_item(
         self,

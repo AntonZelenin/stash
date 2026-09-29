@@ -6,12 +6,13 @@ mod error;
 mod models;
 mod token_store;
 
-pub use client::ApiClient;
+pub use client::{ApiClient, MAX_FILES_PER_DUPLICATE_CHECK};
 pub use error::{ApiError, FieldError};
 pub use models::{
-    Collection, CurrentUser, ItemCounts, ItemCreated, ItemKindCounts, ItemQuery, ItemSort,
-    ItemTypeCounts, ItemUpdate, ListCollectionsResponse, ListItemsResponse, ListTagsResponse,
-    ListedFile, ListedItem, NewUpload, PlaybackUrl, PresignedUpload, RegisterResponse, SavedYear,
-    SearchResponse, Tag, TextItemType, TokenPair, UploadStarted, UploadType,
+    Collection, CurrentUser, DuplicateGroup, ItemCounts, ItemCreated, ItemKindCounts, ItemQuery,
+    ItemSort, ItemTypeCounts, ItemUpdate, ListCollectionsResponse, ListItemsResponse,
+    ListTagsResponse, ListedFile, ListedItem, NewUpload, PlaybackUrl, PresignedUpload,
+    RegisterResponse, SavedYear, SearchResponse, Tag, TextItemType, TokenPair, UploadCandidate,
+    UploadStarted, UploadType,
 };
 pub use token_store::TokenStore;

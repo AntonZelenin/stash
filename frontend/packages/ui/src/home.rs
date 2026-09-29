@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use api::{Collection, ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType};
+use api::{
+    Collection, ItemCounts, ItemQuery, ItemSort, ListedItem, Tag, TextItemType, UploadCandidate,
+    UploadType,
+};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
@@ -13,6 +16,7 @@ use crate::auth_session::ItemLabels;
 use crate::collections::{COLLECTIONS_CSS, CollectionChip, CollectionPicker, toggled};
 use crate::confirm::ConfirmDialog;
 use crate::date_filter::{DateFilter, DateSelection};
+use crate::duplicates::{Duplicate, DuplicateDialog, DuplicateFile, duplicate_positions};
 use crate::filters::{
     FavoritesToggle, FiltersMenu, SortMenu, TAG_LIST_LIMIT, TypeFilter, TypeTabs,
 };
@@ -99,9 +103,37 @@ struct PendingFile {
     preview_url: Option<String>,
 }
 
+/// Files the user sent that include duplicates (of saved items, or of an
+/// earlier file among them), held while `DuplicateDialog` asks what to do
+/// with those; with the caption and labels they were sent with.
+#[derive(Clone, PartialEq)]
+struct DuplicateReview {
+    files: Vec<PendingFile>,
+    /// Positions in `files` of the duplicates, in order, with what each
+    /// duplicates.
+    duplicates: Vec<(usize, Duplicate)>,
+    caption: Option<String>,
+    labels: ItemLabels,
+}
+
 impl PendingFile {
     fn is_image(&self) -> bool {
         self.preview_url.is_some()
+    }
+
+    /// What the duplicate check compares: the type, name and size it will be
+    /// uploaded with. Never the content, so it costs nothing however large
+    /// the file is.
+    fn candidate(&self) -> UploadCandidate {
+        UploadCandidate {
+            upload_type: if self.is_image() {
+                UploadType::Image
+            } else {
+                UploadType::File
+            },
+            file_name: self.file_name.clone(),
+            size_bytes: self.data.len() as u64,
+        }
     }
 }
 
@@ -565,30 +597,23 @@ pub fn Home() -> Element {
         }
     });
 
-    // A `Callback` (Copy) so both the form's submit and the text area's
-    // Enter key can call it.
-    let submit = {
-        let session = session.clone();
-        use_callback(move |()| {
-            if is_submitting() {
-                return;
-            }
-
-            // With files staged, the typed text is their caption: each file
-            // becomes one item carrying both (image/file above, text
-            // below), not a separate note.
-            let files = std::mem::take(&mut *pending_files.write());
-            if !files.is_empty() {
+    // Uploads files (already checked for duplicates) with a caption and
+    // labels, then refetches. `skipped`: how many duplicates the user chose
+    // to skip, reported once done unless something failed. Submitting until
+    // it's done.
+    let mut duplicate_review = use_signal(|| None::<DuplicateReview>);
+    let upload_files =
+        use_callback({
+            let session = session.clone();
+            move |(files, caption, labels, skipped): (
+                Vec<PendingFile>,
+                Option<String>,
+                ItemLabels,
+                usize,
+            )| {
                 let session = session.clone();
-                let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
-                let labels = ItemLabels {
-                    tags: pending_tags(),
-                    collections: pending_collections(),
-                };
                 spawn(async move {
                     is_submitting.set(true);
-                    status.set(None);
-
                     // One failure shouldn't stop the rest from uploading;
                     // report the last error, if any, once all are done.
                     let mut last_error = None;
@@ -625,12 +650,109 @@ pub fn Home() -> Element {
                         pending_tags.set(Vec::new());
                         pending_collections.set(Vec::new());
                     }
-                    status.set(last_error);
+                    status.set(last_error.or_else(|| {
+                        (skipped > 0).then(|| t!("duplicates-skipped", count: skipped))
+                    }));
                     saved_items.restart();
                     search_results.restart();
                     item_counts.restart();
 
                     is_submitting.set(false);
+                });
+            }
+        });
+    // The duplicate dialog's answer: for each duplicate, whether to upload
+    // it anyway. The skipped ones are dropped, everything else uploads.
+    let resolve_duplicates = move |upload: Vec<bool>| {
+        let Some(review) = duplicate_review.write().take() else {
+            return;
+        };
+        let skipped: Vec<usize> = review
+            .duplicates
+            .iter()
+            .zip(&upload)
+            .filter(|(_, upload)| !**upload)
+            .map(|((position, _), _)| *position)
+            .collect();
+        let files = review
+            .files
+            .into_iter()
+            .enumerate()
+            .filter(|(position, _)| !skipped.contains(position))
+            .map(|(_, file)| file)
+            .collect();
+        upload_files.call((files, review.caption, review.labels, skipped.len()));
+    };
+    // Cancelled: nothing uploads, and every file is staged again.
+    let cancel_duplicates = move |()| {
+        if let Some(review) = duplicate_review.write().take() {
+            pending_files.set(review.files);
+        }
+        is_submitting.set(false);
+    };
+
+    // A `Callback` (Copy) so both the form's submit and the text area's
+    // Enter key can call it.
+    let submit = {
+        let session = session.clone();
+        use_callback(move |()| {
+            if is_submitting() {
+                return;
+            }
+
+            // With files staged, the typed text is their caption: each file
+            // becomes one item carrying both (image/file above, text
+            // below), not a separate note.
+            // Nothing is uploaded until it's known which files are already
+            // saved (same content, whatever the name): if any are, the user
+            // first decides, per file, whether to skip it or upload another
+            // copy (see `DuplicateDialog`); the others upload as usual.
+            let files = std::mem::take(&mut *pending_files.write());
+            if !files.is_empty() {
+                let session = session.clone();
+                let caption = Some(note().trim().to_string()).filter(|text| !text.is_empty());
+                let labels = ItemLabels {
+                    tags: pending_tags(),
+                    collections: pending_collections(),
+                };
+                spawn(async move {
+                    is_submitting.set(true);
+                    status.set(None);
+
+                    let candidates: Vec<UploadCandidate> =
+                        files.iter().map(PendingFile::candidate).collect();
+                    let distinct: Vec<UploadCandidate> = candidates
+                        .iter()
+                        .enumerate()
+                        .filter(|(position, file)| !candidates[..*position].contains(file))
+                        .map(|(_, file)| file.clone())
+                        .collect();
+                    match session.find_duplicates(distinct).await {
+                        Ok(groups) => {
+                            let duplicates = duplicate_positions(&candidates, &groups);
+                            if duplicates.is_empty() {
+                                upload_files.call((files, caption, labels, 0));
+                            } else {
+                                // Stays submitting (the capture box locked)
+                                // until the dialog is answered.
+                                duplicate_review.set(Some(DuplicateReview {
+                                    files,
+                                    duplicates,
+                                    caption,
+                                    labels,
+                                }));
+                            }
+                        }
+                        Err(err) => {
+                            // Nothing was sent: the files stay staged.
+                            pending_files.set(files);
+                            status.set(Some(t!(
+                                "duplicates-check-failed",
+                                error: api_error_message(&err)
+                            )));
+                            is_submitting.set(false);
+                        }
+                    }
                 });
                 return;
             }
@@ -1235,6 +1357,24 @@ pub fn Home() -> Element {
                             },
                         }}
                     }
+                }
+            }
+
+            if let Some(review) = duplicate_review() {
+                DuplicateDialog {
+                    files: review
+                        .duplicates
+                        .iter()
+                        .map(|(position, duplicate)| DuplicateFile {
+                            file_name: review.files[*position].file_name.clone(),
+                            stored: duplicate.stored.clone(),
+                            same_as_in_batch: duplicate
+                                .first_in_batch
+                                .map(|first| review.files[first].file_name.clone()),
+                        })
+                        .collect::<Vec<_>>(),
+                    on_resolve: resolve_duplicates,
+                    on_cancel: cancel_duplicates,
                 }
             }
 

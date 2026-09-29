@@ -265,3 +265,31 @@ delete-confirm-title = { $count ->
 delete-confirm-message = This can't be undone.
 delete-confirm-deleting = Deleting…
 delete-failed-some = Some items could not be deleted: { $error }
+
+## Duplicate uploads (same name, type and size as a saved file, or as another file of the upload)
+
+duplicates-title = { $count ->
+        [1] This file is a duplicate
+       *[other] Some files are duplicates
+    }
+duplicates-message-one = You've already saved a file named “{ $name }” of exactly the same size.
+duplicates-message-many = These files have the same name and size as files you've saved, or as another file you're uploading. The other files upload as usual.
+duplicates-message-one-in-batch = You're uploading another file named “{ $name }” of exactly the same size.
+duplicates-same-in-batch = Same as “{ $name }” in this upload
+duplicates-copies = { $count ->
+        [one] { $count } copy saved
+       *[other] { $count } copies saved
+    }
+duplicates-first-saved = First uploaded { $date }
+duplicates-last-saved = Most recent copy { $date }
+duplicates-skip = Skip
+duplicates-upload-another = Upload another copy
+duplicates-upload-copy = Upload copy
+duplicates-skip-all = Skip all
+duplicates-upload-all = Upload all copies
+duplicates-continue = Continue
+duplicates-skipped = { $count ->
+        [one] Skipped { $count } duplicate
+       *[other] Skipped { $count } duplicates
+    }
+duplicates-check-failed = Could not check for duplicates: { $error }

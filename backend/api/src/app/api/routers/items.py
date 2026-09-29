@@ -10,6 +10,9 @@ from app.dependencies import get_current_user
 from app.api.schemas.items import (
     CreateTextItemRequest,
     DeleteItemsRequest,
+    DuplicateGroup,
+    DuplicatesResponse,
+    FindDuplicatesRequest,
     ItemCountsResponse,
     ItemKind,
     ItemKindCounts,
@@ -30,6 +33,7 @@ from app.api.schemas.items import (
     TextItemType,
     UpdateItemRequest,
     UploadStarted,
+    UploadType,
     PlaybackUrl,
 )
 from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM, InvalidCollectionNameError
@@ -51,6 +55,7 @@ from app.items.services import (
     ItemNotFoundError,
     ItemService,
     UnsupportedImageTypeError,
+    UploadCandidate,
     UploadChangedError,
     UploadNotCompletedError,
     UploadNotFoundError,
@@ -147,6 +152,45 @@ async def start_upload(
             url=started.upload.url, method=started.upload.method, headers=started.upload.headers
         ),
         expires_at=started.expires_at,
+    )
+
+
+@router.post(
+    "/uploads/duplicates",
+    status_code=status.HTTP_200_OK,
+    response_model=DuplicatesResponse,
+    responses=_RESPONSES,
+)
+async def find_duplicates(
+    payload: FindDuplicatesRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    storage: ObjectStorage = Depends(get_object_storage),
+) -> DuplicatesResponse:
+    """Before uploading: which of these files (type, exact filename, exact
+    size) the user already has, grouped per file. Only a warning for the
+    client to show; uploading a copy is never refused."""
+    groups = await ItemService(session, storage).find_duplicates(
+        user_id=current_user.id,
+        uploads=[
+            UploadCandidate(
+                item_type=DomainItemType(file.type.value), filename=file.filename, size_bytes=file.size_bytes
+            )
+            for file in payload.files
+        ],
+    )
+    return DuplicatesResponse(
+        duplicates=[
+            DuplicateGroup(
+                type=UploadType(group.upload.item_type.value),
+                filename=group.upload.filename,
+                size_bytes=group.upload.size_bytes,
+                count=group.count,
+                first_created_at=group.first_created_at,
+                last_created_at=group.last_created_at,
+            )
+            for group in groups
+        ]
     )
 
 

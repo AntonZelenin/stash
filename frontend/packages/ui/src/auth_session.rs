@@ -2,9 +2,10 @@ use std::future::Future;
 use std::sync::Arc;
 
 use api::{
-    ApiClient, ApiError, Collection, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort,
-    ItemUpdate, ListItemsResponse, ListedItem, NewUpload, PlaybackUrl, SavedYear, SearchResponse,
-    Tag, TextItemType, TokenPair, TokenStore, UploadType,
+    ApiClient, ApiError, Collection, CurrentUser, DuplicateGroup, ItemCounts, ItemCreated,
+    ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListedItem, MAX_FILES_PER_DUPLICATE_CHECK,
+    NewUpload, PlaybackUrl, SavedYear, SearchResponse, Tag, TextItemType, TokenPair, TokenStore,
+    UploadCandidate, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -215,6 +216,29 @@ impl AuthSession {
             async move { client.finalize_upload(&access_token, &upload_id).await }
         })
         .await
+    }
+
+    /// The user's items with the same type, exact filename and exact size
+    /// as any of these files, one group per file that has some. Asked in
+    /// batches the API accepts.
+    pub async fn find_duplicates(
+        &self,
+        files: Vec<UploadCandidate>,
+    ) -> Result<Vec<DuplicateGroup>, ApiError> {
+        let mut groups = Vec::new();
+        for batch in files.chunks(MAX_FILES_PER_DUPLICATE_CHECK) {
+            let client = self.client.clone();
+            let batch = batch.to_vec();
+            let found = self
+                .call_authenticated(move |access_token| {
+                    let client = client.clone();
+                    let batch = batch.clone();
+                    async move { client.find_duplicates(&access_token, &batch).await }
+                })
+                .await?;
+            groups.extend(found);
+        }
+        Ok(groups)
     }
 
     pub async fn current_user(&self) -> Result<CurrentUser, ApiError> {

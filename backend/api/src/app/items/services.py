@@ -219,6 +219,24 @@ class ItemCounts:
 
 
 @dataclass(frozen=True)
+class UploadCandidate:
+    # A file about to be uploaded, as the client describes it.
+    item_type: ItemType
+    filename: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class DuplicateGroup:
+    # The user's items with `upload`'s type, filename and size: how many,
+    # and when the first and the most recent were saved.
+    upload: UploadCandidate
+    count: int
+    first_created_at: datetime
+    last_created_at: datetime
+
+
+@dataclass(frozen=True)
 class StartedUpload:
     # Also the id of the item the upload becomes.
     upload_id: uuid.UUID
@@ -361,6 +379,33 @@ class ItemService:
             by_kind={kind: rows.by_kind.get(kind, 0) for kind in ContentKind},
             favorites=rows.favorites,
         )
+
+    async def find_duplicates(self, *, user_id: uuid.UUID, uploads: list[UploadCandidate]) -> list[DuplicateGroup]:
+        """For each of `uploads` (files about to be uploaded) whose type,
+        exact filename (and so extension) and exact size some of the user's
+        items have, those items as one group: how many, first and last
+        saved. The others are left out. Metadata only: nothing is read or
+        hashed, so it's instant whatever the size, but a file with the same
+        name and size and other content matches, and a renamed copy
+        doesn't. The name is compared as it would be stored
+        (`files.clean_filename`); groups are returned under the name as
+        asked."""
+        stored = {
+            upload: (upload.item_type, files.clean_filename(upload.filename), upload.size_bytes)
+            for upload in dict.fromkeys(uploads)
+        }
+        rows = await self._repo.duplicate_groups(user_id=user_id, candidates=sorted(set(stored.values())))
+        by_key = {(row.item_type, row.filename, row.size_bytes): row for row in rows}
+        return [
+            DuplicateGroup(
+                upload=upload,
+                count=row.count,
+                first_created_at=_as_utc(row.first_created_at),
+                last_created_at=_as_utc(row.last_created_at),
+            )
+            for upload, key in stored.items()
+            if (row := by_key.get(key)) is not None
+        ]
 
     async def saved_years(self, *, user_id: uuid.UUID) -> list[tuple[datetime, datetime]]:
         """(first, last) save time per calendar year with items, oldest

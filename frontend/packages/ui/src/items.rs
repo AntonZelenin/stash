@@ -322,6 +322,12 @@ impl UploadDate {
     }
 }
 
+/// An API timestamp (RFC 3339) as a full local date and time, as a card's
+/// date tooltip shows it; None if it can't be parsed.
+pub(crate) fn full_local_date(created_at: &str) -> Option<String> {
+    UploadDate::from_api(created_at).map(|date| date.full)
+}
+
 /// The upload date, in the bottom-right corner of a card's footer.
 #[component]
 fn CardDate(date: Option<UploadDate>) -> Element {

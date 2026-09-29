@@ -168,6 +168,44 @@ class StartUploadRequest(BaseModel):
     collections: list[CollectionNameInput] = Field(default_factory=list, max_length=MAX_COLLECTIONS_PER_ITEM)
 
 
+# Most files one duplicate check takes; clients with more ask in batches.
+MAX_FILES_PER_DUPLICATE_CHECK = 100
+
+
+class UploadCandidate(BaseModel):
+    """A file about to be uploaded, described as `StartUploadRequest` will."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: UploadType
+    filename: str = Field(min_length=1, max_length=MAX_FILENAME_LENGTH)
+    size_bytes: int = Field(ge=0)
+
+
+class FindDuplicatesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[UploadCandidate] = Field(min_length=1, max_length=MAX_FILES_PER_DUPLICATE_CHECK)
+
+
+class DuplicateGroup(BaseModel):
+    # The requested file, as it was asked about.
+    type: UploadType
+    filename: str
+    size_bytes: int
+    # How many of the user's items have exactly this type, filename and
+    # size.
+    count: int
+    first_created_at: datetime
+    last_created_at: datetime
+
+
+class DuplicatesResponse(BaseModel):
+    # Only the requested files some item matches; one entry per distinct
+    # (type, filename, size).
+    duplicates: list[DuplicateGroup]
+
+
 class PresignedUpload(BaseModel):
     # Send the file's bytes as the whole body, with exactly `headers`.
     url: str

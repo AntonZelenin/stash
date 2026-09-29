@@ -4,12 +4,16 @@ use serde::Deserialize;
 use crate::error::{ApiError, FieldError};
 use crate::models::{
     AddToCollectionRequest, AssignTagRequest, ChangePasswordRequest, Collection,
-    CreateTextItemRequest, CurrentUser, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
-    ListCollectionsResponse, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
-    NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
-    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
-    UploadStarted,
+    CreateTextItemRequest, CurrentUser, DuplicateGroup, DuplicatesResponse, FindDuplicatesRequest,
+    ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListCollectionsResponse,
+    ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, NewUpload, PlaybackUrl,
+    PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SavedYear,
+    SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
+    UploadCandidate, UploadStarted,
 };
+
+/// Most files `find_duplicates` takes at once (the API's limit).
+pub const MAX_FILES_PER_DUPLICATE_CHECK: usize = 100;
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -508,6 +512,36 @@ impl ApiClient {
 
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Before uploading: which of these files (at most
+    /// `MAX_FILES_PER_DUPLICATE_CHECK`) the user already has an item with
+    /// the same type, exact filename and exact size, one group per such
+    /// file.
+    pub async fn find_duplicates(
+        &self,
+        access_token: &str,
+        files: &[UploadCandidate],
+    ) -> Result<Vec<DuplicateGroup>, ApiError> {
+        let response = self
+            .authenticated(Method::POST, "/uploads/duplicates", access_token)
+            .json(&FindDuplicatesRequest { files })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response
+                .json::<DuplicatesResponse>()
+                .await
+                .map(|body| body.duplicates)
+                .map_err(|_| ApiError::Server),
             401 => Err(ApiError::Unauthorized),
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,

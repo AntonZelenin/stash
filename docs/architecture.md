@@ -455,6 +455,30 @@ one is deleted) until it expires. Nothing ever reads it: the upload is no
 longer pending, a replayed finalize returns the item as it is, and it
 expires with the lifecycle rule.
 
+Duplicate uploads: an upload that looks like something the user already
+has is allowed, and becomes a new item (its own id, `created_at`,
+canonical key, and the filename exactly as uploaded, never renamed to
+`file (1).pdf`). Filenames are never unique. Clients only warn first, from
+metadata alone: before starting any upload they send each staged file's
+type (image or file), filename and size in bytes to `POST
+/uploads/duplicates` (at most 100 per request), which returns, per file,
+the user's items with exactly the same type, filename (as it would be
+stored, so the same extension; case-sensitive) and size — how many, first
+and most recent `created_at` — from `item_images`/`item_files`
+(`filename`, `size_bytes`, indexed together). Nothing is read or hashed,
+on the client or the server, so the check is instant for files of any
+size; the price is that it's a heuristic: a file with the same name and
+size but other content is flagged, a renamed copy isn't, and images saved
+before their name was kept never match. Within the batch itself, the
+first file with some (type, filename, size) is the primary one and every
+later file with the same is a duplicate too (a file both saved and
+repeated is one entry, with the saved copies' count and dates). If there
+are any duplicates, the client asks per file whether to skip it or upload
+another copy (one file: two buttons; several: one row each, with "skip
+all" / "upload all copies" that rows can still override); files that are
+neither upload as usual and aren't listed. `content_sha256` is still
+recorded at finalize, but nothing here uses it.
+
 Queue jobs carry no key (identifiers only, see "Queue trust"): workers
 read the item's `storage_key` and `content_etag` from Postgres, joined on
 the job's user, and read the original only with `If-Match` on that ETag. Anything else at

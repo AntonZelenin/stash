@@ -269,3 +269,33 @@ delete-confirm-title = { $count ->
 delete-confirm-message = Цю дію не можна скасувати.
 delete-confirm-deleting = Видалення…
 delete-failed-some = Не вдалося видалити деякі записи: { $error }
+
+## Дублікати під час завантаження (така сама назва, тип і розмір, як у збереженого файлу або іншого файлу цього завантаження)
+
+duplicates-title = { $count ->
+        [1] Цей файл — дублікат
+       *[other] Деякі файли — дублікати
+    }
+duplicates-message-one = Ви вже зберегли файл «{ $name }» точно такого самого розміру.
+duplicates-message-many = Ці файли мають таку саму назву й розмір, як уже збережені або як інший файл, що ви завантажуєте. Інші файли завантажаться як звичайно.
+duplicates-message-one-in-batch = Ви завантажуєте ще один файл «{ $name }» точно такого самого розміру.
+duplicates-same-in-batch = Такий самий, як «{ $name }» у цьому завантаженні
+duplicates-copies = { $count ->
+        [one] Збережено { $count } копію
+        [few] Збережено { $count } копії
+       *[many] Збережено { $count } копій
+    }
+duplicates-first-saved = Уперше завантажено { $date }
+duplicates-last-saved = Остання копія { $date }
+duplicates-skip = Пропустити
+duplicates-upload-another = Завантажити ще одну копію
+duplicates-upload-copy = Завантажити копію
+duplicates-skip-all = Пропустити всі
+duplicates-upload-all = Завантажити всі копії
+duplicates-continue = Продовжити
+duplicates-skipped = { $count ->
+        [one] Пропущено { $count } дублікат
+        [few] Пропущено { $count } дублікати
+       *[many] Пропущено { $count } дублікатів
+    }
+duplicates-check-failed = Не вдалося перевірити дублікати: { $error }

@@ -23,6 +23,7 @@ pub use turnstile::TurnstileSiteKey;
 mod collections;
 mod confirm;
 mod date_filter;
+mod duplicates;
 mod filters;
 mod items;
 mod media;
