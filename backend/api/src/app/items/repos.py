@@ -73,11 +73,14 @@ class ItemFilters:
     that half-open range (clients send the bounds of a local year, month
     or day, so "2025" means 2025 in the user's time zone). `kinds`: only
     images and files of *any* of these kinds (see `ContentKind`), e.g.
-    image, video and audio for all media."""
+    image, video and audio for all media. `excluded_tag_ids`: the item
+    must carry *none* of them (a client's hidden tags, in its Blind mode),
+    on top of every other filter."""
 
     item_type: ItemType | None = None
     kinds: tuple[ContentKind, ...] = ()
     tag_ids: tuple[uuid.UUID, ...] = ()
+    excluded_tag_ids: tuple[uuid.UUID, ...] = ()
     collection_ids: tuple[uuid.UUID, ...] = ()
     favorites_only: bool = False
     created_from: datetime | None = None
@@ -97,6 +100,13 @@ class ItemFilters:
         for tag_id in self.tag_ids:
             stmt = stmt.where(
                 exists().where(item_tags.c.item_id == Item.id, item_tags.c.tag_id == tag_id)
+            )
+        if self.excluded_tag_ids:
+            stmt = stmt.where(
+                ~exists().where(
+                    item_tags.c.item_id == Item.id,
+                    item_tags.c.tag_id.in_(self.excluded_tag_ids),
+                )
             )
         if self.collection_ids:
             stmt = stmt.where(
@@ -595,20 +605,20 @@ class ItemRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_random(self, *, user_id: uuid.UUID) -> Item | None:
-        """One of the user's items, picked at random, loaded for a response;
-        None if they have none. Sorts all of the user's items, which is
-        fine at a personal stash's size."""
-        result = await self._session.execute(
-            select(Item).options(*_LISTED_ITEM_LOADS).where(Item.user_id == user_id).order_by(func.random()).limit(1)
-        )
+    async def get_random(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> Item | None:
+        """One of the user's items matching `filters`, picked at random,
+        loaded for a response; None if there are none. Sorts all of them,
+        which is fine at a personal stash's size."""
+        stmt = select(Item).options(*_LISTED_ITEM_LOADS).where(Item.user_id == user_id)
+        result = await self._session.execute(filters.apply(stmt).order_by(func.random()).limit(1))
         return result.scalar_one_or_none()
 
-    async def count(self, *, user_id: uuid.UUID) -> ItemCountRows:
-        """How many items the user has of each type and each kind (those
-        with none are left out), and how many are favorites. Grouped by the
-        file's stored content type, which `kind_of` maps to its kind."""
-        result = await self._session.execute(
+    async def count(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> ItemCountRows:
+        """How many of the user's items matching `filters` there are of
+        each type and each kind (those with none are left out), and how many
+        are favorites. Grouped by the file's stored content type, which
+        `kind_of` maps to its kind."""
+        stmt = (
             select(
                 Item.type,
                 FileMetadata.content_type,
@@ -619,6 +629,7 @@ class ItemRepository:
             .where(Item.user_id == user_id)
             .group_by(Item.type, FileMetadata.content_type)
         )
+        result = await self._session.execute(filters.apply(stmt))
         by_type: dict[ItemType, int] = {}
         by_kind: dict[ContentKind, int] = {}
         favorites = 0

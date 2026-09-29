@@ -416,9 +416,10 @@ pub fn FavoritesToggle(value: Signal<bool>, count: Option<u32>) -> Element {
     }
 }
 
-/// Which of the user's things a `FiltersMenu` section lists.
+/// Which of the user's things a `FiltersMenu` section (or another
+/// checkbox list, such as the hidden tags in Settings) lists.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FilterSection {
+pub(crate) enum FilterSection {
     Collections,
     Tags,
 }
@@ -640,26 +641,38 @@ fn FilterSectionPanel(
                 }
             }
             if expanded() {
-                FilterSectionOptions { section, selected, on_toggle }
+                FilterSectionOptions {
+                    section,
+                    selected: selected.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
+                    selected_options: selected,
+                    on_toggle,
+                }
             }
         }
     }
 }
 
-/// The expanded part of a `FilterSectionPanel`. Mounted only while
-/// expanded, so it fetches the current list each time it opens.
+/// A search box and the matching options as checkboxes: the expanded
+/// part of a `FilterSectionPanel`, and the hidden tags in Settings. Fetches
+/// the current list as it mounts and as the search changes. `selected`: the
+/// ids of the checked options; `selected_options`: those of them whose names
+/// are known, so they can be listed even if the first page of options
+/// doesn't have them. `on_toggle` gets an option (un)checked.
 #[component]
-fn FilterSectionOptions(
+pub(crate) fn FilterSectionOptions(
     section: FilterSection,
-    selected: Vec<Tag>,
+    selected: Vec<String>,
+    #[props(default)] selected_options: Vec<Tag>,
     on_toggle: EventHandler<Tag>,
 ) -> Element {
     let session = use_context::<AuthSession>();
     let mut query = use_signal(String::new);
-    // What was selected when the section expanded, listed first.
-    let pinned = use_hook({
+    // What was selected when it mounted, listed first: the ids, and the
+    // options known by name.
+    let (pinned_ids, pinned) = use_hook({
         let selected = selected.clone();
-        move || selected
+        let selected_options = selected_options.clone();
+        move || (selected, selected_options)
     });
 
     // Re-runs as the query changes; the delay debounces typing (a newer
@@ -676,7 +689,7 @@ fn FilterSectionOptions(
     });
 
     let searching = !query().trim().is_empty();
-    let is_selected = |option: &Tag| selected.iter().any(|s| s.id == option.id);
+    let is_selected = |option: &Tag| selected.contains(&option.id);
 
     rsx! {
         input {
@@ -692,18 +705,23 @@ fn FilterSectionOptions(
         div { class: "filters-options",
             match &*matches.read() {
                 Some(Ok(found)) => {
-                    // While browsing, the ones selected when the section
-                    // expanded first, so they stay in reach however many
-                    // there are, and selecting more doesn't move anything
-                    // under the pointer; just matches while searching.
+                    // While browsing, the ones selected when it mounted
+                    // first (those known by name even if not fetched), so
+                    // they stay in reach however many there are, and
+                    // selecting more doesn't move anything under the
+                    // pointer; just matches while searching.
                     let options: Vec<Tag> = if searching {
                         found.clone()
                     } else {
-                        let is_pinned = |option: &Tag| pinned.iter().any(|p| p.id == option.id);
+                        let is_known = |option: &Tag| pinned.iter().any(|p| p.id == option.id);
+                        let was_selected = |option: &&Tag| pinned_ids.contains(&option.id);
+                        let (found_pinned, rest): (Vec<&Tag>, Vec<&Tag>) =
+                            found.iter().filter(|option| !is_known(option)).partition(was_selected);
                         pinned
                             .iter()
                             .cloned()
-                            .chain(found.iter().filter(|option| !is_pinned(option)).cloned())
+                            .chain(found_pinned.into_iter().cloned())
+                            .chain(rest.into_iter().cloned())
                             .collect()
                     };
                     let truncated = found.len() >= TAG_LIST_LIMIT as usize;

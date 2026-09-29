@@ -956,6 +956,9 @@ paths:
       security:
         - bearerAuth: []
 
+      parameters:
+        - $ref: "#/components/parameters/ExcludeTagId"
+
       responses:
         "200":
           description: A random item
@@ -968,7 +971,7 @@ paths:
           description: Unauthorized
 
         "404":
-          description: The user has no items
+          description: The user has no items (none left after `exclude_tag_id`)
 
   /items/{item_id}:
     get:
@@ -1143,13 +1146,16 @@ paths:
       description: >-
         How many items the user has of each type and of each kind (every
         type and kind is present, zero if there are none), and how many are
-        favorites. Covers the same items as listing without filters;
-        computed on each request.
+        favorites. Covers the same items as listing without filters
+        (other than `exclude_tag_id`); computed on each request.
       operationId: countItems
       tags: [items]
 
       security:
         - bearerAuth: []
+
+      parameters:
+        - $ref: "#/components/parameters/ExcludeTagId"
 
       responses:
         "200":
@@ -1265,6 +1271,7 @@ paths:
               format: uuid
           style: form
           explode: true
+        - $ref: "#/components/parameters/ExcludeTagId"
         - name: collection_id
           in: query
           required: false
@@ -1381,6 +1388,15 @@ paths:
                   items:
                     type: string
                     format: uuid
+                excluded_tag_ids:
+                  description: >-
+                    Leave out items carrying any of these tags (same as
+                    `exclude_tag_id` on `GET /items`).
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+                    format: uuid
                 collection_ids:
                   description: >-
                     Only items in any of these collections (same as
@@ -1438,6 +1454,24 @@ paths:
           description: Search is temporarily unavailable (the query couldn't be embedded)
 
 components:
+  parameters:
+    ExcludeTagId:
+      name: exclude_tag_id
+      in: query
+      required: false
+      description: >-
+        Leave out items carrying this tag (a client's hidden tags, in its
+        Blind mode). Repeatable: with several, an item carrying any of them
+        is left out. Applies on top of every other filter.
+      schema:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+          format: uuid
+      style: form
+      explode: true
+
   responses:
     TooManyRequests:
       description: >-

@@ -27,6 +27,7 @@ use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
 use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_tags};
+use crate::preferences::{DisplayMode, Preferences};
 use crate::routes::Route;
 use crate::selection::{
     SelectionBar, SelectionEvent, merged, toggled_id, use_selection_events, with_local_edits,
@@ -196,6 +197,13 @@ pub fn Home() -> Element {
     let mut selected_collections = use_signal(Vec::<Collection>::new);
     let favorites_only = use_signal(|| false);
     let saved_on = use_signal(|| None::<DateSelection>);
+    // In Blind mode, the hidden tags: left out on top of every filter, and
+    // of the counts and "Surprise me" too. Switching modes changes nothing
+    // else, but refetches whatever depends on it.
+    let excluded_tag_ids = use_memo({
+        let preferences = use_context::<Preferences>();
+        move || preferences.excluded_tag_ids()
+    });
     let current_filters = move || {
         let (created_from, created_before) = saved_on().map(DateSelection::api_range).unzip();
         ItemQuery {
@@ -206,6 +214,7 @@ pub fn Home() -> Element {
                 .map(str::to_string)
                 .collect(),
             tag_ids: selected_tags().iter().map(|tag| tag.id.clone()).collect(),
+            excluded_tag_ids: excluded_tag_ids(),
             collection_ids: selected_collections()
                 .iter()
                 .map(|collection| collection.id.clone())
@@ -237,14 +246,16 @@ pub fn Home() -> Element {
         }
     });
 
-    // Item counts for the type tabs and favorites toggle. Unfiltered, so
-    // they don't depend on the filters; restarted wherever items are
-    // added, deleted, edited (a note can become a link) or (un)favorited.
+    // Item counts for the type tabs and favorites toggle. Unfiltered (but
+    // for Blind mode's hidden tags), so they don't depend on the filters;
+    // restarted wherever items are added, deleted, edited (a note can
+    // become a link) or (un)favorited.
     let mut item_counts = use_resource({
         let session = session.clone();
         move || {
             let session = session.clone();
-            async move { session.count_items().await }
+            let excluded = excluded_tag_ids();
+            async move { session.count_items(excluded).await }
         }
     });
 
@@ -586,8 +597,9 @@ pub fn Home() -> Element {
         let session = session.clone();
         move |()| {
             let session = session.clone();
+            let excluded = excluded_tag_ids.peek().clone();
             spawn(async move {
-                match session.random_item().await {
+                match session.random_item(excluded).await {
                     Ok(Some(item)) => surprise.set(Some(item)),
                     Ok(None) => status.set(Some(t!("surprise-me-nothing"))),
                     Err(err) => status.set(Some(t!(
@@ -1449,6 +1461,8 @@ fn TopBar(initials: String, can_surprise: bool, on_surprise: EventHandler<()>) -
             }
 
             div { class: "top-bar-actions",
+                DisplayModeSwitch {}
+
                 button {
                     class: "top-bar-surprise",
                     r#type: "button",
@@ -1506,6 +1520,57 @@ fn TopBar(initials: String, can_surprise: bool, on_surprise: EventHandler<()>) -
         if settings_open() {
             AccountSettings { on_close: move |_| settings_open.set(false) }
         }
+    }
+}
+
+/// `Mode: [ Normal | Blind ]`: whether items with the hidden tags (chosen
+/// in Settings) are left out. Switching changes no filter, search or
+/// order, only what's shown, at once; it's remembered on this device.
+#[component]
+fn DisplayModeSwitch() -> Element {
+    let preferences = use_context::<Preferences>();
+    let current = preferences.display_mode();
+
+    rsx! {
+        div {
+            class: "mode-switch",
+            role: "radiogroup",
+            aria_label: t!("display-mode-label"),
+            span { class: "mode-switch-label", aria_hidden: "true", {t!("display-mode-label")} }
+            for mode in DisplayMode::ALL {
+                button {
+                    key: "{mode:?}",
+                    class: if mode == current { "mode-switch-option mode-switch-option-selected" } else { "mode-switch-option" },
+                    r#type: "button",
+                    role: "radio",
+                    aria_checked: if mode == current { "true" } else { "false" },
+                    title: display_mode_title(mode),
+                    onclick: {
+                        let preferences = preferences.clone();
+                        move |_| {
+                            if preferences.display_mode() != mode {
+                                preferences.set_display_mode(mode);
+                            }
+                        }
+                    },
+                    {display_mode_label(mode)}
+                }
+            }
+        }
+    }
+}
+
+fn display_mode_label(mode: DisplayMode) -> String {
+    match mode {
+        DisplayMode::Normal => t!("display-mode-normal"),
+        DisplayMode::Blind => t!("display-mode-blind"),
+    }
+}
+
+fn display_mode_title(mode: DisplayMode) -> String {
+    match mode {
+        DisplayMode::Normal => t!("display-mode-normal-title"),
+        DisplayMode::Blind => t!("display-mode-blind-title"),
     }
 }
 

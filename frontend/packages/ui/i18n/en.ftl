@@ -56,6 +56,12 @@ surprise-me-title = Inspire me with a random stash item
 surprise-me-disabled = Save something first
 surprise-me-nothing = Nothing saved yet to surprise you with.
 surprise-me-failed = Could not pick a random item: { $error }
+
+display-mode-label = Mode:
+display-mode-normal = Normal
+display-mode-blind = Blind
+display-mode-normal-title = Show everything
+display-mode-blind-title = Leave out items with hidden tags
 account-menu = Account
 account-settings = Account settings
 account-logout = Logout
@@ -229,6 +235,7 @@ size-megabytes = { $size } MB
 settings-title = Settings
 settings-section-password = Password
 settings-section-language = Language
+settings-section-hidden-tags = Hidden tags
 settings-password-description = Change the password you use to log in. You'll need your current password. Changing it signs you out on every other device.
 settings-password-changed = Your password has been changed.
 settings-current-password = Current password
@@ -241,6 +248,8 @@ settings-new-password-hint = At least { $min } { $min ->
 settings-confirm-new-password = Confirm new password
 settings-change-password = Change password
 settings-language-description = Choose the language Stash is shown in. Your choice is remembered on this device.
+settings-hidden-tags-description = Items with any of the checked tags are left out in Blind mode. Your choice is remembered on this device.
+settings-hidden-tags-limit = At most { $max } tags can be hidden.
 settings-language-label = Language
 
 ## Selecting items (drag a rectangle over the cards) and acting on them all

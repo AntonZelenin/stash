@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use api::ApiClient;
 use dioxus::prelude::*;
-use ui::{AuthSession, Route, TurnstileSiteKey, use_init_localization};
+use ui::{AuthSession, Route, TurnstileSiteKey, use_init_localization, use_init_preferences};
 
 mod config;
 use config::{API_BASE_URL, TURNSTILE_SITE_KEY};
 
 mod language_store;
 use language_store::{LocalStorageLanguageStore, browser_languages};
+
+mod preference_store;
+use preference_store::LocalStoragePreferenceStore;
 
 mod token_store;
 use token_store::LocalStorageTokenStore;
@@ -23,6 +26,7 @@ fn main() {
 #[component]
 fn App() -> Element {
     use_init_localization(Arc::new(LocalStorageLanguageStore), browser_languages());
+    use_init_preferences(Arc::new(LocalStoragePreferenceStore));
     use_context_provider(|| {
         AuthSession::new(
             ApiClient::new(API_BASE_URL),

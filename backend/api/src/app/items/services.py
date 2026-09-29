@@ -369,11 +369,11 @@ class ItemService:
         self._storage = storage
         self._outbox = outbox
 
-    async def count_items(self, *, user_id: uuid.UUID) -> ItemCounts:
+    async def count_items(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> ItemCounts:
         """The user's items per type, per kind and favorites, counted on
         each call (no stored counters), over the same items listing
-        returns."""
-        rows = await self._repo.count(user_id=user_id)
+        returns with `filters`."""
+        rows = await self._repo.count(user_id=user_id, filters=filters)
         return ItemCounts(
             by_type={item_type: rows.by_type.get(item_type, 0) for item_type in ItemType},
             by_kind={kind: rows.by_kind.get(kind, 0) for kind in ContentKind},
@@ -538,6 +538,7 @@ class ItemService:
             item_type=filters.item_type,
             item_kinds=[kind.value for kind in filters.kinds],
             tag_filter_count=len(filters.tag_ids),
+            excluded_tag_count=len(filters.excluded_tag_ids),
             collection_filter_count=len(filters.collection_ids),
             favorites_only=filters.favorites_only,
             duration_ms=(time.perf_counter() - started) * 1000,
@@ -579,10 +580,10 @@ class ItemService:
         )
         return PlaybackUrl(url=url, expires_at=expires_at)
 
-    async def random_item(self, *, user_id: uuid.UUID) -> ListedItem:
-        """Any one of the user's items, for "Surprise me". Raises
-        `ItemNotFoundError` if they have none."""
-        row = await self._repo.get_random(user_id=user_id)
+    async def random_item(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> ListedItem:
+        """Any one of the user's items matching `filters`, for "Surprise
+        me". Raises `ItemNotFoundError` if there are none."""
+        row = await self._repo.get_random(user_id=user_id, filters=filters)
         if row is None:
             raise ItemNotFoundError()
         [listed] = await self._with_download_urls([row])

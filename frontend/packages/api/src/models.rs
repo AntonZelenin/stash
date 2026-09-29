@@ -287,7 +287,8 @@ impl ItemSort {
 /// Narrows listing and search: only items of `item_type` (the API's
 /// `type`, e.g. `"link"`; None = any) and of any of `kinds` (the API's
 /// `kind` values, e.g. `"video"`; empty = any), carrying *all* of
-/// `tag_ids`, in *any* of `collection_ids` (empty = any), and with
+/// `tag_ids` and *none* of `excluded_tag_ids` (the hidden tags, in Blind
+/// mode), in *any* of `collection_ids` (empty = any), and with
 /// `favorites_only`, only favorites; `created_from` (inclusive) and
 /// `created_before` (exclusive) bound when it was saved, as RFC 3339
 /// timestamps with an offset.
@@ -296,6 +297,7 @@ pub struct ItemQuery {
     pub item_type: Option<String>,
     pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
+    pub excluded_tag_ids: Vec<String>,
     pub collection_ids: Vec<String>,
     pub favorites_only: bool,
     pub created_from: Option<String>,
@@ -399,6 +401,8 @@ pub(crate) struct SearchRequest {
     pub item_type: Option<String>,
     pub kinds: Vec<String>,
     pub tag_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub excluded_tag_ids: Vec<String>,
     pub collection_ids: Vec<String>,
     pub favorite: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -250,11 +250,12 @@ impl AuthSession {
         .await
     }
 
-    pub async fn count_items(&self) -> Result<ItemCounts, ApiError> {
+    pub async fn count_items(&self, excluded_tag_ids: Vec<String>) -> Result<ItemCounts, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
             let client = client.clone();
-            async move { client.count_items(&access_token).await }
+            let excluded_tag_ids = excluded_tag_ids.clone();
+            async move { client.count_items(&access_token, &excluded_tag_ids).await }
         })
         .await
     }
@@ -457,11 +458,15 @@ impl AuthSession {
         .await
     }
 
-    pub async fn random_item(&self) -> Result<Option<ListedItem>, ApiError> {
+    pub async fn random_item(
+        &self,
+        excluded_tag_ids: Vec<String>,
+    ) -> Result<Option<ListedItem>, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
             let client = client.clone();
-            async move { client.random_item(&access_token).await }
+            let excluded_tag_ids = excluded_tag_ids.clone();
+            async move { client.random_item(&access_token, &excluded_tag_ids).await }
         })
         .await
     }

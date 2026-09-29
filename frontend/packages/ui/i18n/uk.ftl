@@ -55,6 +55,12 @@ surprise-me-title = Випадковий запис зі сховища для �
 surprise-me-disabled = Спершу щось збережіть
 surprise-me-nothing = Поки немає нічого, чим можна здивувати.
 surprise-me-failed = Не вдалося вибрати випадковий запис: { $error }
+
+display-mode-label = Режим:
+display-mode-normal = Нормальний
+display-mode-blind = Сліпий
+display-mode-normal-title = Показувати все
+display-mode-blind-title = Не показувати записи з прихованими тегами
 account-menu = Обліковий запис
 account-settings = Налаштування облікового запису
 account-logout = Вийти
@@ -228,6 +234,7 @@ size-megabytes = { $size } МБ
 settings-title = Налаштування
 settings-section-password = Пароль
 settings-section-language = Мова
+settings-section-hidden-tags = Приховані теги
 settings-password-description = Змініть пароль, яким ви входите. Знадобиться поточний пароль. Після зміни ви вийдете з усіх інших пристроїв.
 settings-password-changed = Ваш пароль змінено.
 settings-current-password = Поточний пароль
@@ -241,6 +248,8 @@ settings-new-password-hint = Щонайменше { $min } { $min ->
 settings-confirm-new-password = Підтвердьте новий пароль
 settings-change-password = Змінити пароль
 settings-language-description = Мова, якою показано Stash. Ваш вибір запам’ятовується на цьому пристрої.
+settings-hidden-tags-description = У сліпому режимі записи з будь-яким із позначених тегів не показуються. Ваш вибір запам’ятовується на цьому пристрої.
+settings-hidden-tags-limit = Можна приховати щонайбільше { $max } тегів.
 settings-language-label = Мова
 
 ## Вибір записів (прямокутником по картках) і дії з усіма вибраними

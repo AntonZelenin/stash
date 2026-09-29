@@ -1,13 +1,15 @@
 use std::rc::Rc;
 
-use api::ApiError;
+use api::{ApiError, Tag};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 
 use crate::AuthSession;
 use crate::auth::{MIN_PASSWORD_CHARS, validate_new_password};
+use crate::filters::{FILTERS_CSS, FilterSection, FilterSectionOptions};
 use crate::i18n::{Language, Localization, api_error_message};
-use crate::icons::{IconClose, IconGlobe, IconLock};
+use crate::icons::{IconClose, IconEyeOff, IconGlobe, IconLock};
+use crate::preferences::{MAX_HIDDEN_TAGS, Preferences};
 
 const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
 
@@ -16,15 +18,17 @@ const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
 enum Section {
     Password,
     Language,
+    HiddenTags,
 }
 
 impl Section {
-    const ALL: [Section; 2] = [Section::Password, Section::Language];
+    const ALL: [Section; 3] = [Section::Password, Section::Language, Section::HiddenTags];
 
     fn label(self) -> String {
         match self {
             Section::Password => t!("settings-section-password"),
             Section::Language => t!("settings-section-language"),
+            Section::HiddenTags => t!("settings-section-hidden-tags"),
         }
     }
 }
@@ -80,6 +84,7 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                             match item {
                                 Section::Password => rsx! { IconLock {} },
                                 Section::Language => rsx! { IconGlobe {} },
+                                Section::HiddenTags => rsx! { IconEyeOff {} },
                             }
                             "{item.label()}"
                         }
@@ -93,6 +98,9 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                         },
                         Section::Language => rsx! {
                             LanguageSettings {}
+                        },
+                        Section::HiddenTags => rsx! {
+                            HiddenTagsSettings {}
                         },
                     }
                 }
@@ -292,6 +300,34 @@ fn LanguageSettings() -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The tags Blind mode hides: the user's tags as checkboxes (checked =
+/// hidden), with the same search as the tag filter. Takes effect at once
+/// and is remembered on this device, by tag id.
+#[component]
+fn HiddenTagsSettings() -> Element {
+    let preferences = use_context::<Preferences>();
+    let hidden = preferences.hidden_tag_ids();
+    let at_limit = hidden.len() >= MAX_HIDDEN_TAGS;
+
+    rsx! {
+        document::Link { rel: "stylesheet", href: FILTERS_CSS }
+
+        h3 { class: "settings-title", {t!("settings-section-hidden-tags")} }
+        p { class: "settings-description", {t!("settings-hidden-tags-description")} }
+
+        div { class: "settings-form settings-hidden-tags",
+            FilterSectionOptions {
+                section: FilterSection::Tags,
+                selected: hidden,
+                on_toggle: move |tag: Tag| preferences.toggle_hidden_tag(&tag.id),
+            }
+            if at_limit {
+                p { class: "settings-hint", {t!("settings-hidden-tags-limit", max: MAX_HIDDEN_TAGS)} }
             }
         }
     }

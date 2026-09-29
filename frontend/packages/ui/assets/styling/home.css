@@ -129,12 +129,61 @@
     color: #f59e0b;
 }
 
+/* `Mode: [ Normal | Blind ]`, a compact two-option segmented control. */
+.mode-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.mode-switch-label {
+    color: #64748b;
+}
+
+.mode-switch-option {
+    padding: 4px 9px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #475569;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    cursor: pointer;
+}
+
+.mode-switch-option:first-of-type {
+    border-radius: 8px 0 0 8px;
+}
+
+.mode-switch-option:last-of-type {
+    margin-left: -7px;
+    border-radius: 0 8px 8px 0;
+}
+
+.mode-switch-option:hover:not(.mode-switch-option-selected) {
+    background: #faf5ff;
+    color: var(--violet);
+}
+
+.mode-switch-option-selected {
+    position: relative;
+    border-color: #e9d5ff;
+    background: #f3e8ff;
+    color: var(--violet);
+}
+
 @media (max-width: 767px) {
     .top-bar {
         padding: 9px 16px;
     }
 
     .top-bar-surprise {
+        display: none;
+    }
+
+    .mode-switch-label {
         display: none;
     }
 }

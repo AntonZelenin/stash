@@ -1189,6 +1189,16 @@ time zone offset). The server has no notion of the user's time zone:
 clients pick a year, month or day on their own calendar and send its
 bounds, so "2025" means 2025 where the user is.
 
+On top of those, `exclude_tag_id` (repeatable, up to 100; `excluded_tag_ids`
+in search) leaves out every item carrying any of the given tags, in a
+`NOT EXISTS` on `item_tags`. It backs the clients' Blind mode (hiding items
+with the tags the user marked hidden), so `GET /items/counts` and
+`GET /items/random` ("Surprise me") take it too, and an item hidden from the
+list isn't counted or surprised with either. The hidden-tag set and the mode
+are client preferences, not stored server-side: the client sends the ids
+while Blind mode is on, and an id that isn't one of the user's tags (e.g. a
+tag since deleted) excludes nothing.
+
 Listing is newest first by default; `sort=oldest` reverses it (same
 keyset pagination on `created_at, id`, the cursor recording its order),
 and `sort=random` returns `limit` matching items via `ORDER BY random()`.
@@ -1546,3 +1556,8 @@ Component-specific `CLAUDE.md` files may be added inside individual directories.
   on the web), else the browser's, else English, which also fills in any
   key a translation lacks. Only UI text is translated: user content, API
   values and backend validation messages are shown as they are.
+- Viewing preferences — the hidden tags (by id, chosen in Settings) and the
+  Normal/Blind mode (toggled in the top bar) — are kept per device by the
+  platform (`PreferenceStore`, `localStorage` on the web), like the language;
+  see `frontend/packages/ui/src/preferences.rs`. Blind mode sends the hidden
+  tags as `exclude_tag_id` to listing, search, counts and "Surprise me".

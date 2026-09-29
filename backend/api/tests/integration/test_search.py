@@ -360,6 +360,18 @@ async def test_search_applies_the_collection_filter(
 
     assert await _search(client, token, "trip", collection_ids=[collection["id"]]) == [inside]
 
+
+async def test_search_leaves_out_items_with_excluded_tags(
+    client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None
+):
+    _, token = await register_and_login(client)
+    kept = await _file(client, storage, token, "trip.pdf")
+    await _file(client, storage, token, "trip-notes.pdf", tags=["nsfw"])
+    tags = (await client.get("/tags", headers={"Authorization": f"Bearer {token}"})).json()
+    [nsfw] = tags["tags"]
+
+    assert await _search(client, token, "trip", excluded_tag_ids=[nsfw["id"]]) == [kept]
+
 async def test_filename_search_never_matches_other_users_items(
     client: AsyncClient, storage: FakeObjectStorage, no_vector_index: None
 ):

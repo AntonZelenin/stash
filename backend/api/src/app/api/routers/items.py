@@ -26,6 +26,7 @@ from app.api.schemas.items import (
     ListedItem,
     ListedTag,
     ListItemsResponse,
+    MAX_EXCLUDED_TAGS,
     PresignedUpload,
     SavedYear,
     SavedYearsResponse,
@@ -277,11 +278,14 @@ def _domain_text_type(item_type: TextItemType | None) -> DomainItemType | None:
     responses={401: {"description": "Unauthorized"}},
 )
 async def count_items(
+    exclude_tag_id: list[UUID] = Query(default=[], max_length=MAX_EXCLUDED_TAGS),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ItemCountsResponse:
-    counts = await ItemService(session, storage).count_items(user_id=current_user.id)
+    counts = await ItemService(session, storage).count_items(
+        user_id=current_user.id, filters=_excluding(exclude_tag_id)
+    )
     return ItemCountsResponse(
         types=ItemTypeCounts(**{item_type.value: count for item_type, count in counts.by_type.items()}),
         kinds=ItemKindCounts(**{kind.value: count for kind, count in counts.by_kind.items()}),
@@ -319,12 +323,15 @@ async def saved_years(
     responses={401: {"description": "Unauthorized"}, 404: {"description": "The user has no items"}},
 )
 async def random_item(
+    exclude_tag_id: list[UUID] = Query(default=[], max_length=MAX_EXCLUDED_TAGS),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ListedItem:
     try:
-        listed = await ItemService(session, storage).random_item(user_id=current_user.id)
+        listed = await ItemService(session, storage).random_item(
+            user_id=current_user.id, filters=_excluding(exclude_tag_id)
+        )
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No items yet") from None
     return to_listed_item(listed)
@@ -381,6 +388,7 @@ async def list_items(
     type: ItemType | None = None,
     kind: list[ItemKind] = Query(default=[], max_length=6),
     tag_id: list[UUID] = Query(default=[], max_length=20),
+    exclude_tag_id: list[UUID] = Query(default=[], max_length=MAX_EXCLUDED_TAGS),
     collection_id: list[UUID] = Query(default=[], max_length=50),
     favorite: bool = False,
     created_from: AwareDatetime | None = None,
@@ -390,7 +398,7 @@ async def list_items(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
 ) -> ListItemsResponse:
-    filters = item_filters(type, kind, tag_id, collection_id, favorite, created_from, created_before)
+    filters = item_filters(type, kind, tag_id, exclude_tag_id, collection_id, favorite, created_from, created_before)
     try:
         listed_items, next_cursor = await ItemService(session, storage).list_items(
             user_id=current_user.id,
@@ -516,6 +524,7 @@ def item_filters(
     item_type: ItemType | None,
     kinds: list[ItemKind],
     tag_ids: list[UUID],
+    excluded_tag_ids: list[UUID],
     collection_ids: list[UUID],
     favorites_only: bool,
     created_from: datetime | None,
@@ -526,11 +535,17 @@ def item_filters(
         item_type=DomainItemType(item_type.value) if item_type is not None else None,
         kinds=tuple(dict.fromkeys(ContentKind(kind.value) for kind in kinds)),
         tag_ids=tuple(dict.fromkeys(tag_ids)),
+        excluded_tag_ids=tuple(dict.fromkeys(excluded_tag_ids)),
         collection_ids=tuple(dict.fromkeys(collection_ids)),
         favorites_only=favorites_only,
         created_from=created_from,
         created_before=created_before,
     )
+
+
+def _excluding(excluded_tag_ids: list[UUID]) -> ItemFilters:
+    """Just the hidden-tag exclusion, for counts and "Surprise me"."""
+    return ItemFilters(excluded_tag_ids=tuple(dict.fromkeys(excluded_tag_ids)))
 
 
 def to_listed_item(listed: ListedItemResult) -> ListedItem:

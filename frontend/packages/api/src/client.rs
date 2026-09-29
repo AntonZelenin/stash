@@ -409,7 +409,7 @@ impl ApiClient {
         access_token: &str,
         item_id: &str,
     ) -> Result<Option<ListedItem>, ApiError> {
-        self.get_optional_item(&format!("/items/{item_id}"), access_token)
+        self.get_optional_item(&format!("/items/{item_id}"), access_token, &[])
             .await
     }
 
@@ -442,18 +442,30 @@ impl ApiClient {
         }
     }
 
-    /// One of the user's items, picked at random; None if they have none.
-    pub async fn random_item(&self, access_token: &str) -> Result<Option<ListedItem>, ApiError> {
-        self.get_optional_item("/items/random", access_token).await
+    /// One of the user's items carrying none of `excluded_tag_ids`, picked
+    /// at random; None if there are none.
+    pub async fn random_item(
+        &self,
+        access_token: &str,
+        excluded_tag_ids: &[String],
+    ) -> Result<Option<ListedItem>, ApiError> {
+        self.get_optional_item(
+            "/items/random",
+            access_token,
+            &excluded_tag_params(excluded_tag_ids),
+        )
+        .await
     }
 
     async fn get_optional_item(
         &self,
         path: &str,
         access_token: &str,
+        params: &[(&str, String)],
     ) -> Result<Option<ListedItem>, ApiError> {
         let response = self
             .authenticated(Method::GET, path, access_token)
+            .query(params)
             .send()
             .await
             .map_err(|_| ApiError::Network)?;
@@ -501,6 +513,7 @@ impl ApiClient {
                 item_type: filters.item_type.clone(),
                 kinds: filters.kinds.clone(),
                 tag_ids: filters.tag_ids.clone(),
+                excluded_tag_ids: filters.excluded_tag_ids.clone(),
                 collection_ids: filters.collection_ids.clone(),
                 favorite: filters.favorites_only,
                 created_from: filters.created_from.clone(),
@@ -645,9 +658,16 @@ impl ApiClient {
         }
     }
 
-    pub async fn count_items(&self, access_token: &str) -> Result<ItemCounts, ApiError> {
+    /// The user's item counts, leaving out items carrying any of
+    /// `excluded_tag_ids`.
+    pub async fn count_items(
+        &self,
+        access_token: &str,
+        excluded_tag_ids: &[String],
+    ) -> Result<ItemCounts, ApiError> {
         let response = self
             .authenticated(Method::GET, "/items/counts", access_token)
+            .query(&excluded_tag_params(excluded_tag_ids))
             .send()
             .await
             .map_err(|_| ApiError::Network)?;
@@ -702,6 +722,7 @@ impl ApiClient {
         for tag_id in &filters.tag_ids {
             params.push(("tag_id", tag_id.clone()));
         }
+        params.extend(excluded_tag_params(&filters.excluded_tag_ids));
         for collection_id in &filters.collection_ids {
             params.push(("collection_id", collection_id.clone()));
         }
@@ -755,6 +776,14 @@ struct ValidationErrorItem {
 #[derive(Deserialize)]
 struct StringDetailBody {
     detail: String,
+}
+
+/// `exclude_tag_id` query parameters, one per id.
+fn excluded_tag_params(excluded_tag_ids: &[String]) -> Vec<(&'static str, String)> {
+    excluded_tag_ids
+        .iter()
+        .map(|tag_id| ("exclude_tag_id", tag_id.clone()))
+        .collect()
 }
 
 fn generic_validation_error() -> FieldError {

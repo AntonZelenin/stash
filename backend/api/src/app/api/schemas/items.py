@@ -13,6 +13,10 @@ MAX_TEXT_LENGTH = 100_000
 # Longest filename accepted; stored names are cut to 255 characters
 # (`app.items.files.clean_filename`), keeping the extension.
 MAX_FILENAME_LENGTH = 1_000
+# Most tags one listing, search, count or "Surprise me" can exclude (a
+# client's hidden tags): keeps the query string of `GET /items` well under
+# common URL limits.
+MAX_EXCLUDED_TAGS = 100
 # A tag name as sent: trimmed and whitespace-collapsed server-side, where
 # the result must be 1-MAX_TAG_NAME_LENGTH characters.
 TagNameInput = Annotated[str, Field(max_length=4 * MAX_TAG_NAME_LENGTH)]

@@ -51,6 +51,7 @@ async def search_items(
                 payload.type,
                 payload.kinds,
                 payload.tag_ids,
+                payload.excluded_tag_ids,
                 payload.collection_ids,
                 payload.favorite,
                 payload.created_from,
