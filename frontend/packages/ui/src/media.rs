@@ -6,6 +6,7 @@ use dioxus_i18n::t;
 
 use crate::AuthSession;
 use crate::icons::{IconMusic, IconPlay, IconVideo};
+use crate::url_refresh::{MediaStatus, RefreshingImage, UrlRefresh};
 use crate::viewer_nav::keep_step_keys;
 
 // `MediaError.code` values (0: the element has no error).
@@ -14,8 +15,9 @@ const MEDIA_ERR_DECODE: u16 = 3;
 const MEDIA_ERR_SRC_NOT_SUPPORTED: u16 = 4;
 
 /// Backstop against refetching forever: a URL has to fail after having
-/// worked for the player to fetch a new one, which with URLs lasting hours
-/// should happen a few times per playback at most.
+/// worked for the player to fetch a new one, and this many in a row
+/// without a new one loading means something else is wrong. A URL loading,
+/// or "Retry", starts the count over, so a player can stay open for days.
 const MAX_URL_REFRESHES: u32 = 10;
 
 /// What a `MediaPlayer` plays.
@@ -54,15 +56,25 @@ impl MediaKind {
 /// format. A play badge sits on top; below, its filename and type/size,
 /// and the caption if one was added. Clicking it (or Enter or Space on it)
 /// calls `on_open`, like an image's preview.
+///
+/// Loading the thumbnail or frame is reported to `urls`, which refreshes
+/// its URL if it has expired. A thumbnail that can't be loaded shows as
+/// failed, with a retry, like an image's (without the play badge over
+/// it). A frame that can't be loaded just leaves the placeholder: that's
+/// also how a format the browser can't decode shows, which is no failure.
 #[component]
 pub(crate) fn VideoBody(
     thumbnail_url: Option<String>,
     video_url: Option<String>,
+    urls: UrlRefresh,
     filename: String,
     details: String,
     caption: Option<String>,
     on_open: EventHandler<()>,
 ) -> Element {
+    let thumbnail_shows =
+        thumbnail_url.is_none() || urls.status(thumbnail_url.as_deref()) == MediaStatus::Load;
+    let frame_url = video_url.filter(|url| urls.status(Some(url)) == MediaStatus::Load);
     rsx! {
         OpenButton {
             class: "item-card-video-main",
@@ -70,10 +82,18 @@ pub(crate) fn VideoBody(
             title: filename.clone(),
             on_open,
             div { class: "item-card-video-poster",
-                if let Some(url) = thumbnail_url {
-                    img { src: "{url}", alt: "", loading: "lazy" }
+                if thumbnail_url.is_some() {
+                    RefreshingImage {
+                        url: thumbnail_url,
+                        urls: urls.clone(),
+                        class: "",
+                        alt: "",
+                        lazy: true,
+                        status_class: "item-card-media-status item-card-media-status-dark",
+                        retry_class: "item-card-media-retry",
+                    }
                 } else {
-                    if let Some(url) = video_url {
+                    if let Some(url) = frame_url {
                         // Just the frame at 0.1s (the very first is often
                         // black): only its metadata and that frame are
                         // fetched, in ranges, and it never plays here.
@@ -84,11 +104,21 @@ pub(crate) fn VideoBody(
                             playsinline: true,
                             tabindex: "-1",
                             aria_hidden: "true",
+                            onloadeddata: {
+                                let (urls, url) = (urls.clone(), url.clone());
+                                move |_| urls.loaded(&url)
+                            },
+                            onerror: {
+                                let (urls, url) = (urls.clone(), url.clone());
+                                move |_| urls.failed(&url)
+                            },
                         }
                     }
                     span { class: "item-card-video-placeholder", IconVideo {} }
                 }
-                span { class: "item-card-video-play", IconPlay {} }
+                if thumbnail_shows {
+                    span { class: "item-card-video-play", IconPlay {} }
+                }
             }
             span { class: "item-card-video-body",
                 span { class: "item-card-file-name", "{filename}" }
@@ -107,11 +137,13 @@ pub(crate) fn VideoBody(
 ///
 /// The duration isn't stored anywhere: the browser reads it from the
 /// file's metadata (`audio_url`, fetched in ranges), and it shows once
-/// known. It's left out where the browser can't read the format.
+/// known. It's left out where the browser can't read the format. Reading it
+/// is reported to `urls`, which refreshes the URL if it has expired.
 #[component]
 pub(crate) fn AudioBody(
     item_id: String,
     audio_url: Option<String>,
+    urls: UrlRefresh,
     filename: String,
     details: String,
     caption: Option<String>,
@@ -125,7 +157,11 @@ pub(crate) fn AudioBody(
     };
     let read_duration = {
         let element_id = element_id.clone();
+        let (urls, url) = (urls.clone(), audio_url.clone());
         move |_| {
+            if let Some(url) = &url {
+                urls.loaded(url);
+            }
             let element_id = element_id.clone();
             async move {
                 duration.set(media_duration(&element_id).await.and_then(format_duration));
@@ -149,7 +185,9 @@ pub(crate) fn AudioBody(
             if let Some(caption) = caption {
                 span { class: "item-card-file-caption", "{caption}" }
             }
-            if let Some(url) = audio_url {
+            // Not once its URL failed: the duration is then left out
+            // (whether it expired or the browser can't read the format).
+            if let Some(url) = audio_url.filter(|url| urls.status(Some(url)) == MediaStatus::Load) {
                 // Never shown (no controls) nor played: only for its
                 // duration.
                 audio {
@@ -159,6 +197,10 @@ pub(crate) fn AudioBody(
                     aria_hidden: "true",
                     onloadedmetadata: read_duration.clone(),
                     ondurationchange: read_duration,
+                    onerror: {
+                        let url = url.clone();
+                        move |_| urls.failed(&url)
+                    },
                 }
             }
         }
@@ -266,9 +308,10 @@ struct Position {
 /// Its URL is fetched fresh when the player opens, and lasts a playback
 /// session. If playback later fails with it (expired), a new one is fetched
 /// and playback continues from where it was, playing again if it was
-/// playing (as far as the browser allows). A format the browser can't play
-/// shows a message instead; the original file stays available from the
-/// viewer's panel. Whether a format plays is only known by trying:
+/// playing (as far as the browser allows). If it can't be loaded, a
+/// message shows with a retry button, which fetches a new URL right away. A
+/// format the browser can't play shows a message instead; the original
+/// file stays available from the viewer's panel. Whether a format plays is only known by trying:
 /// `canPlayType` answers "" for e.g. MKV and MOV that browsers often play.
 #[component]
 pub(crate) fn MediaPlayer(
@@ -320,7 +363,7 @@ pub(crate) fn MediaPlayer(
                         fetch_url.call(Some(position));
                     }
                     ErrorAction::Show(shown) => {
-                        // Kept for "Try again".
+                        // Kept for "Retry".
                         resume_at.set(Some(position));
                         problem.set(Some(shown));
                     }
@@ -336,8 +379,12 @@ pub(crate) fn MediaPlayer(
             }
         }
     };
-    // It has worked with this URL: a later error may be expiry.
-    let on_loaded = move |_| url_is_fresh.set(false);
+    // It has worked with this URL: a later error may be expiry, and the
+    // refreshes so far did their job.
+    let on_loaded = move |_| {
+        url_is_fresh.set(false);
+        refreshes.set(0);
+    };
     let status_class = match kind {
         MediaKind::Video => "lightbox-media-status",
         MediaKind::Audio => "lightbox-media-status lightbox-media-status-audio",
@@ -357,6 +404,7 @@ pub(crate) fn MediaPlayer(
                     r#type: "button",
                     onclick: move |_| {
                         problem.set(None);
+                        refreshes.set(0);
                         // Not the old URL again: loading shows until the
                         // new one arrives.
                         src.set(None);

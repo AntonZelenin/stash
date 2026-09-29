@@ -290,6 +290,57 @@ credentials that signed it expire, so the client treats an error on a URL
 that already played as expiry: it fetches a new one and continues from the
 same position.
 
+Expired listing URLs: a tab can stay open for days, far longer than a
+listing's URLs last, so the clients refresh an item's URLs themselves
+(`ui/src/url_refresh.rs`), with `GET /items/{id}`, which signs new ones
+like a listing does. The TTL stays an hour; nothing depends on it being
+short or long. Nothing refreshes ahead of time: only media failing to load
+starts a refresh.
+
+- Media (a card's thumbnail, a video card's thumbnail or first frame, an
+  audio card's duration probe, the viewer's full-size image) reports
+  loading and failing to its card, which owns the item's URLs. A failure
+  makes the card fetch the item again; the new URL replaces the failed
+  one (and a missing one, e.g. a thumbnail made since) in the card and its
+  viewer, until the next listing brings its own. URLs that work are kept,
+  so they don't load again. The request runs in the card's scope, so
+  closing the viewer doesn't cancel it.
+- A failure starts a cycle: a refresh right away; if that request fails
+  with a network or server error (or 429), a retry 5 s after it finished,
+  and if that fails too, one more 20 s after that one finished. Then the
+  cycle stops, with the failure shown. A 404 (the item was deleted) stops
+  refreshing it. There are no other timers.
+- Permanent failures (the object is gone, a format that can't be shown)
+  can't loop: a URL that failed never starts a cycle again and isn't
+  loaded again; a URL a refresh fetched that fails within 5 minutes can't
+  have expired (URLs last an hour), so it doesn't start one either; and
+  there's one cycle at a time per item. A listed URL failing, or a fetched
+  one failing later (it expired), starts a new cycle, so an hourly expiry
+  is refreshed right away however long the tab has been open.
+- At most 4 automatic requests are in flight at once across the UI; the
+  rest queue, so scrolling a grid of expired thumbnails doesn't send a
+  burst.
+- Media that can't be loaded never hides its item. An image shows "Couldn't
+  load" with a Retry button in its place (on its card and in the viewer),
+  an empty box while new URLs are on their way; a video card's thumbnail
+  likewise. A video card's first frame or an audio card's duration that
+  can't be read is just left out, as for a format the browser can't
+  decode. Retry fetches new URLs right away, bypassing the retry delays
+  and the queue; success replaces all the item's URLs and ends any cycle
+  waiting to retry.
+- The players fetch their own URLs (see "Playback"), and show a failure
+  with Retry when playback can't recover. Their backstop of 10 refreshes
+  in a row starts over whenever a URL loads, or on Retry.
+- Opening a file (clicking a non-media file's card, or the file in a
+  video, audio or file item's viewer) always fetches the item for a fresh
+  URL rather than following the listed one, apart from all of the above.
+  On the web the new tab is opened within the click and pointed at the URL
+  once it arrives, or the browser would block it as a pop-up; desktop and
+  mobile hand the URL to the system browser. If the URL can't be fetched
+  (or the tab is blocked), the tab closes and a toast says so.
+- The viewer's neighbour preloads use the listed URLs; one that has
+  expired just fails, and the image refreshes once it's shown.
+
 Behind `app.storage.base.ObjectStorage` (the S3 implementation,
 `S3Storage`, serves MinIO and AWS S3 alike); item logic never calls
 boto3 or knows which backend it's on.
@@ -958,7 +1009,9 @@ and traced with an error category (`stash_worker_core.errors.ErrorCategory`:
 
 The listing's pre-signed `download_url` serves the file under its original
 filename: inline for PDF, plain text and JSON, as a download for everything
-else.
+else. Clients open a file from a URL fetched when it's clicked, not the
+listed one, which may have expired (see "Expired listing URLs" under
+"Object Storage").
 
 ### Save Image
 

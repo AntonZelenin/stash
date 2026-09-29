@@ -545,6 +545,54 @@
     scrollbar-width: thin;
 }
 
+/* ---- a card's image that can't be loaded (see RefreshingImage) ----
+   In the image's place: an empty tinted box while new URLs are on their
+   way, then a message and a retry button. */
+.item-card-media-status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    box-sizing: border-box;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    padding: 16px;
+    border-radius: 13px 13px 0 0;
+    background: #f1f2f5;
+    color: var(--text-muted);
+    font-size: 14px;
+    text-align: center;
+}
+
+.item-card-media-status p {
+    margin: 0;
+}
+
+/* Filling a video card's dark poster. */
+.item-card-media-status-dark {
+    position: absolute;
+    inset: 0;
+    aspect-ratio: auto;
+    background: transparent;
+    color: #d1d5db;
+}
+
+.item-card-media-retry {
+    padding: 6px 14px;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.item-card-media-retry:hover {
+    background: rgba(127, 127, 127, 0.12);
+}
+
 /* ---- video: poster (thumbnail or placeholder) + name, opens the player ---- */
 
 .item-card-video-main {

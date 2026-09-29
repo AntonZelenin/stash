@@ -16,6 +16,7 @@ use crate::icons::{
 };
 use crate::media::{AudioBody, AudioStage, MediaKind, MediaPlayer, VideoBody};
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
+use crate::url_refresh::{RefreshingImage, UrlRefresh, use_url_refresh};
 use crate::viewer_nav::{Step, ViewerNav, keep_step_keys, step_for_key, stepped};
 
 const ITEMS_CSS: Asset = asset!("/assets/styling/items.css");
@@ -365,13 +366,12 @@ impl OpenItem {
 }
 
 /// Whether `ItemCard` shows anything for `item`: mirrors its content
-/// match (e.g. an image whose URL couldn't be produced, and without a
-/// caption, has no card).
+/// match. Images and files always have one, even without a URL (their media
+/// then shows as failed, with a retry): media that can't be loaded never
+/// hides an item.
 fn has_card(item: &ListedItem) -> bool {
-    let has_image = item.thumbnail_url.is_some() || item.download_url.is_some();
     match (item.r#type.as_str(), &item.file) {
-        ("image", _) if has_image => true,
-        ("file", Some(file)) => file.is_video() || file.is_audio() || item.download_url.is_some(),
+        ("image", _) | ("file", Some(_)) => true,
         ("file", None) => false,
         _ => item.text.is_some(),
     }
@@ -450,6 +450,9 @@ fn ItemCard(
         Some((before, after)) if before == props_item => after,
         _ => props_item.clone(),
     };
+    // Its URLs, refreshed once they've expired (see `url_refresh`).
+    let urls = use_url_refresh(&item);
+    let item = urls.apply(item);
     let (is_favorite, toggle_favorite) = use_favorite(item.id.clone(), item.is_favorite, {
         let item_id = item.id.clone();
         move |favorite| on_favorite_changed.call((item_id.clone(), favorite))
@@ -466,11 +469,12 @@ fn ItemCard(
     let image_url = item.thumbnail_url.as_ref().or(item.download_url.as_ref());
     let date = UploadDate::from_api(&item.created_at);
     let (kind, body) = match (item.r#type.as_str(), image_url, &item.text) {
-        ("image", Some(url), caption) => (
+        ("image", url, caption) => (
             "item-card-image",
             rsx! {
                 ImageBody {
-                    url: url.clone(),
+                    url: url.cloned(),
+                    urls: urls.clone(),
                     caption: caption.clone(),
                     on_open: move |_| view.call(Some(ViewMode::Viewing)),
                 }
@@ -492,6 +496,7 @@ fn ItemCard(
                     VideoBody {
                         thumbnail_url: item.thumbnail_url.clone(),
                         video_url: item.download_url.clone(),
+                        urls: urls.clone(),
                         filename: file.filename.clone(),
                         details: file_details(&file.filename, file.size_bytes),
                         caption: caption.clone(),
@@ -506,6 +511,7 @@ fn ItemCard(
                     AudioBody {
                         item_id: item.id.clone(),
                         audio_url: item.download_url.clone(),
+                        urls: urls.clone(),
                         filename: file.filename.clone(),
                         details: file_details(&file.filename, file.size_bytes),
                         caption: caption.clone(),
@@ -513,7 +519,7 @@ fn ItemCard(
                     }
                 },
             ),
-            (Some(file), Some(url)) => (
+            (Some(file), url) => (
                 if file.is_media() {
                     "item-card-file item-card-media"
                 } else {
@@ -522,6 +528,7 @@ fn ItemCard(
                 rsx! {
                     FileBody {
                         url: url.clone(),
+                        urls: urls.clone(),
                         filename: file.filename.clone(),
                         size_bytes: file.size_bytes,
                         caption: caption.clone(),
@@ -549,7 +556,7 @@ fn ItemCard(
                 }
             },
         ),
-        // e.g. an image whose download URL couldn't be produced.
+        // Nothing to show (see `has_card`).
         _ => return rsx! {},
     };
 
@@ -624,6 +631,7 @@ fn ItemCard(
             if let Some(mode) = opened {
                 OpenedItem {
                     item: item.clone(),
+                    urls,
                     mode,
                     nav,
                     is_favorite,
@@ -663,6 +671,8 @@ pub fn ItemViewer(
     // The item as last saved here; the prop until something changes.
     let mut current = use_signal(|| item.clone());
     let item = current();
+    let urls = use_url_refresh(&item);
+    let item = urls.apply(item);
     let (is_favorite, toggle_favorite) =
         use_favorite(item.id.clone(), item.is_favorite, move |_| {
             on_changed.call(())
@@ -686,6 +696,7 @@ pub fn ItemViewer(
     rsx! {
         OpenedItem {
             item: item.clone(),
+            urls,
             mode: mode(),
             is_favorite,
             on_toggle_favorite: toggle_favorite,
@@ -761,9 +772,13 @@ fn use_favorite(
 /// once the item is gone), `on_saved` receives the item
 /// as saved by an edit, and `on_tag_click` a clicked tag (the view closes
 /// first, so the filtered results behind it show).
+///
+/// `urls` refreshes the item's URLs (`item` already has the current ones)
+/// when its image fails to load, and opens its file from a fresh one.
 #[component]
 fn OpenedItem(
     item: ListedItem,
+    urls: UrlRefresh,
     mode: ViewMode,
     /// Stepping to the neighbouring items, when opened from a result set.
     #[props(default)]
@@ -777,7 +792,10 @@ fn OpenedItem(
     on_saved: EventHandler<ListedItem>,
 ) -> Element {
     let media = match (item.r#type.as_str(), &item.file) {
-        ("image", _) => viewer_image_url(&item).map(ViewMedia::Image),
+        ("image", _) => Some(ViewMedia::Image {
+            url: viewer_image_url(&item),
+            urls: urls.clone(),
+        }),
         ("file", Some(file)) if file.is_video() => Some(ViewMedia::Video {
             item_id: item.id.clone(),
             poster: item.thumbnail_url.clone(),
@@ -812,7 +830,7 @@ fn OpenedItem(
             }
             match mode {
                 ViewMode::Viewing => rsx! {
-                    ItemDetails { item: item.clone() }
+                    ItemDetails { item: item.clone(), urls }
                     if !item.collections.is_empty() {
                         div { class: "item-collections",
                             for collection in item.collections.clone() {
@@ -852,7 +870,7 @@ fn OpenedItem(
 /// image itself is beside it), a note's whole text, a link, or a file with
 /// its caption.
 #[component]
-fn ItemDetails(item: ListedItem) -> Element {
+fn ItemDetails(item: ListedItem, urls: UrlRefresh) -> Element {
     match (
         item.r#type.as_str(),
         &item.file,
@@ -862,9 +880,10 @@ fn ItemDetails(item: ListedItem) -> Element {
         ("link", _, _, Some(text)) => rsx! {
             LinkBody { text }
         },
-        ("file", Some(file), Some(url), caption) => rsx! {
+        ("file", Some(file), url, caption) => rsx! {
             FileBody {
                 url: url.clone(),
+                urls,
                 filename: file.filename.clone(),
                 size_bytes: file.size_bytes,
                 caption,
@@ -1621,14 +1640,28 @@ pub(crate) fn TagPicker(
 /// tall screenshot can't take over a column and a panorama doesn't shrink
 /// to a sliver. The user's caption, if any, sits below the image.
 ///
-/// Clicking the image or caption calls `on_open`.
+/// Clicking the image or caption calls `on_open`. `url` is None if it has
+/// none; see `RefreshingImage` for how it shows while it can't be loaded.
 #[component]
-fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) -> Element {
+fn ImageBody(
+    url: Option<String>,
+    urls: UrlRefresh,
+    caption: Option<String>,
+    on_open: EventHandler<()>,
+) -> Element {
     rsx! {
         div {
             class: "item-card-image-main",
             onclick: move |_| on_open.call(()),
-            img { src: "{url}", alt: t!("item-image-alt"), loading: "lazy" }
+            RefreshingImage {
+                url,
+                urls,
+                class: "",
+                alt: t!("item-image-alt"),
+                lazy: true,
+                status_class: "item-card-media-status",
+                retry_class: "item-card-media-retry",
+            }
             if let Some(caption) = caption {
                 p { class: "item-card-image-caption", "{caption}" }
             }
@@ -1639,8 +1672,11 @@ fn ImageBody(url: String, caption: Option<String>, on_open: EventHandler<()>) ->
 /// What an `ItemView` shows beside its panel.
 #[derive(Clone, PartialEq)]
 enum ViewMedia {
-    /// The image at this URL.
-    Image(String),
+    /// The image at `url` (None: it has none), refreshed through `urls`.
+    Image {
+        url: Option<String>,
+        urls: UrlRefresh,
+    },
     /// The video item's player (it fetches its own URL); `poster` is its
     /// thumbnail, if any.
     Video {
@@ -1682,7 +1718,7 @@ fn ItemView(
 ) -> Element {
     let has_media = media.is_some();
     let label = match media {
-        Some(ViewMedia::Image(_)) => t!("item-image-viewer"),
+        Some(ViewMedia::Image { .. }) => t!("item-image-viewer"),
         Some(ViewMedia::Video { .. }) => t!("item-video-viewer"),
         Some(ViewMedia::Audio { .. }) => t!("item-audio-viewer"),
         None => t!("item-viewer"),
@@ -1767,12 +1803,15 @@ fn ItemView(
                 // menu and tag picker inside, which only close those.
                 onclick: move |evt| evt.stop_propagation(),
                 match media {
-                    Some(ViewMedia::Image(url)) => rsx! {
+                    Some(ViewMedia::Image { url, urls }) => rsx! {
                         div { class: "lightbox-media",
-                            img {
+                            RefreshingImage {
+                                url,
+                                urls,
                                 class: "lightbox-image",
-                                src: "{url}",
                                 alt: t!("item-image-alt"),
+                                status_class: "lightbox-media-status",
+                                retry_class: "lightbox-media-retry",
                             }
                         }
                     },
@@ -1855,17 +1894,32 @@ fn ItemView(
 /// the caption if one was added. Links to the file's download URL, which the
 /// backend signs so it opens in a new tab where the browser can show it
 /// (PDF, text) and downloads under its original name otherwise.
+///
+/// `url` is the one listed (None if there's none), which may have expired
+/// by the time it's clicked: a click opens the file from a URL fetched then
+/// instead (see `UrlRefresh::open_download`). The link keeps `url` for what
+/// the browser does with it by itself (middle-click, "Copy link").
 #[component]
-fn FileBody(url: String, filename: String, size_bytes: u64, caption: Option<String>) -> Element {
+fn FileBody(
+    url: Option<String>,
+    urls: UrlRefresh,
+    filename: String,
+    size_bytes: u64,
+    caption: Option<String>,
+) -> Element {
     let details = file_details(&filename, size_bytes);
 
     rsx! {
         a {
             class: "item-card-file-main",
-            href: "{url}",
+            href: url.unwrap_or_else(|| "#".to_string()),
             target: "_blank",
             rel: "noopener noreferrer",
             title: "{filename}",
+            onclick: move |evt: MouseEvent| {
+                evt.prevent_default();
+                urls.open_download();
+            },
             span { class: "item-card-file-row",
                 span { class: "item-card-file-icon", IconFile {} }
                 span { class: "item-card-file-body",
@@ -2140,7 +2194,8 @@ mod tests {
     }
 
     #[test]
-    fn stepping_skips_items_without_a_card() {
+    fn items_whose_media_cant_be_loaded_keep_their_card() {
+        // Shown as failed, with a retry; a file fetches its URL when opened.
         let unreachable_image = item("broken", "image");
         let file_without_url = file("gone", "document", false);
         let items = [
@@ -2149,6 +2204,13 @@ mod tests {
             file_without_url,
             note("b", "text"),
         ];
+        assert_eq!(result_set(&items), ["a", "broken", "gone", "b"]);
+    }
+
+    #[test]
+    fn stepping_skips_items_without_a_card() {
+        let file_without_details = item("odd", "file");
+        let items = [note("a", "text"), file_without_details, note("b", "text")];
         assert_eq!(result_set(&items), ["a", "b"]);
     }
 

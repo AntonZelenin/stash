@@ -28,6 +28,8 @@ mod items;
 mod media;
 mod selection;
 mod text_kind;
+mod toast;
+mod url_refresh;
 mod viewer_nav;
 
 mod settings;

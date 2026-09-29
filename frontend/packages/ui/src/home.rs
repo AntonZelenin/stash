@@ -27,6 +27,7 @@ use crate::selection::{
 };
 use crate::settings::AccountSettings;
 use crate::text_kind::{TextKind, text_kind};
+use crate::toast::{ToastHost, use_toasts};
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// The capture box: files pasted while it has focus are staged.
@@ -141,6 +142,8 @@ const TAGS_CSS: Asset = asset!("/assets/styling/tags.css");
 pub fn Home() -> Element {
     let session = use_context::<AuthSession>();
     let nav = use_navigator();
+    // Messages from anything on the page (e.g. a file that couldn't open).
+    use_toasts();
 
     {
         let session = session.clone();
@@ -826,6 +829,8 @@ pub fn Home() -> Element {
         document::Link { rel: "stylesheet", href: HOME_CSS }
         document::Link { rel: "stylesheet", href: TAGS_CSS }
         document::Link { rel: "stylesheet", href: COLLECTIONS_CSS }
+
+        ToastHost {}
 
         div {
             class: if drag_depth() > 0 { "home home-dragging" } else { "home" },
