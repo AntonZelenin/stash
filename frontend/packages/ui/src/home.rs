@@ -598,69 +598,60 @@ pub fn Home() -> Element {
     });
 
     // Uploads files (already checked for duplicates) with a caption and
-    // labels, then refetches. `skipped`: how many duplicates the user chose
-    // to skip, reported once done unless something failed. Submitting until
-    // it's done.
+    // labels, then refetches. Submitting until it's done. Skipped duplicates
+    // aren't reported: skipping is what the user chose, not a failure.
     let mut duplicate_review = use_signal(|| None::<DuplicateReview>);
-    let upload_files =
-        use_callback({
+    let upload_files = use_callback({
+        let session = session.clone();
+        move |(files, caption, labels): (Vec<PendingFile>, Option<String>, ItemLabels)| {
             let session = session.clone();
-            move |(files, caption, labels, skipped): (
-                Vec<PendingFile>,
-                Option<String>,
-                ItemLabels,
-                usize,
-            )| {
-                let session = session.clone();
-                spawn(async move {
-                    is_submitting.set(true);
-                    // One failure shouldn't stop the rest from uploading;
-                    // report the last error, if any, once all are done.
-                    let mut last_error = None;
-                    for file in files {
-                        let result = if file.is_image() {
-                            session
-                                .create_image_item(
-                                    &file.file_name,
-                                    file.content_type,
-                                    file.data,
-                                    caption.clone(),
-                                    labels.clone(),
-                                )
-                                .await
-                        } else {
-                            session
-                                .create_file_item(
-                                    &file.file_name,
-                                    file.content_type,
-                                    file.data,
-                                    caption.clone(),
-                                    labels.clone(),
-                                )
-                                .await
-                        };
-                        if let Err(err) = result {
-                            last_error = Some(api_error_message(&err));
-                        }
+            spawn(async move {
+                is_submitting.set(true);
+                // One failure shouldn't stop the rest from uploading;
+                // report the last error, if any, once all are done.
+                let mut last_error = None;
+                for file in files {
+                    let result = if file.is_image() {
+                        session
+                            .create_image_item(
+                                &file.file_name,
+                                file.content_type,
+                                file.data,
+                                caption.clone(),
+                                labels.clone(),
+                            )
+                            .await
+                    } else {
+                        session
+                            .create_file_item(
+                                &file.file_name,
+                                file.content_type,
+                                file.data,
+                                caption.clone(),
+                                labels.clone(),
+                            )
+                            .await
+                    };
+                    if let Err(err) = result {
+                        last_error = Some(api_error_message(&err));
                     }
-                    // Keep the text, tags and collections if anything
-                    // failed, so they aren't lost.
-                    if last_error.is_none() {
-                        note.set(String::new());
-                        pending_tags.set(Vec::new());
-                        pending_collections.set(Vec::new());
-                    }
-                    status.set(last_error.or_else(|| {
-                        (skipped > 0).then(|| t!("duplicates-skipped", count: skipped))
-                    }));
-                    saved_items.restart();
-                    search_results.restart();
-                    item_counts.restart();
+                }
+                // Keep the text, tags and collections if anything
+                // failed, so they aren't lost.
+                if last_error.is_none() {
+                    note.set(String::new());
+                    pending_tags.set(Vec::new());
+                    pending_collections.set(Vec::new());
+                }
+                status.set(last_error);
+                saved_items.restart();
+                search_results.restart();
+                item_counts.restart();
 
-                    is_submitting.set(false);
-                });
-            }
-        });
+                is_submitting.set(false);
+            });
+        }
+    });
     // The duplicate dialog's answer: for each duplicate, whether to upload
     // it anyway. The skipped ones are dropped, everything else uploads.
     let resolve_duplicates = move |upload: Vec<bool>| {
@@ -681,7 +672,7 @@ pub fn Home() -> Element {
             .filter(|(position, _)| !skipped.contains(position))
             .map(|(_, file)| file)
             .collect();
-        upload_files.call((files, review.caption, review.labels, skipped.len()));
+        upload_files.call((files, review.caption, review.labels));
     };
     // Cancelled: nothing uploads, and every file is staged again.
     let cancel_duplicates = move |()| {
@@ -731,7 +722,7 @@ pub fn Home() -> Element {
                         Ok(groups) => {
                             let duplicates = duplicate_positions(&candidates, &groups);
                             if duplicates.is_empty() {
-                                upload_files.call((files, caption, labels, 0));
+                                upload_files.call((files, caption, labels));
                             } else {
                                 // Stays submitting (the capture box locked)
                                 // until the dialog is answered.
