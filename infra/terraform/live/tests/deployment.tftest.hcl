@@ -305,10 +305,6 @@ run "functions_get_only_their_own_settings" {
 run "runtime_functions_use_their_own_database_logins" {
   command = plan
 
-  variables {
-    lambda_master_database_secret_access = false
-  }
-
   assert {
     condition = (
       local.lambdas["api"].db_role == "api"
@@ -330,12 +326,16 @@ run "runtime_functions_use_their_own_database_logins" {
   }
 }
 
-run "runtime_functions_keep_the_master_secret_during_the_rollout" {
+run "runtime_functions_may_read_the_master_secret_only_when_turned_on" {
   command = plan
+
+  variables {
+    lambda_master_database_secret_access = true
+  }
 
   assert {
     condition     = alltrue([for name, secrets in local.lambda_database_secrets : length(secrets) == (name == "migrations" ? 3 : 2)])
-    error_message = "Until lambda_master_database_secret_access is turned off, the release still running may read the master secret."
+    error_message = "With lambda_master_database_secret_access on, the release still running may read the master secret."
   }
 }
 

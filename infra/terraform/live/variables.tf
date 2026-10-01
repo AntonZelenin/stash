@@ -359,17 +359,17 @@ variable "api_cors_allowed_origins" {
 
 variable "lambda_master_database_secret_access" {
   description = <<-EOT
-    Rollout transition for the runtime database roles (database.tf): also
-    lets the API and workers read the RDS master user's secret. A
+    Rollout escape hatch for the runtime database roles (database.tf):
+    also lets the API and workers read the RDS master user's secret. Off
+    (the default), only the migration function can read it; the API and
+    workers connect as stash_api / stash_worker. Turn it on only for a
+    deployment whose release still running connects as the master user (a
     deployment's first, targeted apply updates every function's IAM policy
-    but none of their code or settings, so the release still running
-    connects as the master user until the full apply switches it to its
-    own login: without this, its cold starts would fail in between. Set to
-    false once a deployment with the runtime roles has completed; from then
-    on only the migration function can read the master secret.
+    but none of their code or settings, so its cold starts would fail in
+    between), then off again.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "sqs_operator_principal_arns" {

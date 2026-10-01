@@ -21,7 +21,7 @@
 # admits exactly these senders and its consumer. "db (...)": which
 # database login's secret (database.tf); the master user's is the
 # migrations' alone, unless var.lambda_master_database_secret_access (a
-# rollout transition) still lets the others read it.
+# rollout escape hatch, off by default) lets the others read it.
 #
 # "sign staging uploads": the pre-signed URLs the API hands to browsers act
 # with its PutObject grant on uploads/*. "copy to

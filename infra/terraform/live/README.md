@@ -197,10 +197,9 @@ One function per service, all in the app subnet (VPC, dual-stack):
   `<prefix>/rds/api` (role `stash_api`) and every worker with
   `<prefix>/rds/worker` (role `stash_worker`), whose roles and privileges
   the migration function provisions (`backend/api/src/app/db_roles.py`).
-  Each role reads only its own secret, except that while
-  `lambda_master_database_secret_access` is `true` (the default, for the
-  rollout) the API and workers may also read the master's: set it to
-  `false` once a deployment with the roles has completed
+  Each role reads only its own secret. `lambda_master_database_secret_access`
+  (default `false`) is a rollout escape hatch that also lets the API and
+  workers read the master's
   ([docs/deployment.md](../../../docs/deployment.md#rollout-of-the-runtime-database-roles)).
 - Secrets: each function gets `DATABASE_SECRET_ARN` (its own login's) and
   (API and OpenAI workers) `OPENAI_API_KEY_SECRET_ARN`. The database secret and the

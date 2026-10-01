@@ -241,20 +241,21 @@ pending does nothing. So is provisioning.
 
 #### Rollout of the runtime database roles
 
-The deployment that introduces them needs nothing by hand: step 4 creates
-the two login secrets, step 5 creates the roles, step 6 switches the API
-and the workers to them. But step 4 also updates every function's IAM
-policy while the previous release still runs, connecting as the master
-user, so `lambda_master_database_secret_access` (default `true`) keeps
-letting them read the master secret meanwhile. Once a deployment with the
-roles has completed:
+The API and workers connect as `stash_api` / `stash_worker` and cannot
+read the master secret: only the migration function can.
+`lambda_master_database_secret_access` (default `false`) is the escape
+hatch for an environment whose running release still connects as the
+master user (one first deploying the roles): step 4 updates every
+function's IAM policy while that release still runs, so without it its
+cold starts would fail until step 6. There:
 
-1. Check the API and workers connect as their own roles (no
-   `permission denied` or `password authentication failed` in their logs;
-   an image and a document upload reach `completed`).
-2. Set `lambda_master_database_secret_access = false` (in `TF_VARS`) and
-   deploy again. From then on only the migration function can read the
-   master secret.
+1. Set `lambda_master_database_secret_access = true` (in `TF_VARS`) and
+   deploy: step 4 creates the two login secrets, step 5 the roles, step 6
+   switches the API and the workers to them.
+2. Check they connect as their own roles (no `permission denied` or
+   `password authentication failed` in their logs; an image and a
+   document upload reach `completed`).
+3. Remove it from `TF_VARS` and deploy again.
 
 If a runtime role turns out to lack a privilege, fix `WORKER_PRIVILEGES`
 (or the API's grants) in `app.db_roles` and deploy: step 5 re-grants
