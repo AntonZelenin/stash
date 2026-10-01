@@ -9,7 +9,7 @@ use crate::auth::{MIN_PASSWORD_CHARS, validate_new_password};
 use crate::confirm::ConfirmDialog;
 use crate::filters::{FILTERS_CSS, FilterSection, FilterSectionOptions};
 use crate::i18n::{Language, Localization, api_error_message};
-use crate::icons::{IconClose, IconEyeOff, IconGlobe, IconLock, IconTrash};
+use crate::icons::{IconClose, IconEyeOff, IconGlobe, IconLock, IconShield, IconTrash};
 use crate::preferences::{MAX_HIDDEN_TAGS, Preferences};
 
 const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
@@ -20,15 +20,18 @@ enum Section {
     Password,
     Language,
     HiddenTags,
+    Privacy,
     DeleteAccount,
 }
 
 impl Section {
-    // Deleting the account last, apart from the everyday settings.
-    const ALL: [Section; 4] = [
+    // Deleting the account last, apart from the everyday settings, right
+    // after the privacy notes that say what deleting it removes.
+    const ALL: [Section; 5] = [
         Section::Password,
         Section::Language,
         Section::HiddenTags,
+        Section::Privacy,
         Section::DeleteAccount,
     ];
 
@@ -37,6 +40,7 @@ impl Section {
             Section::Password => t!("settings-section-password"),
             Section::Language => t!("settings-section-language"),
             Section::HiddenTags => t!("settings-section-hidden-tags"),
+            Section::Privacy => t!("settings-section-privacy"),
             Section::DeleteAccount => t!("settings-section-delete-account"),
         }
     }
@@ -94,6 +98,7 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                                 Section::Password => rsx! { IconLock {} },
                                 Section::Language => rsx! { IconGlobe {} },
                                 Section::HiddenTags => rsx! { IconEyeOff {} },
+                                Section::Privacy => rsx! { IconShield {} },
                                 Section::DeleteAccount => rsx! { IconTrash {} },
                             }
                             "{item.label()}"
@@ -111,6 +116,9 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                         },
                         Section::HiddenTags => rsx! {
                             HiddenTagsSettings {}
+                        },
+                        Section::Privacy => rsx! {
+                            PrivacySettings {}
                         },
                         Section::DeleteAccount => rsx! {
                             DeleteAccountSettings {}
@@ -341,6 +349,83 @@ fn HiddenTagsSettings() -> Element {
             }
             if at_limit {
                 p { class: "settings-hint", {t!("settings-hidden-tags-limit", max: MAX_HIDDEN_TAGS)} }
+            }
+        }
+    }
+}
+
+/// How the user's data is handled, as a few short points. It must say what
+/// the system does, nothing stronger: keep it in step with "Data retention
+/// and privacy" in docs/architecture.md.
+#[component]
+fn PrivacySettings() -> Element {
+    // Each point: its heading, its paragraphs, and a bulleted list after them.
+    let points: [(String, Vec<String>, Vec<String>); 6] = [
+        (
+            t!("settings-privacy-private-title"),
+            vec![t!("settings-privacy-private-text")],
+            vec![],
+        ),
+        (
+            t!("settings-privacy-openai-title"),
+            vec![t!("settings-privacy-openai-text")],
+            vec![
+                t!("settings-privacy-openai-images"),
+                t!("settings-privacy-openai-documents"),
+                t!("settings-privacy-openai-notes"),
+                t!("settings-privacy-openai-queries"),
+            ],
+        ),
+        (
+            t!("settings-privacy-account-title"),
+            vec![
+                t!("settings-privacy-account-text"),
+                t!("settings-privacy-account-text-2"),
+            ],
+            vec![],
+        ),
+        (
+            t!("settings-privacy-retention-title"),
+            vec![t!("settings-privacy-retention-text")],
+            vec![],
+        ),
+        (
+            t!("settings-privacy-delete-title"),
+            vec![
+                t!("settings-privacy-delete-text"),
+                t!("settings-privacy-delete-text-2"),
+            ],
+            vec![],
+        ),
+        (
+            t!("settings-privacy-backups-title"),
+            vec![
+                t!("settings-privacy-backups-text"),
+                t!("settings-privacy-backups-text-2"),
+                t!("settings-privacy-backups-text-3"),
+            ],
+            vec![],
+        ),
+    ];
+
+    rsx! {
+        h3 { class: "settings-title", {t!("settings-section-privacy")} }
+
+        ul { class: "settings-privacy",
+            for (title, paragraphs, items) in points {
+                li { class: "settings-privacy-point",
+                    h4 { class: "settings-privacy-title", "{title}" }
+                    for paragraph in paragraphs {
+                        p { class: "settings-privacy-text", "{paragraph}" }
+                    }
+                    if !items.is_empty() {
+                        ul { class: "settings-privacy-list",
+                            for item in items {
+                                li { "{item}" }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

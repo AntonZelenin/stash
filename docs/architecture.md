@@ -1612,7 +1612,9 @@ embedding is queued.
 
 What happens to a user's data, where copies of it live, and for how long.
 This describes what the implementation does, nothing stronger; when either
-changes, update the other.
+changes, update the other. The settings window's Privacy section
+(`PrivacySettings` in `frontend/packages/ui/src/settings.rs`) summarizes
+it for users, and must change with it.
 
 ### Account deletion
 

@@ -217,6 +217,47 @@
     cursor: not-allowed;
 }
 
+/* ---- privacy notes ---- */
+
+.settings-privacy {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 480px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.settings-privacy-point {
+    padding-left: 14px;
+    border-left: 3px solid #c7cdfa;
+}
+
+.settings-privacy-title {
+    margin: 0 0 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.settings-privacy-text,
+.settings-privacy-list {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.settings-privacy-text + .settings-privacy-text,
+.settings-privacy-text + .settings-privacy-list {
+    margin-top: 6px;
+}
+
+.settings-privacy-list {
+    padding-left: 18px;
+}
+
 /* ---- close button ---- */
 
 .settings-close {
