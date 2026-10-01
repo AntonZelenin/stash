@@ -51,6 +51,7 @@ aws_region  = "eu-central-1"
 # api_throttling_burst_limit = 600
 # turnstile_enabled          = true # registration requires a Cloudflare Turnstile token
 # storage_deletion_drain_minutes = 15 # how often pending object deletions are retried
+# storage_reconciliation_minutes = 60 # how often orphaned objects are looked for
 
 # Observability. Alarms notify the alarm_topic_arn SNS topic; confirm the
 # email subscription from the message AWS sends.

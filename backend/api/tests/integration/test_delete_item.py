@@ -2,9 +2,11 @@ import uuid
 from uuid import UUID
 
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.items.models import Description, ImageMetadata, Item, TextContent
+from app.storage.deletions import StorageDeletionDrainer, schedule_key_deletion, storage_deletions
 from conftest import FakeObjectStorage
 from helpers import register_and_login, upload_file, upload_image
 
@@ -96,3 +98,60 @@ async def test_delete_image_item_also_removes_thumbnail(
 
     assert response.status_code == 204
     assert storage.uploads == {}
+
+
+async def test_objects_whose_deletion_fails_stay_pending_until_a_later_drain(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    """Storage failing after the commit no longer orphans the item's
+    objects: their deletion was recorded with the item's rows, and the
+    scheduled drain carries it out once storage is back."""
+    _, token = await register_and_login(client)
+    created = await upload_image(client, storage, token, _PNG_BYTES)
+    item_id = UUID(created.json()["id"])
+    image = await session.get(ImageMetadata, item_id)
+    image.thumbnail_key = f"users/thumbnails/{item_id}.webp"
+    await session.commit()
+    storage.uploads[image.thumbnail_key] = (b"webp", "image/webp")
+    keys = set(storage.uploads)
+    storage.fail_deletes = True
+
+    response = await client.delete(f"/items/{item_id}", headers=_auth(token))
+
+    assert response.status_code == 204
+    session.expire_all()
+    assert await session.get(Item, item_id) is None
+    assert set(storage.uploads) == keys
+    pending = await _pending_deletions(session)
+    assert set(pending) == keys
+    # The drain stopped at the first failure: storage is likely down.
+    assert sorted(pending.values()) == [0, 1]
+
+    storage.fail_deletes = False
+    assert await StorageDeletionDrainer(session.bind, storage).drain() == 2
+    assert storage.uploads == {}
+    assert await _pending_deletions(session) == {}
+
+
+async def test_a_request_drains_only_its_own_deletions(
+    client: AsyncClient, session: AsyncSession, storage: FakeObjectStorage
+):
+    """A backlog (e.g. left while storage was down) is the scheduled
+    drain's, so a request never takes it on."""
+    storage.uploads["users/backlog"] = (b"x", "text/plain")
+    await schedule_key_deletion(session, "users/backlog")
+    await session.commit()
+    _, token = await register_and_login(client)
+    created = await upload_image(client, storage, token, _PNG_BYTES)
+    item_id = UUID(created.json()["id"])
+
+    assert (await client.delete(f"/items/{item_id}", headers=_auth(token))).status_code == 204
+
+    assert set(storage.uploads) == {"users/backlog"}
+    assert await _pending_deletions(session) == {"users/backlog": 0}
+
+
+async def _pending_deletions(session: AsyncSession) -> dict[str, int]:
+    session.expire_all()
+    rows = (await session.execute(select(storage_deletions))).all()
+    return {row.target: row.attempts for row in rows}

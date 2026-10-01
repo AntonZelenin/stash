@@ -1,6 +1,10 @@
 """The Lambda handler serves the app for API Gateway (HTTP API) events."""
 
+import pytest
+
 from app import aws_lambda
+from app.storage import tasks
+from app.storage.reconciliation import ReconciliationResult
 
 
 def _http_api_event(method: str, path: str) -> dict:
@@ -36,19 +40,48 @@ def test_handler_flushes_metrics_and_traces(monkeypatch):
     assert flushed == ["metrics", "tracing"]
 
 
-def test_scheduled_event_drains_pending_storage_deletions(monkeypatch):
-    drained = []
+@pytest.mark.parametrize("task", [tasks.DRAIN_STORAGE_DELETIONS, tasks.RECONCILE_STORAGE])
+def test_scheduled_events_run_their_task(monkeypatch, task):
+    ran = []
 
+    async def run_task(name, engine):
+        ran.append(name)
+        return {"done": True}
+
+    monkeypatch.setattr(aws_lambda, "run_task", run_task)
+
+    assert aws_lambda.handler({"task": task}, None) == {"done": True}
+    assert ran == [task]
+
+
+def test_drain_task_drains_pending_storage_deletions(monkeypatch):
     class FakeDrainer:
         def __init__(self, engine, storage):
             pass
 
         async def drain(self) -> int:
-            drained.append(True)
             return 3
 
-    monkeypatch.setattr(aws_lambda, "StorageDeletionDrainer", FakeDrainer)
-    monkeypatch.setattr(aws_lambda, "get_object_storage", lambda: object())
+    monkeypatch.setattr(tasks, "StorageDeletionDrainer", FakeDrainer)
+    monkeypatch.setattr(tasks, "get_object_storage", lambda: object())
 
-    assert aws_lambda.handler({"task": aws_lambda.DRAIN_STORAGE_DELETIONS}, None) == {"finished": 3}
-    assert drained == [True]
+    assert aws_lambda.handler({"task": tasks.DRAIN_STORAGE_DELETIONS}, None) == {"finished": 3}
+
+
+def test_reconcile_task_reports_what_it_did(monkeypatch):
+    class FakeReconciler:
+        def __init__(self, engine, storage):
+            pass
+
+        async def reconcile(self) -> ReconciliationResult:
+            return ReconciliationResult(scanned=10, deleted=2, pass_completed=True)
+
+    monkeypatch.setattr(tasks, "StorageReconciler", FakeReconciler)
+    monkeypatch.setattr(tasks, "get_object_storage", lambda: object())
+
+    assert aws_lambda.handler({"task": tasks.RECONCILE_STORAGE}, None) == {
+        "scanned": 10,
+        "deleted": 2,
+        "pass_completed": True,
+        "skipped": False,
+    }

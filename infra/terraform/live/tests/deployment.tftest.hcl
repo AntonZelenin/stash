@@ -358,6 +358,33 @@ run "api_drains_pending_storage_deletions_on_a_schedule" {
   }
 }
 
+run "api_reconciles_storage_on_a_schedule" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_event_rule.reconcile_storage.schedule_expression == "rate(60 minutes)"
+    error_message = "Orphaned objects are looked for hourly by default."
+  }
+  assert {
+    condition     = aws_cloudwatch_event_target.reconcile_storage.input == jsonencode({ task = "reconcile_storage" })
+    error_message = "The schedule invokes the API with the task app.storage.tasks runs (RECONCILE_STORAGE)."
+  }
+  assert {
+    condition     = aws_lambda_permission.reconcile_storage.function_name == aws_lambda_function.main["api"].function_name && aws_lambda_permission.reconcile_storage.principal == "events.amazonaws.com"
+    error_message = "Only EventBridge, for this rule, gets to invoke the API this way."
+  }
+}
+
+run "storage_reconciliation_interval_must_be_whole_minutes" {
+  command = plan
+
+  variables {
+    storage_reconciliation_minutes = 1
+  }
+
+  expect_failures = [var.storage_reconciliation_minutes]
+}
+
 run "storage_deletion_drain_interval_must_be_whole_minutes" {
   command = plan
 

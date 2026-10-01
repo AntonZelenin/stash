@@ -12,9 +12,17 @@ gone; a failed deletion stays for a later drain. Deleting is idempotent,
 so a deletion done twice (a drain dying before it removed the row) is
 harmless.
 
-Drains run straight after the commit that scheduled a deletion, and on a
-schedule (`app.aws_lambda`, every 15 minutes on AWS), which retries
-whatever an earlier drain couldn't finish.
+Drains run straight after the commit that scheduled a deletion (only
+that request's own deletions, `drain(only=...)`, so a request never takes
+on a backlog), and on a schedule (`app.storage.tasks`: every 15 minutes on
+AWS), which retries whatever an earlier drain couldn't finish.
+
+Used for everything the API deletes from storage once the database no
+longer needs it: a deleted item's objects (`ItemService.delete_item(s)`)
+and a deleted account's (`UserService.delete_account`). What can't be
+scheduled this way (an object stored but never recorded, because the
+process died in between) is found by the reconciliation scan,
+`app.storage.reconciliation`.
 
 Like the outbox (`stash_shared.outbox`), concurrent drains claim rows with
 `FOR UPDATE SKIP LOCKED`, so they don't delete the same thing at once.
@@ -63,28 +71,30 @@ _DEFAULT_BATCH_SIZE = 20
 _ATTEMPTS_BEFORE_ERROR = 100
 
 
-async def schedule_prefix_deletion(db: AsyncConnection | AsyncSession, prefix: str) -> None:
+async def schedule_prefix_deletion(db: AsyncConnection | AsyncSession, prefix: str) -> uuid.UUID:
     """Records that every object under `prefix` (a user's area) must be
-    deleted, in the caller's open transaction."""
+    deleted, in the caller's open transaction. Returns the deletion's id."""
     if not _USER_PREFIX.fullmatch(prefix):
         raise ValueError(f"Not a user's storage prefix: {prefix!r}")
-    await _schedule(db, prefix, is_prefix=True)
+    return await _schedule(db, prefix, is_prefix=True)
 
 
-async def schedule_key_deletion(db: AsyncConnection | AsyncSession, key: str) -> None:
+async def schedule_key_deletion(db: AsyncConnection | AsyncSession, key: str) -> uuid.UUID:
     """Records that the object at `key` must be deleted, in the caller's
-    open transaction."""
+    open transaction. Returns the deletion's id."""
     if not key or key.endswith("/"):
         raise ValueError(f"Not an object key: {key!r}")
-    await _schedule(db, key, is_prefix=False)
+    return await _schedule(db, key, is_prefix=False)
 
 
-async def _schedule(db: AsyncConnection | AsyncSession, target: str, *, is_prefix: bool) -> None:
+async def _schedule(db: AsyncConnection | AsyncSession, target: str, *, is_prefix: bool) -> uuid.UUID:
+    deletion_id = uuid.uuid4()
     await db.execute(
         insert(storage_deletions).values(
-            id=uuid.uuid4(), target=target, is_prefix=is_prefix, created_at=datetime.now(UTC), attempts=0
+            id=deletion_id, target=target, is_prefix=is_prefix, created_at=datetime.now(UTC), attempts=0
         )
     )
+    return deletion_id
 
 
 class StorageDeletionDrainer:
@@ -95,16 +105,19 @@ class StorageDeletionDrainer:
         self._storage = storage
         self._batch_size = batch_size
 
-    async def drain(self) -> int:
+    async def drain(self, *, only: list[uuid.UUID] | None = None) -> int:
         """Works through pending deletions and returns how many it
         finished. Never raises: a deletion that fails stays pending, and the
         drain stops there (storage is likely down; the next drain retries).
         One batch only, so a drain stays bounded; a scheduled drain picks up
-        whatever is left."""
+        whatever is left. With `only`, just those deletions (the ones a
+        request scheduled), if they're still pending."""
+        if only is not None and not only:
+            return 0
         finished = 0
         try:
             async with self._engine.begin() as conn:
-                for row in (await conn.execute(self._claim_statement(conn))).all():
+                for row in (await conn.execute(self._claim_statement(conn, only))).all():
                     done = await self._delete(row)
                     if done is None:
                         await self._record_failure(conn, row)
@@ -118,14 +131,18 @@ class StorageDeletionDrainer:
             logger.info("Storage deletions finished", finished_count=finished)
         return finished
 
-    def _claim_statement(self, conn: AsyncConnection):
+    def _claim_statement(self, conn: AsyncConnection, only: list[uuid.UUID] | None):
         # Never-attempted rows first, then the longest-failing: a deletion
         # that keeps failing goes to the back, so it can't hold up the rest.
         statement = (
             select(storage_deletions)
             .order_by(storage_deletions.c.last_attempt_at.asc().nulls_first(), storage_deletions.c.created_at)
-            .limit(self._batch_size)
+            # A request's own deletions all at once: it deleted them
+            # synchronously before they were scheduled, too.
+            .limit(self._batch_size if only is None else len(only))
         )
+        if only is not None:
+            statement = statement.where(storage_deletions.c.id.in_(only))
         if conn.dialect.name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
         return statement

@@ -246,9 +246,15 @@ custom domain yet.
   `storage_deletion_drain_minutes` (15), an EventBridge rule invokes the
   API function with `{"task": "drain_storage_deletions"}`, which retries
   the object deletions that couldn't be done right after the commit that
-  recorded them (e.g. a deleted account's objects while S3 was failing;
+  recorded them (e.g. a deleted item's or account's objects while S3 was failing;
   `app.storage.deletions`). The API runs it with its own role: it already
   lists and deletes under `users/*` and `uploads/*`.
+- Scheduled storage reconciliation (`lambda.tf`): every
+  `storage_reconciliation_minutes` (60), another rule invokes it with
+  `{"task": "reconcile_storage"}`, which scans the next part of `users/`
+  (bounded to ~20 s, resuming where the last run stopped) and deletes
+  objects no row references and that are over a day old
+  (`app.storage.reconciliation`). Same role, same permissions.
 - Throttling: the `$default` stage lets through at most
   `api_throttling_rate_limit` requests/s (300) with bursts of
   `api_throttling_burst_limit` (600), all clients together; over it, API

@@ -7,9 +7,10 @@ the database engine, all reused by every invocation in the execution
 environment. Every invocation runs on the same event loop, so the engine's
 pooled connections stay usable across invocations.
 
-The same function also runs the API's scheduled task: an EventBridge rule
-invokes it with `{"task": "drain_storage_deletions"}` (see
-`app.storage.deletions`), which never comes from API Gateway.
+The same function also runs the API's scheduled tasks: EventBridge rules
+invoke it with `{"task": "drain_storage_deletions"}` or `{"task":
+"reconcile_storage"}` (see `app.storage.tasks`), which never come from API
+Gateway.
 """
 
 import asyncio
@@ -20,10 +21,7 @@ from stash_shared import metrics, tracing
 
 from app.db import engine
 from app.main import app
-from app.storage.deletions import StorageDeletionDrainer
-from app.storage.s3 import get_object_storage
-
-DRAIN_STORAGE_DELETIONS = "drain_storage_deletions"
+from app.storage.tasks import TASKS, run_task
 
 _loop = asyncio.new_event_loop()
 asyncio.set_event_loop(_loop)
@@ -36,9 +34,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # this environment's one.
     asyncio.set_event_loop(_loop)
     try:
-        if event.get("task") == DRAIN_STORAGE_DELETIONS:
-            finished = _loop.run_until_complete(StorageDeletionDrainer(engine, get_object_storage()).drain())
-            return {"finished": finished}
+        if (task := event.get("task")) in TASKS:
+            return _loop.run_until_complete(run_task(task, engine))
         return _asgi(event, context)
     finally:
         # The environment is frozen once this returns, so nothing buffered

@@ -1,6 +1,7 @@
 import hashlib
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import fields
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -42,8 +43,16 @@ from app.query_normalization import QueryNormalizer, get_query_normalizer
 from app.queue import get_queue_resolver
 from app.rate_limits.limiter import Limit, RateLimiter, RateLimits, get_rate_limiter
 from app.rate_limits.models import RateLimitCounter
-from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
+from app.storage.base import (
+    ListedObject,
+    ObjectChangedError,
+    ObjectListing,
+    ObjectStorage,
+    PresignedUpload,
+    StoredObject,
+)
 from app.storage.deletions import storage_deletions
+from app.storage.reconciliation import storage_reconciliation
 from app.storage.s3 import get_object_storage
 from app.turnstile import TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
@@ -66,6 +75,7 @@ _TEST_TABLES = [
     outbox_events,
     PendingUpload.__table__,
     storage_deletions,
+    storage_reconciliation,
 ]
 
 
@@ -84,7 +94,9 @@ class FakeObjectStorage(ObjectStorage):
 
     `before_copy`, if set, runs between finalize's inspect and its copy,
     to model a client racing the finalize. `fail_deletes` makes every
-    delete fail, as if storage were unreachable."""
+    delete fail, as if storage were unreachable. Objects were last
+    modified at `modified[key]`, or now if a test didn't say (so nothing
+    looks old enough to be an orphan unless a test makes it)."""
 
     _UPLOAD_URL_PREFIX = "https://fake-storage.test/upload/"
 
@@ -102,6 +114,7 @@ class FakeObjectStorage(ObjectStorage):
         self.download_content_types: dict[str, str | None] = {}
         self.before_copy: Callable[[], None] | None = None
         self.fail_deletes = False
+        self.modified: dict[str, datetime] = {}
 
     @staticmethod
     def etag_of(data: bytes) -> str:
@@ -185,6 +198,16 @@ class FakeObjectStorage(ObjectStorage):
         for key in keys[:max_objects]:
             await self.delete(key=key)
         return len(keys) <= max_objects
+
+    async def list_objects(self, *, prefix: str, start_after: str | None, max_keys: int) -> ObjectListing:
+        keys = sorted(
+            key for key in self.uploads if key.startswith(prefix) and (start_after is None or key > start_after)
+        )
+        now = datetime.now(UTC)
+        return ObjectListing(
+            objects=[ListedObject(key=key, last_modified=self.modified.get(key, now)) for key in keys[:max_keys]],
+            is_truncated=len(keys) > max_keys,
+        )
 
     async def generate_download_url(
         self,

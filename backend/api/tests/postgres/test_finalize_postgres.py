@@ -72,6 +72,9 @@ class _SlowStorage(ObjectStorage):
     async def generate_download_url(self, **kwargs) -> str:
         raise NotImplementedError
 
+    async def list_objects(self, **kwargs):
+        raise NotImplementedError
+
 
 class _NullOutbox:
     async def flush(self) -> None:

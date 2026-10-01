@@ -262,13 +262,24 @@ variable "lambda_log_retention_days" {
 }
 
 variable "storage_deletion_drain_minutes" {
-  description = "How often, in minutes, the API retries pending object deletions, e.g. of a deleted account's objects while S3 was failing (lambda.tf). At least 2: EventBridge wants \"rate(1 minute)\" for one."
+  description = "How often, in minutes, the API retries pending object deletions, e.g. of a deleted item or account's objects while S3 was failing (lambda.tf). At least 2: EventBridge wants \"rate(1 minute)\" for one."
   type        = number
   default     = 15
 
   validation {
     condition     = var.storage_deletion_drain_minutes >= 2 && floor(var.storage_deletion_drain_minutes) == var.storage_deletion_drain_minutes
     error_message = "storage_deletion_drain_minutes must be a whole number of minutes, at least 2."
+  }
+}
+
+variable "storage_reconciliation_minutes" {
+  description = "How often, in minutes, the API scans a bounded part of users/ for orphaned objects and deletes them (lambda.tf, app.storage.reconciliation). At least 2: EventBridge wants \"rate(1 minute)\" for one."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = var.storage_reconciliation_minutes >= 2 && floor(var.storage_reconciliation_minutes) == var.storage_reconciliation_minutes
+    error_message = "storage_reconciliation_minutes must be a whole number of minutes, at least 2."
   }
 }
 

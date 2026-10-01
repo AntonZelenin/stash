@@ -42,6 +42,7 @@ from app.rate_limits.limiter import Charge, RateLimiter
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
 from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
+from app.storage.deletions import StorageDeletionDrainer, schedule_key_deletion
 
 logger = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -354,9 +355,17 @@ def _log_semantic_candidates(candidates: list[SemanticMatch], max_distance: floa
 
 
 class ItemService:
-    def __init__(self, session: AsyncSession, storage: ObjectStorage, outbox: OutboxPublisher | None = None):
+    def __init__(
+        self,
+        session: AsyncSession,
+        storage: ObjectStorage,
+        outbox: OutboxPublisher | None = None,
+        storage_deletions: StorageDeletionDrainer | None = None,
+    ):
         """`outbox` publishes the jobs this service's writes trigger; needed
-        by the methods that create or edit items.
+        by the methods that create or edit items. `storage_deletions`
+        carries out the object deletions deleting items schedules; needed
+        by `delete_item(s)`.
 
         Jobs are never published directly: each is added to the outbox in
         the same transaction as the change that needs it (`_add_job`), and
@@ -368,6 +377,7 @@ class ItemService:
         self._repo = ItemRepository(session)
         self._storage = storage
         self._outbox = outbox
+        self._storage_deletions = storage_deletions
 
     async def count_items(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> ItemCounts:
         """The user's items per type, per kind and favorites, counted on
@@ -715,13 +725,16 @@ class ItemService:
 
     @_tracer.start_as_current_span("items.delete")
     async def delete_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> None:
-        """Deletes the item (all its rows) and then its image file, if any.
+        """Deletes the item (all its rows) and then its stored objects
+        (original, thumbnail), if any.
 
         The database delete is committed first: it's what the user sees, and
-        it's atomic. Removing the file afterwards is best-effort — if it
-        fails, the only cost is an orphaned object in storage, never an item
-        pointing at a missing file. A job still queued for the item finds it
-        gone and is dropped by the worker. Tags no other item uses, and
+        it's atomic, so an item never points at a missing object. The
+        objects' deletion is scheduled in the same transaction
+        (`app.storage.deletions`) and carried out right after the commit; if
+        storage fails then, it stays pending and the scheduled drain retries
+        it until it succeeds. A job still queued for the item finds it gone
+        and is dropped by the worker. Tags no other item uses, and
         collections no other item is in, are deleted with it, in the same
         transaction.
         """
@@ -729,6 +742,7 @@ class ItemService:
         deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
         if deleted is None:
             raise ItemNotFoundError()
+        deletion_ids = await self._schedule_object_deletions(deleted.storage_keys)
         await TagRepository(self._session).delete_orphans(user_id=user_id, tag_ids=deleted.tag_ids)
         await CollectionRepository(self._session).delete_orphans(
             user_id=user_id, collection_ids=deleted.collection_ids
@@ -740,7 +754,7 @@ class ItemService:
             tag_count=len(deleted.tag_ids),
             collection_count=len(deleted.collection_ids),
         )
-        await self._delete_stored_objects(deleted.storage_keys)
+        await self._delete_stored_objects(deletion_ids)
 
     async def delete_items(self, *, user_id: uuid.UUID, item_ids: list[uuid.UUID]) -> None:
         """Deletes several of the user's items at once, like `delete_item`,
@@ -764,6 +778,7 @@ class ItemService:
         await CollectionRepository(self._session).delete_orphans(
             user_id=user_id, collection_ids=sorted(collection_ids)
         )
+        deletion_ids = await self._schedule_object_deletions(storage_keys)
         await self._session.commit()
         logger.info(
             "Items deleted",
@@ -773,16 +788,20 @@ class ItemService:
             tag_count=len(tag_ids),
             collection_count=len(collection_ids),
         )
-        await self._delete_stored_objects(storage_keys)
+        await self._delete_stored_objects(deletion_ids)
 
-    async def _delete_stored_objects(self, storage_keys: list[str]) -> None:
-        """Best-effort, after the delete is committed (see `delete_item`)."""
-        for key in storage_keys:
-            try:
-                await self._storage.delete(key=key)
-            except Exception:
-                # Not retried: the object is orphaned in storage.
-                logger.exception("Failed to delete stored object of deleted item; object orphaned", storage_key=key)
+    async def _schedule_object_deletions(self, storage_keys: list[str]) -> list[uuid.UUID]:
+        """Records, in the open transaction, that deleted items' objects
+        must be deleted (see `delete_item`)."""
+        assert self._storage_deletions is not None, "deleting items needs the storage deletion drainer"
+        return [await schedule_key_deletion(self._session, key) for key in storage_keys]
+
+    async def _delete_stored_objects(self, deletion_ids: list[uuid.UUID]) -> None:
+        """After the delete is committed: this request's own scheduled
+        deletions only. Never raises; what fails stays pending for the
+        scheduled drain."""
+        assert self._storage_deletions is not None
+        await self._storage_deletions.drain(only=deletion_ids)
 
     async def _with_download_urls(self, rows: list[Item]) -> list[ListedItem]:
         """Pre-signs the objects of `rows`, which must be items the current
@@ -1212,7 +1231,9 @@ class ItemService:
 
     async def _delete_uncommitted_copy(self, key: str) -> None:
         """Best effort: a canonical copy this finalize just made under a
-        fresh key and rejected, before any item referenced it."""
+        fresh key and rejected, before any item referenced it. If this
+        fails, the reconciliation scan (`app.storage.reconciliation`)
+        deletes it later."""
         try:
             await self._storage.delete(key=key)
         except Exception:

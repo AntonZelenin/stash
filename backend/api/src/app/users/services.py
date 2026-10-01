@@ -53,15 +53,13 @@ class UserService:
             raise IncorrectPasswordError()
 
         prefixes = storage_keys.user_prefixes(user.id)
-        for prefix in prefixes:
-            await schedule_prefix_deletion(self._session, prefix)
+        deletion_ids = [await schedule_prefix_deletion(self._session, prefix) for prefix in prefixes]
         # Items stored before keys were scoped by user aren't under their
         # prefixes.
         legacy_keys = await ItemRepository(self._session).storage_keys_outside(user_id=user.id, prefixes=prefixes)
-        for key in legacy_keys:
-            await schedule_key_deletion(self._session, key)
+        deletion_ids += [await schedule_key_deletion(self._session, key) for key in legacy_keys]
         await self._session.execute(delete(User).where(User.id == user.id))
         await self._session.commit()
         logger.info("Account deleted", user_id=user.id, legacy_storage_key_count=len(legacy_keys))
 
-        await self._storage_deletions.drain()
+        await self._storage_deletions.drain(only=deletion_ids)

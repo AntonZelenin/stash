@@ -234,7 +234,7 @@ resource "aws_lambda_function" "main" {
 # (app.aws_lambda); this input never comes from API Gateway.
 resource "aws_cloudwatch_event_rule" "drain_storage_deletions" {
   name                = "${local.name_prefix}-drain-storage-deletions"
-  description         = "Retries pending object deletions (deleted accounts' storage)."
+  description         = "Retries pending object deletions (deleted items' and accounts' storage)."
   schedule_expression = "rate(${var.storage_deletion_drain_minutes} minutes)"
 }
 
@@ -250,4 +250,29 @@ resource "aws_lambda_permission" "drain_storage_deletions" {
   function_name = aws_lambda_function.main["api"].function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.drain_storage_deletions.arn
+}
+
+# The API's other scheduled task: the reconciliation scan, which deletes
+# objects under users/ that no row references any more and no deletion
+# was scheduled for (e.g. a finalize that died between its copy and its
+# commit; app.storage.reconciliation). Each run is bounded (well within
+# the function's timeout) and resumes where the last one stopped.
+resource "aws_cloudwatch_event_rule" "reconcile_storage" {
+  name                = "${local.name_prefix}-reconcile-storage"
+  description         = "Deletes orphaned objects under users/ (no row references them)."
+  schedule_expression = "rate(${var.storage_reconciliation_minutes} minutes)"
+}
+
+resource "aws_cloudwatch_event_target" "reconcile_storage" {
+  rule  = aws_cloudwatch_event_rule.reconcile_storage.name
+  arn   = aws_lambda_function.main["api"].arn
+  input = jsonencode({ task = "reconcile_storage" })
+}
+
+resource "aws_lambda_permission" "reconcile_storage" {
+  statement_id  = "AllowScheduledStorageReconciliation"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.main["api"].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.reconcile_storage.arn
 }

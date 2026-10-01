@@ -66,6 +66,7 @@ from app.queue import get_outbox
 from app.rate_limits.limiter import Charge, RateLimiter, get_rate_limiter
 from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM, InvalidTagNameError
 from app.storage.base import ObjectStorage
+from app.storage.deletions import StorageDeletionDrainer, get_storage_deletion_drainer
 from app.storage.s3 import get_object_storage
 from app.users.models import User
 
@@ -495,9 +496,12 @@ async def delete_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
+    storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
 ) -> Response:
     try:
-        await ItemService(session, storage).delete_item(user_id=current_user.id, item_id=item_id)
+        await ItemService(session, storage, storage_deletions=storage_deletions).delete_item(
+            user_id=current_user.id, item_id=item_id
+        )
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -515,8 +519,11 @@ async def delete_items(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
+    storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
 ) -> Response:
-    await ItemService(session, storage).delete_items(user_id=current_user.id, item_ids=body.ids)
+    await ItemService(session, storage, storage_deletions=storage_deletions).delete_items(
+        user_id=current_user.id, item_ids=body.ids
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -173,8 +173,8 @@ Stores:
 - Search chunks — each description split into short pieces, each with its
   embedding (`item_search_chunks`).
 - Processing status.
-- Pending object deletions (`storage_deletions`, see "Deleting the
-  account").
+- Pending object deletions (`storage_deletions`) and where the orphan
+  scan resumes (`storage_reconciliation`); see "Deleting stored objects".
 
 The schema is managed with Alembic (`backend/api/alembic`). By default the
 API container applies pending migrations on startup. Setting
@@ -273,7 +273,8 @@ whatever signs the URL: a pre-signed request (`s3:authType` =
 `REST-QUERY-STRING`) can't write outside `uploads/`, or read inside it. Deletes likewise take their keys from the owned item's row, or, for a
 deleted account, are the user's own prefixes (`users/{user_id}/`,
 `uploads/{user_id}/`; `storage_keys.user_prefixes`, the only prefixes
-`app.storage.deletions` accepts). Clients
+`app.storage.deletions` accepts), or are keys the reconciliation scan
+listed and found no row referencing (see "Deleting stored objects"). Clients
 can never send a key: the upload and edit requests reject unknown fields.
 The user id in a key is for organizing the bucket (per-user cleanup,
 lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
@@ -447,13 +448,14 @@ again returns the same item without copying or re-processing it. No job
 exists before the commit, so no worker can start on a half-finalized item.
 A delete can't race it either: until the commit there's no item to delete.
 
-Known issue, deferred (not a security problem): a finalize that dies after
-its `CopyObject` succeeded but before its transaction commits leaves an
-unreferenced canonical object. A retry never adopts it (nothing at a key is
-trusted by name): it copies again to a fresh key, so the orphan stays, and
-it's outside `uploads/`, so no lifecycle rule removes it. It's only ever
-reachable by a key no row holds, so it's never served or processed.
-Cleaning these up is a separate task.
+A finalize that dies after its `CopyObject` succeeded but before its
+transaction commits leaves an unreferenced canonical object. A retry never
+adopts it (nothing at a key is trusted by name): it copies again to a fresh
+key. It's outside `uploads/`, so no lifecycle rule removes it, and it's
+only ever reachable by a key no row holds, so it's never served or
+processed. The reconciliation scan deletes it once it's a day old (see
+"Deleting stored objects"), as it does a copy finalize rejected but
+couldn't delete.
 
 After finalize, the upload URL can still create a staging object (the old
 one is deleted) until it expires. Nothing ever reads it: the upload is no
@@ -943,7 +945,8 @@ Infrastructure (Terraform, `infra/terraform/live/`):
   out through an egress-only internet gateway, no NAT). Plus the migration
   function (see PostgreSQL), invoked only by the deployment. An
   EventBridge rule also invokes the API function every 15 minutes to drain
-  pending object deletions (see "Deleting the account")
+  pending object deletions, and another hourly to look for orphaned
+  objects (see "Deleting stored objects")
 - RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
 - SQS queues with DLQs, each with a resource policy admitting only its
@@ -1346,25 +1349,14 @@ refresh tokens, so every session ends with it. Rate-limit counters (hashed
 subjects that expire) and outbox events (ids only) are left; a queued job
 for a deleted item is dropped by its worker, which finds the item gone.
 
-Stored objects can't be deleted in that transaction, and deleting them
-after the commit would lose the deletion if storage failed then. So the
-transaction also records what to delete in `storage_deletions`
-(`app.storage.deletions`): the user's two prefixes, `users/{user_id}/`
+Stored objects can't be deleted in that transaction, so, as for deleted
+items (see "Deleting stored objects"), the transaction records what to
+delete in `storage_deletions`: the user's two prefixes, `users/{user_id}/`
 (originals and thumbnails) and `uploads/{user_id}/` (staged uploads), plus
-the keys of any of their objects stored under the old unscoped layout.
-After the commit the API drains the table: lists and deletes under each
-prefix (at most 5,000 objects per prefix per drain, so a drain stays
-bounded) and removes a row only once nothing is left. A deletion that fails
-stays, with its attempt count; the drain stops there (storage is likely
-down) and a later drain retries it. On AWS an EventBridge rule invokes the
-API function with `{"task": "drain_storage_deletions"}` every
-`storage_deletion_drain_minutes` (15) for that (`app.aws_lambda`); locally
-there is no schedule, and leftovers wait for the next account deletion.
-Rows that keep failing go to the back of the queue, so they can't hold up
-the rest; from the 100th failed attempt each one is logged as an error.
-Concurrent drains claim rows with `FOR UPDATE SKIP LOCKED`, like the
-outbox, and deleting is idempotent, so a drain dying before it removed its
-row only repeats a deletion.
+the keys of any of their objects stored under the old unscoped layout. A
+prefix deletion lists and deletes under it (at most 5,000 objects per
+prefix per drain, so a drain stays bounded), and its row is removed only
+once nothing is left.
 
 Races: an upload being finalized holds its pending upload's row lock, which
 the cascade waits for, so its item is either deleted with the account or
@@ -1374,6 +1366,83 @@ deleted by the worker itself (recording it finds no item;
 issued before the deletion stays valid until it expires and can still put
 an object under `uploads/{user_id}/`, which the staging lifecycle rule
 expires within a day.
+
+### Deleting stored objects
+
+Objects are deleted from storage only once the database no longer needs
+them, and never inside a database transaction, which can't include them.
+Two mechanisms, both in the API (`app.storage`):
+
+Scheduled deletions (`app.storage.deletions`), a transactional outbox for
+deletes. Deleting items (`DELETE /items/{id}`, `POST /items/delete`) or an
+account records each object (or prefix) to delete as a `storage_deletions`
+row, in the same transaction as the rows' deletion: the rows go and the
+deletion is pending, or neither. After the commit the request drains its
+own rows (only those: a request never takes on a backlog). A deletion that
+fails stays, with its attempt count; the drain stops there (storage is
+likely down) and a later drain retries it. So storage failing after the
+commit, or the process dying, never orphans an object, and an item never
+points at a missing one. On AWS an EventBridge rule invokes the API
+function with `{"task": "drain_storage_deletions"}` every
+`storage_deletion_drain_minutes` (15), which works through whatever is
+pending. Rows that keep failing go to the back of the queue, so they can't
+hold up the rest; from the 100th failed attempt each one is logged as an
+error. Concurrent drains claim rows with `FOR UPDATE SKIP LOCKED`, like the
+outbox, and deleting is idempotent, so a drain dying before it removed its
+row only repeats a deletion.
+
+Reconciliation (`app.storage.reconciliation`), for objects no deletion was
+ever scheduled for, because whatever stored them never recorded them:
+
+- a finalize that died between its `CopyObject` and its commit (see
+  "Uploads"), or that rejected its copy but couldn't delete it;
+- a thumbnail the worker stored after its item was deleted (or stored,
+  then the item was deleted before the thumbnail was recorded), when the
+  worker then failed to delete it itself (`thumbnailer.handler`);
+- objects of items deleted before deletions were scheduled.
+
+It scans `users/` in key order, one bounded run at a time (about 20 s,
+pages of 1,000 keys), resuming where the last run stopped
+(`storage_reconciliation`); after the last page the next run starts over.
+It deletes an object only when all of these hold:
+
+1. Its key is one the application writes there: a canonical original
+   (`users/{user}/images|files/{item}/{object_id}{ext}`), a legacy one
+   (`users/{user}/images|files/{item}{ext}`) or a thumbnail
+   (`users/{user}/thumbnails/{item}.webp`), ids exactly as generated.
+   Anything else is never deleted.
+2. It was last written over a day ago (S3's `LastModified`; never less
+   than an hour, enforced). A finalize holds its copy unreferenced only
+   until its commit, a thumbnail worker its thumbnail until it records it:
+   seconds, within a request's or a job's timeout.
+3. No row references it: the key is looked up exactly in every column that
+   holds one (`item_images.storage_key`/`thumbnail_key`,
+   `item_files.storage_key`, each indexed), never inferred from the ids in
+   it.
+4. A thumbnail's item no longer exists. The worker stores a thumbnail
+   before recording it, and a redelivered job stores it again at the same
+   key, so an existing item may still come to reference it; a deleted item
+   never comes back (ids aren't reused).
+
+That's enough for originals because an original's key is random and new
+for every copy, and the only code that makes a row reference one is the
+finalize that made that copy, in the same request: an old, unreferenced
+original can never become referenced. As a brake against deleting content
+by mistake (say, the API pointed at the wrong database, where everything
+looks unreferenced), one run deletes at most 100 objects and logs an error
+when it reaches that; the rest wait for the next runs. Every deletion is
+logged with its key. A storage or database failure ends the run without
+moving the cursor, so the next run looks at the same objects again
+(deciding again is safe). One run at a time: a run holds the cursor row
+`FOR UPDATE`, and a concurrent one finds it locked (`SKIP LOCKED`) and
+does nothing. `uploads/` isn't scanned: the staging lifecycle rule expires
+it.
+
+On AWS an EventBridge rule invokes the API function with `{"task":
+"reconcile_storage"}` every `storage_reconciliation_minutes` (60). Locally
+nothing schedules either task; run one in the API container with
+`python -m app.storage.tasks drain_storage_deletions` (or
+`reconcile_storage`).
 
 ### Rate limits and quotas
 

@@ -61,6 +61,9 @@ class _Storage(ObjectStorage):
     async def generate_download_url(self, **kwargs):
         raise NotImplementedError
 
+    async def list_objects(self, **kwargs):
+        raise NotImplementedError
+
     async def delete(self, *, key: str) -> None:
         await asyncio.sleep(0.05)
         self.objects.discard(key)

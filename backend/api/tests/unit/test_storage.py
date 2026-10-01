@@ -7,6 +7,7 @@ AWS S3 checksums")."""
 
 import base64
 import hashlib
+from datetime import UTC, datetime
 from io import BytesIO
 from urllib.parse import parse_qs, urlsplit
 
@@ -16,7 +17,7 @@ from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from app.storage.base import ObjectChangedError, StoredObject
+from app.storage.base import ListedObject, ObjectChangedError, ObjectListing, StoredObject
 from app.storage.s3 import S3Storage
 
 
@@ -317,3 +318,28 @@ async def test_delete_prefix_raises_when_some_keys_were_not_deleted():
 
         with pytest.raises(RuntimeError, match="AccessDenied"):
             await storage.delete_prefix(prefix="users/u/", max_objects=5000)
+
+
+async def test_list_objects_resumes_after_a_key_and_reads_last_modified():
+    storage = _storage()
+    modified = datetime(2026, 9, 1, tzinfo=UTC)
+    with Stubber(storage._client) as stubber:
+        stubber.add_response(
+            "list_objects_v2",
+            {"Contents": [{"Key": "users/u/b", "LastModified": modified}], "IsTruncated": True},
+            {**_list_params(1), "StartAfter": "users/u/a"},
+        )
+
+        listing = await storage.list_objects(prefix="users/u/", start_after="users/u/a", max_keys=1)
+
+    assert listing == ObjectListing(objects=[ListedObject(key="users/u/b", last_modified=modified)], is_truncated=True)
+
+
+async def test_list_objects_from_the_start_asks_for_at_most_a_page():
+    storage = _storage()
+    with Stubber(storage._client) as stubber:
+        stubber.add_response("list_objects_v2", {"IsTruncated": False}, _list_params())
+
+        listing = await storage.list_objects(prefix="users/u/", start_after=None, max_keys=5000)
+
+    assert listing == ObjectListing(objects=[], is_truncated=False)

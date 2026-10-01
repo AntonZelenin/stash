@@ -11,7 +11,14 @@ from stash_shared import metrics, storage_keys
 from stash_shared.log import get_logger
 
 from app.config import get_settings
-from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
+from app.storage.base import (
+    ListedObject,
+    ObjectChangedError,
+    ObjectListing,
+    ObjectStorage,
+    PresignedUpload,
+    StoredObject,
+)
 
 logger = get_logger(__name__)
 
@@ -193,6 +200,23 @@ class S3Storage(ObjectStorage):
             if not page.get("IsTruncated"):
                 return True
         return False
+
+    async def list_objects(self, *, prefix: str, start_after: str | None, max_keys: int) -> ObjectListing:
+        with metrics.external_call("storage.list"):
+            return await asyncio.to_thread(self._list_objects, prefix, start_after, max_keys)
+
+    def _list_objects(self, prefix: str, start_after: str | None, max_keys: int) -> ObjectListing:
+        params = {"Bucket": self._bucket, "Prefix": prefix, "MaxKeys": min(max_keys, _DELETE_BATCH)}
+        if start_after is not None:
+            params["StartAfter"] = start_after
+        page = self._client.list_objects_v2(**params)
+        return ObjectListing(
+            objects=[
+                ListedObject(key=entry["Key"], last_modified=entry["LastModified"])
+                for entry in page.get("Contents", [])
+            ],
+            is_truncated=bool(page.get("IsTruncated")),
+        )
 
     async def generate_download_url(
         self,

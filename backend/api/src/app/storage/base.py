@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,21 @@ class StoredObject:
     # if it keeps one: `copy_immutable` makes it compute one for every
     # copy. None if it has none (e.g. a staging object).
     sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ListedObject:
+    key: str
+    # When the object was last written, by the storage's clock.
+    last_modified: datetime
+
+
+@dataclass(frozen=True)
+class ObjectListing:
+    # In key order.
+    objects: list[ListedObject]
+    # Whether there are more keys after the last one listed.
+    is_truncated: bool
 
 
 class ObjectChangedError(Exception):
@@ -97,6 +113,14 @@ class ObjectStorage(ABC):
         `max_objects` of them per call, so one call stays bounded however
         much is stored there. Returns whether nothing is left under
         `prefix`; if something is, call again. Raises if a delete fails."""
+        ...
+
+    @abstractmethod
+    async def list_objects(self, *, prefix: str, start_after: str | None, max_keys: int) -> ObjectListing:
+        """Up to `max_keys` objects whose key starts with `prefix`, in key
+        order, starting after the key `start_after` (from the first one if
+        None): one page of a scan that can be resumed later from the last
+        key it saw."""
         ...
 
     @abstractmethod
