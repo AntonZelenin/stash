@@ -14,8 +14,12 @@ push, and nothing is ever destroyed automatically.
 AWS access uses GitHub's OIDC tokens and two IAM roles
 (`infra/terraform/github_oidc`). There are no AWS keys in GitHub.
 Application secrets (database credentials, OpenAI key) stay in AWS
-Secrets Manager. The workflows never read them, and GitHub holds only
-non-secret repository variables.
+Secrets Manager, and GitHub holds only non-secret repository variables.
+No workflow step reads a secret, but the deploy role can: Terraform reads
+and writes the master database secret (and its state holds the password),
+and the role can change any function's code. It can't read the OpenAI key.
+The deployment is part of the trusted operational boundary; see
+[architecture.md](architecture.md#trusted-operational-boundary).
 
 ## One-time setup
 

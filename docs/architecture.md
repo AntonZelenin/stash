@@ -101,8 +101,9 @@ and filename, search chunks, search queries), so every Responses API call
 `store=False`: OpenAI keeps no stored response to retrieve later, and
 nothing here reads one back. The Embeddings API has no such option (it
 stores no responses). Both remain under OpenAI's own API data retention
-(abuse monitoring), which only an account-level agreement (e.g. zero data
-retention) changes, not a request parameter.
+(abuse monitoring: up to 30 days), which only an account-level agreement
+(Zero Data Retention) changes, not a request parameter. See "Data
+retention and privacy".
 
 The item is `processing` across both stages. Clients display the thumbnail
 (`thumbnail_url`), falling back to the original until it exists. Both
@@ -1367,6 +1368,9 @@ issued before the deletion stays valid until it expires and can still put
 an object under `uploads/{user_id}/`, which the staging lifecycle rule
 expires within a day.
 
+Copies outside the live database and bucket (RDS backups and snapshots,
+what OpenAI received, logs) are covered in "Data retention and privacy".
+
 ### Deleting stored objects
 
 Objects are deleted from storage only once the database no longer needs
@@ -1603,6 +1607,128 @@ AI analysis) when they start, before any bytes are sent, whether or not
 they're finalized; finalizing, which clients may retry, costs nothing.
 Searches are charged before OpenAI is called, notes and edits before their
 embedding is queued.
+
+## Data retention and privacy
+
+What happens to a user's data, where copies of it live, and for how long.
+This describes what the implementation does, nothing stronger; when either
+changes, update the other.
+
+### Account deletion
+
+Deleting an account (see "Deleting the account") removes the user's active
+content and everything derived from it from the live database, in one
+transaction: items, notes and links, image and file rows, filenames,
+captions, generated descriptions, search chunks and their embeddings,
+tags, collections, pending uploads and every session. The user's stored
+objects (originals, thumbnails, staged uploads) are scheduled for deletion
+in that same transaction.
+
+Left behind in the live system: rate-limit counters (hashed subjects that
+expire on their own), outbox events and queue messages (item ids only,
+dropped by the workers), and application logs, which carry ids, object
+keys (which contain the user and item ids) and status, never content (see
+"Logging"); log groups keep them for `lambda_log_retention_days` (14).
+
+### Stored objects
+
+Objects are deleted right after the commit, by the request itself. When
+that fails (storage down, the function timing out), the deletion stays
+pending in `storage_deletions` and is retried asynchronously: on AWS every
+15 minutes by the scheduled drain, for as long as it keeps failing (see
+"Deleting stored objects"). So objects of a deleted account normally go
+within the request, and otherwise once storage deletes succeed again;
+there's no fixed deadline. Locally nothing schedules the drain.
+
+Two other paths remove objects late: an upload URL issued before the
+deletion can still put an object under `uploads/{user_id}/` until it
+expires, which the staging lifecycle rule expires (S3 lifecycle runs
+asynchronously, typically within a day or two of the object's age
+reaching a day); and objects no deletion was recorded for are removed by
+the hourly reconciliation scan once they're over a day old.
+
+The object bucket isn't versioned, so a deleted object leaves no
+noncurrent version behind.
+
+### Database backups and snapshots
+
+RDS keeps automated backups (daily snapshots plus transaction logs, for
+point-in-time restore) for `db_backup_retention_days`, 7 days. A deleted
+account's data therefore stays in those backups until they age out, up to
+7 days after the deletion. AWS deletes automated backups when they expire;
+nothing in the application can remove one account from them.
+
+Snapshots outside that window aren't expired by anything automatically:
+
+- The final snapshot (`stash-<env>-final`) that Terraform takes if the
+  database instance is ever destroyed. Deletion protection is on, and the
+  deploy role can't delete the instance, so this only happens by hand.
+- Any manual snapshot someone takes (e.g. before a risky migration or a
+  restore).
+
+Both hold every account as it was when the snapshot was taken, including
+accounts deleted since. Retention policy for them:
+
+- Take a manual snapshot only for a specific operation, and delete it once
+  that operation is verified, at most 30 days after it was taken.
+- Delete the final snapshot once it's no longer needed for a restore, at
+  most 30 days after the destroy.
+- Don't copy snapshots to other accounts or regions, and don't share them.
+- Snapshots are listed with
+  `aws rds describe-db-snapshots --snapshot-type manual`; check it after
+  any operation that took one.
+
+This is a procedure, not enforcement: nothing checks it.
+
+Restoring any backup or snapshot brings deleted accounts back into the
+database, while their objects are already gone from storage (the bucket
+isn't versioned). After a restore, accounts deleted since the backup must
+be deleted again.
+
+### OpenAI
+
+User content is sent to OpenAI for processing:
+
+- image thumbnails (never originals), for image descriptions;
+- a document's extracted text (truncated to
+  `DOCUMENT_ANALYSIS_MAX_CHARS`) and its filename, for document
+  descriptions;
+- search chunks (captions, note and link text, generated descriptions),
+  for embeddings;
+- search queries, for normalization and embedding.
+
+Responses API calls set `store=False` and the Embeddings API stores no
+responses (see "Processing Worker"), so nothing is kept for later
+retrieval. That isn't the same as not being retained: under OpenAI's API
+data policy, inputs and outputs may be kept for up to 30 days for abuse
+monitoring, unless the OpenAI organization has Zero Data Retention
+approved. This project doesn't assume ZDR. Deleting an account in Stash
+doesn't (and can't) delete what OpenAI already received.
+
+### Trusted operational boundary
+
+The deployment and CI infrastructure is trusted with production data. It
+doesn't read user content in normal operation, but it can reach it
+indirectly:
+
+- The GitHub Actions deploy role (`github-stash-<env>-deploy`, only from
+  the `production` GitHub Environment) applies Terraform, whose state holds
+  the database master password, can read and write the master database
+  secret, invokes the migration function, and replaces every Lambda's code
+  and configuration. Code it deploys runs with the functions' roles, i.e.
+  with database, object storage and OpenAI access.
+- Anyone who can run that workflow, or change what it deploys (the
+  repository's `main` branch, the workflow files, the GitHub Environment's
+  settings), therefore has that access too, as do GitHub itself and the
+  third-party actions the workflows use (pinned by tag or branch, not by
+  commit).
+- The Terraform state bucket and the people who apply `bootstrap` and
+  `github_oidc` by hand with their own AWS credentials, and anyone with
+  admin access to the AWS account, are inside the boundary as well.
+
+So protecting user data includes protecting the GitHub repository and
+organization (branch protection, Environment reviewers, who has write
+access), the AWS account, and the state bucket.
 
 ## Repository
 
