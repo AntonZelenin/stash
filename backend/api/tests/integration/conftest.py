@@ -21,6 +21,7 @@ from stash_shared.queue.base import (
     ProcessingJob,
 )
 
+from app.analytics import Analytics, Event, allowed_properties, get_analytics
 from app.auth.models import AccessToken, RefreshToken
 from app.db import get_db_session
 from app.items.models import (
@@ -511,6 +512,38 @@ def turnstile(no_turnstile) -> FakeSiteverify:
     )
     app.dependency_overrides[get_turnstile_verifier] = lambda: verifier
     return siteverify
+
+
+class RecordingAnalytics(Analytics):
+    """Captures events in memory instead of sending them. Every capture is
+    checked against the allowlist: a property the event may not carry fails
+    the test, rather than being silently dropped as in production."""
+
+    enabled = True
+
+    def __init__(self):
+        self.events: list[tuple[str, str, dict]] = []
+        self.flushes = 0
+
+    def capture(self, analytics_id, event, properties=None) -> None:
+        properties = dict(properties or {})
+        assert allowed_properties(event, properties) == properties, (event, properties)
+        self.events.append((str(analytics_id), Event(event).value, properties))
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+    def named(self, event: str) -> list[dict]:
+        """The properties of every `event` captured, in order."""
+        return [properties for _, name, properties in self.events if name == event]
+
+
+@pytest.fixture
+def analytics() -> RecordingAnalytics:
+    recorder = RecordingAnalytics()
+    app.dependency_overrides[get_analytics] = lambda: recorder
+    yield recorder
+    app.dependency_overrides.pop(get_analytics, None)
 
 
 @pytest.fixture

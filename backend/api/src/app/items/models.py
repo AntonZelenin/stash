@@ -247,6 +247,9 @@ class Tag(Base):
     # As first entered (e.g. "Python"); matched case-insensitively.
     name: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Hidden by the user: the clients' Blind mode leaves out items carrying
+    # it, on every device. Gone with the tag.
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 # Many-to-many: which items are in which collections. Rows go away with

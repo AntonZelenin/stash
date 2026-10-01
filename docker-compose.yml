@@ -115,6 +115,10 @@ services:
       # Turnstile on registration, with Cloudflare's always-passing test
       # secret (see .env.example).
       TURNSTILE_ENABLED: ${TURNSTILE_ENABLED:-true}
+      # Product analytics: off unless enabled and configured (.env.example).
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-false}
+      POSTHOG_PROJECT_API_KEY: ${POSTHOG_PROJECT_API_KEY:-}
+      POSTHOG_HOST: ${POSTHOG_HOST:-}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
     ports:
       - "${API_PORT:-8000}:8000"
@@ -303,6 +307,10 @@ services:
       # Compiled in (packages/web/src/config.rs); unset: Cloudflare's test
       # site key. Empty: no Turnstile widget (see .env.example).
       STASH_TURNSTILE_SITE_KEY: ${STASH_TURNSTILE_SITE_KEY-1x00000000000000000000AA}
+      # Product analytics, compiled in too: off unless all three are set.
+      STASH_ANALYTICS_ENABLED: ${STASH_ANALYTICS_ENABLED:-false}
+      STASH_POSTHOG_PROJECT_API_KEY: ${STASH_POSTHOG_PROJECT_API_KEY:-}
+      STASH_POSTHOG_HOST: ${STASH_POSTHOG_HOST:-}
     depends_on:
       api:
         condition: service_healthy

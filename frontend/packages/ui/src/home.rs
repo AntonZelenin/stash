@@ -12,6 +12,7 @@ use dioxus_i18n::t;
 use futures_timer::Delay;
 
 use crate::AuthSession;
+use crate::analytics::use_analytics;
 use crate::auth_session::ItemLabels;
 use crate::collections::{
     COLLECTIONS_CSS, COLLECTIONS_ENABLED, CollectionChip, CollectionPicker, toggled,
@@ -22,12 +23,12 @@ use crate::duplicates::{Duplicate, DuplicateDialog, DuplicateFile, duplicate_pos
 use crate::filters::{
     FavoritesToggle, FiltersMenu, SortMenu, TAG_LIST_LIMIT, TypeFilter, TypeTabs,
 };
-use crate::i18n::api_error_message;
+use crate::i18n::{Language, Localization, api_error_message};
 use crate::icons::{
     IconArrowUp, IconClose, IconFile, IconLogout, IconPaperclip, IconSearch, IconStash, IconUser,
 };
 use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_tags};
-use crate::preferences::{DisplayMode, Preferences};
+use crate::preferences::{DisplayMode, Preferences, sync_hidden_tags};
 use crate::routes::Route;
 use crate::selection::{
     SelectionBar, SelectionEvent, merged, toggled_id, use_selection_events, with_local_edits,
@@ -230,6 +231,36 @@ pub fn Home() -> Element {
         }
     };
 
+    // `filters_changed` in analytics: the type, tag and favourites filters
+    // as last reported (None before the first look). Pruning a deleted tag
+    // from the filters updates it first, so only the user's own changes
+    // are reported.
+    let analytics = use_analytics();
+    let mut reported_filters = use_signal(|| None::<FilterSnapshot>);
+    let filter_snapshot = move || FilterSnapshot {
+        item_type: active_type(),
+        tag_ids: {
+            let mut ids: Vec<String> = selected_tags().iter().map(|tag| tag.id.clone()).collect();
+            ids.sort();
+            ids
+        },
+        favorites_only: favorites_only(),
+    };
+    use_effect({
+        let analytics = analytics.clone();
+        move || {
+            let snapshot = filter_snapshot();
+            let previous = reported_filters.peek().clone();
+            if previous.as_ref() == Some(&snapshot) {
+                return;
+            }
+            if previous.is_some() {
+                analytics.filters_changed(snapshot.categories());
+            }
+            reported_filters.set(Some(snapshot));
+        }
+    });
+
     // Listing order; search ignores it (ranked by relevance). `shuffle`
     // counts "Random" re-picks, each of which fetches a fresh shuffle.
     let sort = use_signal(ItemSort::default);
@@ -270,7 +301,13 @@ pub fn Home() -> Element {
     // server, and a slow response for an outdated query can never overwrite
     // a newer one. Resolves to `None` when the box is empty (show the
     // regular list instead).
+    //
+    // A query searched again (results refreshed after an edit, a filter
+    // change...) is sent as a rerun, so analytics counts each search the
+    // user makes once: `searched` is the last query that got results,
+    // forgotten when the box is emptied.
     let mut search_query = use_signal(String::new);
+    let mut searched = use_signal(|| None::<String>);
     let mut search_results = use_resource({
         let session = session.clone();
         move || {
@@ -279,12 +316,19 @@ pub fn Home() -> Element {
             let filters = current_filters();
             async move {
                 if query.is_empty() {
+                    if searched.peek().is_some() {
+                        searched.set(None);
+                    }
                     return None;
                 }
                 Delay::new(SEARCH_DEBOUNCE).await;
+                let rerun = searched.peek().as_deref() == Some(query.as_str());
                 let result = session
-                    .search_items(query.clone(), SEARCH_LIMIT, filters)
+                    .search_items(query.clone(), SEARCH_LIMIT, filters, rerun)
                     .await;
+                if result.is_ok() && !rerun {
+                    searched.set(Some(query.clone()));
+                }
                 Some((query, result))
             }
         }
@@ -442,6 +486,16 @@ pub fn Home() -> Element {
                         .retain(|c| kept_collections.iter().any(|kept| kept.id == c.id));
                 }
                 if kept_tags.len() < tags.len() {
+                    // Not the user changing the filters: not reported.
+                    let reported = reported_filters.peek().clone();
+                    if let Some(reported) = reported {
+                        let mut tag_ids = reported.tag_ids.clone();
+                        tag_ids.retain(|id| kept_tags.iter().any(|kept| kept.id == *id));
+                        reported_filters.set(Some(FilterSnapshot {
+                            tag_ids,
+                            ..reported
+                        }));
+                    }
                     selected_tags
                         .write()
                         .retain(|t| kept_tags.iter().any(|kept| kept.id == t.id));
@@ -604,6 +658,7 @@ pub fn Home() -> Element {
     // one left).
     let surprise_pick = use_callback({
         let session = session.clone();
+        let analytics = analytics.clone();
         move |continuing: bool| {
             if surprise_picking() {
                 return;
@@ -615,6 +670,7 @@ pub fn Home() -> Element {
                 .as_ref()
                 .filter(|_| continuing)
                 .map(|trail| trail.current().id.clone());
+            let analytics = analytics.clone();
             spawn(async move {
                 surprise_picking.set(true);
                 let mut picked = session.random_item(excluded.clone()).await;
@@ -634,10 +690,14 @@ pub fn Home() -> Element {
                         if let Some(trail) = trail.as_mut()
                             && trail.current().id != item.id
                         {
+                            analytics.item_opened(&item.r#type, false);
                             trail.push(item);
                         }
                     }
-                    Ok(Some(item)) => surprise.set(Some(SurpriseTrail::new(item))),
+                    Ok(Some(item)) => {
+                        analytics.item_opened(&item.r#type, false);
+                        surprise.set(Some(SurpriseTrail::new(item)));
+                    }
                     Ok(None) => status.set(Some(t!("surprise-me-nothing"))),
                     Err(err) => status.set(Some(t!(
                         "surprise-me-failed",
@@ -648,13 +708,19 @@ pub fn Home() -> Element {
         }
     });
     let surprise_me = use_callback(move |()| surprise_pick.call(false));
-    let surprise_step = use_callback(move |step: Step| {
-        let stepped = surprise
-            .write()
-            .as_mut()
-            .is_some_and(|trail| trail.step(step));
-        if !stepped && step == Step::Next {
-            surprise_pick.call(true);
+    let surprise_step = use_callback({
+        let analytics = analytics.clone();
+        move |step: Step| {
+            let stepped = surprise
+                .write()
+                .as_mut()
+                .is_some_and(|trail| trail.step(step));
+            if stepped && let Some(trail) = surprise.peek().as_ref() {
+                analytics.item_opened(&trail.current().r#type, false);
+            }
+            if !stepped && step == Step::Next {
+                surprise_pick.call(true);
+            }
         }
     });
 
@@ -906,6 +972,32 @@ pub fn Home() -> Element {
         Some(Ok(user)) => email_initials(&user.email),
         _ => String::new(),
     };
+    // Once the account has loaded: analytics events are for it, and the
+    // UI is in its language, if it chose one (kept with the account, so
+    // the same on every device).
+    {
+        let analytics = analytics.clone();
+        let localization = use_context::<Localization>();
+        use_effect(move || {
+            if let Some(Ok(user)) = &*current_user.read() {
+                analytics.identify(&user.analytics_id);
+                if let Some(language) = user.language.as_deref().and_then(Language::from_tag)
+                    && language != *localization.language_signal().peek()
+                {
+                    localization.set_language(language);
+                }
+            }
+        });
+    }
+    // The account's hidden tags, once per sign-in (Home is mounted anew for
+    // each); this device's copy is used until they arrive.
+    use_hook({
+        let session = session.clone();
+        let preferences = use_context::<Preferences>();
+        move || {
+            spawn(async move { sync_hidden_tags(&session, &preferences).await });
+        }
+    });
 
     let selected: Vec<String> = selection();
     let selected_items: Vec<ListedItem> = shown_items()
@@ -1380,6 +1472,7 @@ pub fn Home() -> Element {
                             Some((sort, Ok(response))) => item_results(
                                 &with_local_edits(&response.items, &edits),
                                 *sort != ItemSort::Random,
+                                false,
                                 t!("home-no-filter-matches"),
                                 selected.clone(),
                                 toggle_selected,
@@ -1395,6 +1488,7 @@ pub fn Home() -> Element {
                             Some(Some((query, Ok(response)))) => item_results(
                                 &with_local_edits(&response.items, &edits),
                                 false,
+                                true,
                                 t!("search-no-results", query: query.as_str()),
                                 selected.clone(),
                                 toggle_selected,
@@ -1457,14 +1551,37 @@ pub fn Home() -> Element {
     }
 }
 
+/// The filters `filters_changed` reports on, as they were last reported.
+#[derive(Clone, Debug, PartialEq)]
+struct FilterSnapshot {
+    item_type: TypeFilter,
+    /// Sorted: the order tags were picked in isn't a change.
+    tag_ids: Vec<String>,
+    favorites_only: bool,
+}
+
+impl FilterSnapshot {
+    /// Which categories are active, and how many tags: never which.
+    fn categories(&self) -> ::analytics::FilterCategories {
+        ::analytics::FilterCategories {
+            file_type: self.item_type != TypeFilter::All,
+            tags: !self.tag_ids.is_empty(),
+            favourites: self.favorites_only,
+            selected_tag_count: self.tag_ids.len() as u32,
+        }
+    }
+}
+
 /// Renders a list page or search results (already filtered by the
 /// server), or `empty_message` if there are none. `group_by_day` for
-/// chronological listings (see `ItemGrid`). `selected`: the selected
+/// chronological listings (see `ItemGrid`); `from_search` for search
+/// results. `selected`: the selected
 /// items' ids, any of which puts the grid in selection mode.
 #[allow(clippy::too_many_arguments)]
 fn item_results(
     items: &[ListedItem],
     group_by_day: bool,
+    from_search: bool,
     empty_message: String,
     selected: Vec<String>,
     on_toggle_selected: Callback<String>,
@@ -1485,6 +1602,7 @@ fn item_results(
             ItemGrid {
                 items: items.to_vec(),
                 group_by_day,
+                from_search,
                 selected,
                 on_toggle_selected,
                 on_delete,
@@ -1521,6 +1639,7 @@ fn surprise_nav(
 #[component]
 fn TopBar(initials: String, can_surprise: bool, on_surprise: EventHandler<()>) -> Element {
     let session = use_context::<AuthSession>();
+    let analytics = use_analytics();
     let mut menu_open = use_signal(|| false);
     let mut settings_open = use_signal(|| false);
 
@@ -1568,6 +1687,7 @@ fn TopBar(initials: String, can_surprise: bool, on_surprise: EventHandler<()>) -
                             onclick: move |_| {
                                 menu_open.set(false);
                                 settings_open.set(true);
+                                analytics.account_settings_opened();
                             },
                             IconUser {}
                             {t!("account-settings")}
@@ -1600,6 +1720,7 @@ fn TopBar(initials: String, can_surprise: bool, on_surprise: EventHandler<()>) -
 #[component]
 fn DisplayModeSwitch() -> Element {
     let preferences = use_context::<Preferences>();
+    let analytics = use_analytics();
     let current = preferences.display_mode();
 
     rsx! {
@@ -1618,9 +1739,11 @@ fn DisplayModeSwitch() -> Element {
                     title: display_mode_title(mode),
                     onclick: {
                         let preferences = preferences.clone();
+                        let analytics = analytics.clone();
                         move |_| {
-                            if preferences.display_mode() != mode {
+                            if preferences.current_display_mode() != mode {
                                 preferences.set_display_mode(mode);
+                                analytics.mode_changed(mode);
                             }
                         }
                     },

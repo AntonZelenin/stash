@@ -9,7 +9,11 @@ async def test_returns_the_signed_in_users_account(client: AsyncClient):
     response = await client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"id": user_id, "email": "alice@example.com"}
+    body = response.json()
+    analytics_id = body.pop("analytics_id")
+    assert body == {"id": user_id, "email": "alice@example.com", "language": None}
+    # Random, never the account id.
+    assert analytics_id != user_id
 
 
 async def test_requires_a_valid_token(client: AsyncClient):

@@ -1,7 +1,7 @@
 import uuid
 from typing import Literal, NamedTuple
 
-from sqlalchemy import case, delete, exists, func, insert, select
+from sqlalchemy import case, delete, exists, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -174,3 +174,31 @@ class TagRepository:
             delete(item_tags).where(item_tags.c.item_id == item_id, item_tags.c.tag_id == tag_id)
         )
         return result.rowcount == 1
+
+    async def get(self, *, user_id: uuid.UUID, tag_id: uuid.UUID) -> Tag | None:
+        result = await self._session.execute(select(Tag).where(Tag.id == tag_id, Tag.user_id == user_id))
+        return result.scalar_one_or_none()
+
+    async def hidden(self, *, user_id: uuid.UUID) -> list[Tag]:
+        result = await self._session.execute(
+            select(Tag).where(Tag.user_id == user_id, Tag.is_hidden).order_by(func.lower(Tag.name), Tag.id)
+        )
+        return list(result.scalars())
+
+    async def set_hidden(self, *, user_id: uuid.UUID, tag_ids: list[uuid.UUID], hidden: bool) -> int:
+        """Sets these of the user's tags hidden or not; returns how many
+        weren't already."""
+        if not tag_ids:
+            return 0
+        result = await self._session.execute(
+            update(Tag)
+            .where(Tag.user_id == user_id, Tag.id.in_(tag_ids), Tag.is_hidden.is_not(hidden))
+            .values(is_hidden=hidden)
+        )
+        return result.rowcount
+
+    async def count_hidden(self, *, user_id: uuid.UUID) -> int:
+        result = await self._session.execute(
+            select(func.count()).select_from(Tag).where(Tag.user_id == user_id, Tag.is_hidden)
+        )
+        return result.scalar_one()

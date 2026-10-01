@@ -267,13 +267,17 @@ jobs:
       - name: Install the Dioxus CLI
         run: cargo binstall -y --locked "dioxus-cli@${DIOXUS_CLI_VERSION}"
 
-      # The API URL and the Turnstile site key are compiled into the wasm
-      # (frontend/packages/web/src/config.rs).
+      # The API URL, the Turnstile site key and the analytics settings are
+      # compiled into the wasm (frontend/packages/web/src/config.rs).
+      # Analytics stays off unless all three repository variables are set.
       - name: Build the frontend
         working-directory: frontend/packages/web
         env:
           STASH_API_BASE_URL: ${{ steps.tf.outputs.api_url }}
           STASH_TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+          STASH_ANALYTICS_ENABLED: ${{ vars.ANALYTICS_ENABLED }}
+          STASH_POSTHOG_PROJECT_API_KEY: ${{ vars.POSTHOG_PROJECT_API_KEY }}
+          STASH_POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
         run: dx build --platform web --release
 
       # Hashed /assets first, cached for good, so the new index.html never

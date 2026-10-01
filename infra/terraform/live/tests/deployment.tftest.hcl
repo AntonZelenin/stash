@@ -108,6 +108,51 @@ run "api_verifies_turnstile_tokens_for_the_frontend" {
   }
 }
 
+# ---- Product analytics ----
+
+run "analytics_is_off_by_default" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.main["api"].environment[0].variables["ANALYTICS_ENABLED"] == "false"
+    error_message = "The API must send no analytics unless it's enabled."
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.main["image_analyzer"].environment[0].variables), "POSTHOG_PROJECT_API_KEY")
+    error_message = "Only the API sends analytics."
+  }
+}
+
+run "analytics_reaches_the_api_when_enabled" {
+  command = plan
+
+  variables {
+    analytics_enabled       = true
+    posthog_project_api_key = "phc_test"
+    posthog_host            = "https://eu.i.posthog.com"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.main["api"].environment[0].variables["ANALYTICS_ENABLED"] == "true"
+      && aws_lambda_function.main["api"].environment[0].variables["POSTHOG_PROJECT_API_KEY"] == "phc_test"
+      && aws_lambda_function.main["api"].environment[0].variables["POSTHOG_HOST"] == "https://eu.i.posthog.com"
+    )
+    error_message = "The analytics settings should reach the API."
+  }
+}
+
+run "analytics_refuses_personal_keys_and_bad_hosts" {
+  command = plan
+
+  variables {
+    posthog_project_api_key = "phx_personal"
+    posthog_host            = "https://eu.i.posthog.com/"
+  }
+
+  expect_failures = [var.posthog_project_api_key, var.posthog_host]
+}
+
 run "document_analyzer_has_memory_for_pdfs" {
   command = plan
 

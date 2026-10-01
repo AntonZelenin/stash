@@ -14,6 +14,11 @@ pub use i18n::{Language, LanguageStore, Localization, use_init_localization};
 mod preferences;
 pub use preferences::{PreferenceStore, Preferences, use_init_preferences};
 
+mod analytics;
+pub use self::analytics::{
+    ActivityTracker, Analytics, AnalyticsConfig, ConfigError, Platform, use_init_analytics,
+};
+
 mod auth;
 pub use auth::Auth;
 

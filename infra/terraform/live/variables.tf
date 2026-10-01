@@ -351,6 +351,34 @@ variable "turnstile_enabled" {
   default     = true
 }
 
+variable "analytics_enabled" {
+  description = "Whether the API sends product analytics events to PostHog (ANALYTICS_ENABLED). Needs posthog_project_api_key and posthog_host too; the frontend is configured separately, at build time (docs/deployment.md)."
+  type        = bool
+  default     = false
+}
+
+variable "posthog_project_api_key" {
+  description = "The PostHog project API key (POSTHOG_PROJECT_API_KEY): the public, write-only phc_... ingestion key from PostHog's project settings. Not a secret: it's compiled into the frontend as well."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.posthog_project_api_key == "" || startswith(var.posthog_project_api_key, "phc_")
+    error_message = "posthog_project_api_key must be a project API key (phc_...), never a personal API key."
+  }
+}
+
+variable "posthog_host" {
+  description = "The PostHog ingestion host (POSTHOG_HOST), e.g. https://eu.i.posthog.com or https://us.i.posthog.com."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.posthog_host == "" || can(regex("^https://[^/]+$", var.posthog_host))
+    error_message = "posthog_host must be an https:// origin without a path or trailing slash."
+  }
+}
+
 variable "api_cors_allowed_origins" {
   description = "Extra browser origins allowed to call the API (CORS_ALLOWED_ORIGINS; enforced by FastAPI, not API Gateway), e.g. [\"http://localhost:8080\"]. The CloudFront frontend is always allowed."
   type        = list(string)

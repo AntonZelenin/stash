@@ -16,6 +16,12 @@
 //!   matching the local API's test secret (`.env.example`). Empty: no
 //!   widget, for an API with `TURNSTILE_ENABLED=false`.
 //!
+//! - `STASH_ANALYTICS_ENABLED`, `STASH_POSTHOG_PROJECT_API_KEY`,
+//!   `STASH_POSTHOG_HOST`: product analytics (PostHog). Off unless the
+//!   first is `true` and both others are set, in any build; an invalid key
+//!   (not a `phc_` project key) or host fails the build. See
+//!   docs/deployment.md, "Product analytics".
+//!
 //! Cargo rebuilds the crate when a variable changes.
 
 /// The backend API's base URL.
@@ -23,6 +29,58 @@ pub const API_BASE_URL: &str = api_base_url();
 
 /// The Turnstile site key, if the sign-up form has a widget.
 pub const TURNSTILE_SITE_KEY: Option<&str> = turnstile_site_key();
+
+/// Where analytics events go; None (the default) sends none.
+pub fn analytics_config() -> Option<ui::AnalyticsConfig> {
+    // Invalid settings fail the build (`check_analytics_settings`), so an
+    // error can't happen here; were it to, analytics would just be off.
+    ui::AnalyticsConfig::from_settings(
+        option_env!("STASH_ANALYTICS_ENABLED"),
+        option_env!("STASH_POSTHOG_PROJECT_API_KEY"),
+        option_env!("STASH_POSTHOG_HOST"),
+    )
+    .unwrap_or_default()
+}
+
+// The analytics settings, validated when the app is compiled.
+const _: () = check_analytics_settings();
+
+const fn check_analytics_settings() {
+    let enabled = matches!(option_env!("STASH_ANALYTICS_ENABLED"), Some(value) if eq(value.as_bytes(), b"true"));
+    if !enabled {
+        return;
+    }
+    if let Some(key) = option_env!("STASH_POSTHOG_PROJECT_API_KEY")
+        && !key.is_empty()
+        && !starts_with(key.as_bytes(), b"phc_")
+    {
+        panic!("STASH_POSTHOG_PROJECT_API_KEY must be a PostHog project API key (phc_...)");
+    }
+    if let Some(host) = option_env!("STASH_POSTHOG_HOST")
+        && !host.is_empty()
+        && (!starts_with(host.as_bytes(), b"https://")
+            && !starts_with(host.as_bytes(), b"http://localhost")
+            || host.as_bytes()[host.len() - 1] == b'/')
+    {
+        panic!(
+            "STASH_POSTHOG_HOST must be an https:// origin without a trailing slash, e.g. https://eu.i.posthog.com"
+        );
+    }
+}
+
+const fn eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// Cloudflare's test site key: always passes, visibly marked as a test.
 const DEV_TURNSTILE_SITE_KEY: &str = "1x00000000000000000000AA";

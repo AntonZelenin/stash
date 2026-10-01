@@ -26,6 +26,12 @@ class SearchRequest(BaseModel):
     # Only items saved at or after `created_from` and before `created_before`.
     created_from: AwareDatetime | None = None
     created_before: AwareDatetime | None = None
+    # True when the client runs a search again for a query it already
+    # searched (refreshing results after an edit, a filter change...),
+    # rather than for one the user just entered. Changes nothing about the
+    # results; only searches the user made count as searches in product
+    # analytics.
+    rerun: bool = False
 
 
 class SearchResponse(BaseModel):

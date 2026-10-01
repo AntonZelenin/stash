@@ -50,6 +50,11 @@ aws_region  = "eu-central-1"
 # api_throttling_rate_limit  = 300 # requests/s through API Gateway, all clients together
 # api_throttling_burst_limit = 600
 # turnstile_enabled          = true # registration requires a Cloudflare Turnstile token
+# Product analytics (PostHog), API side; the frontend gets the same key and
+# host at build time (docs/deployment.md, "Product analytics").
+# analytics_enabled       = true
+# posthog_project_api_key = "phc_..." # public ingestion key, not a secret
+# posthog_host            = "https://eu.i.posthog.com"
 # storage_deletion_drain_minutes = 15 # how often pending object deletions are retried
 # storage_reconciliation_minutes = 60 # how often orphaned objects are looked for
 

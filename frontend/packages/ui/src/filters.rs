@@ -830,6 +830,7 @@ pub fn SortMenu(
 ) -> Element {
     let mut open = use_signal(|| false);
     let mut value = value;
+    let analytics = crate::analytics::use_analytics();
 
     let current = value();
     let title = if disabled {
@@ -867,13 +868,17 @@ pub fn SortMenu(
                             role: "menuitemradio",
                             aria_checked: if option == current { "true" } else { "false" },
                             title: if option == ItemSort::Random && current == ItemSort::Random { t!("sort-reshuffle") } else { String::new() },
-                            onclick: move |_| {
-                                if option == ItemSort::Random && value() == ItemSort::Random {
-                                    on_reshuffle.call(());
-                                } else {
-                                    value.set(option);
+                            onclick: {
+                                let analytics = analytics.clone();
+                                move |_| {
+                                    if option == ItemSort::Random && value() == ItemSort::Random {
+                                        on_reshuffle.call(());
+                                    } else if option != value() {
+                                        value.set(option);
+                                        analytics.sort_changed(option);
+                                    }
+                                    open.set(false);
                                 }
-                                open.set(false);
                             },
                             span { class: "sort-option-check",
                                 if option == current {

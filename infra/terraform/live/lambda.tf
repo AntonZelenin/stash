@@ -165,6 +165,12 @@ locals {
         TURNSTILE_ENABLED               = tostring(var.turnstile_enabled)
         TURNSTILE_SECRET_KEY_SECRET_ARN = aws_secretsmanager_secret.turnstile_secret_key.arn
         TURNSTILE_ALLOWED_HOSTNAMES     = jsonencode([aws_cloudfront_distribution.frontend.domain_name])
+        # Product analytics (app.analytics): sends nothing unless enabled
+        # and both are set. The project API key is PostHog's public,
+        # write-only ingestion key, compiled into the frontend too.
+        ANALYTICS_ENABLED       = tostring(var.analytics_enabled)
+        POSTHOG_PROJECT_API_KEY = var.posthog_project_api_key
+        POSTHOG_HOST            = var.posthog_host
       } : {},
       l.queue == null ? {} : {
         MAX_DELIVERY_ATTEMPTS            = tostring(var.max_delivery_attempts)

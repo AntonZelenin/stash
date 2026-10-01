@@ -233,6 +233,7 @@ class ItemCreated(BaseModel):
 class ListedTag(BaseModel):
     id: UUID
     name: str
+    hidden: bool = False
 
 
 class ListedCollection(BaseModel):

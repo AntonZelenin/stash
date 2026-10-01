@@ -132,6 +132,10 @@ impl Localization {
         (self.language)()
     }
 
+    pub(crate) fn language_signal(&self) -> Signal<Language> {
+        self.language
+    }
+
     /// Switches the UI to `language` and remembers it as the user's
     /// choice, overriding the system language from now on.
     pub fn set_language(&self, language: Language) {

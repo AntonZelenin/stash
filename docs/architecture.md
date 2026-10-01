@@ -915,7 +915,164 @@ API Gateway request counts, errors and latency, compute CPU/memory, Lambda
 invocations/errors/throttles/concurrency/duration, load balancer request
 counts, RDS connections and resources, ElastiCache and SQS metrics.
 Application metrics complement these. Nor are product counts (items
-created...), which say nothing about health.
+created...), which say nothing about health: those are product analytics
+(below).
+
+## Product analytics
+
+What users do, for product questions (activation, retention, which features
+are used), in PostHog: separate from logs, traces and metrics, which are
+about the system's health. Setup and suggested insights:
+[deployment.md](deployment.md#product-analytics-posthog).
+
+Off unless configured, on each side separately: the API with
+`ANALYTICS_ENABLED=true` plus `POSTHOG_PROJECT_API_KEY` and `POSTHOG_HOST`
+(`app.config`), each client build with `STASH_ANALYTICS_ENABLED=true` plus
+`STASH_POSTHOG_PROJECT_API_KEY` and `STASH_POSTHOG_HOST` (compiled in).
+Settings default to off, so tests and unconfigured environments send
+nothing; the API's tests replace it with a recorder.
+
+### Identity
+
+Each user has an `analytics_id` (`users.analytics_id`): random, generated
+with the account, unrelated to its id or email, and used only as PostHog's
+`distinct_id`. `GET /users/me` returns it, so the clients identify with the
+same id the API uses: one person in PostHog for every device. No person
+properties are set; nothing else about the account (email, id) is sent.
+Clients send nothing until the account has loaded: events from before
+(opening the app) wait for the id, and signing out drops what's still
+waiting and forgets the identity (the next account's events never carry the
+previous one's id). Events are kept after an account is deleted; they can't
+be linked back to it once the row (and with it the mapping) is gone.
+
+### What's sent
+
+Only the properties each event allows, and only closed sets of values:
+types, modes, flags, sizes and counts. Never content, descriptions,
+filenames, URLs, search queries, tag names or ids, passwords, tokens,
+emails or IP addresses. On the API, `app.analytics.EVENT_PROPERTIES` and
+`ALLOWED_VALUES` drop anything else (at capture, and again in the SDK's
+`before_send`, which also strips what the SDK adds about the server); in
+the clients, events are typed (`analytics` crate), so nothing else can be
+built. GeoIP is disabled on every event (`$geoip_disable`). The API's
+requests carry the Lambda's IP, never the user's; the clients send to
+PostHog directly, so the PostHog project must have *Discard client IP
+data* on (a required setup step). There's no autocapture, pageview, session
+replay or exception capture: the clients don't use PostHog's JavaScript
+SDK, only its capture API, and the API's SDK has exception capture and
+feature flags off.
+
+### Events
+
+Each action is tracked in one place only. The API's events are captured by
+the service that commits the action, after its commit, so they mean it
+happened: failed, rejected, rolled back and no-op requests send nothing.
+
+| Event | Where | Properties |
+|---|---|---|
+| `session_started` | client | `platform` (web, desktop, mobile), `mode` (normal, blind) |
+| `mode_changed` | client | `mode` |
+| `item_opened` | client | `item_type`, `from_search`, `mode` |
+| `sort_changed` | client | `sort_method` (date, random), `sort_direction` (asc, desc; date only) |
+| `filters_changed` | client | `file_type_filter`, `tag_filter`, `favourites_filter` (bools), `active_filter_count`, `selected_tag_count` |
+| `account_settings_opened` | client | — |
+| `privacy_opened` | client | — |
+| `account_registered` | API | — |
+| `item_saved` | API | `item_type`, `size_bytes` (images, files) |
+| `search_completed` | API | `result_count` |
+| `item_description_edited` | API | `item_type` |
+| `item_tags_changed` | API | `action` (add, remove), `tag_visibility` (regular, hidden), `affected_item_count` |
+| `tag_visibility_changed` | API | `visibility` (hidden, visible), `affected_tag_count` |
+| `item_favourite_changed` | API | `action` (added, removed), `item_type` |
+| `items_deleted` | API | `deleted_count`, `text_count`, `link_count`, `image_count`, `file_count` |
+| `password_changed` | API | — |
+| `account_deleted` | API | — |
+| `language_changed` | API | `language` (en, uk) |
+
+Where each event comes from, and how it's counted:
+
+- Language and hidden tags are kept with the account, so their changes are
+  the API's events; the Normal/Blind mode is per device, so its change is
+  the client's.
+- `session_started`: opening the app, and the first activity after 30
+  minutes without any (`analytics::SessionClock`). Activity is the user's
+  input only (pointer, keys, wheel, and every tracked action): rerenders,
+  timers, background refreshes and a tab left in the background never
+  start or extend a session. Signing out ends the session; another account
+  identified starts its own.
+- `item_saved`: once per item created, on `POST /items/text` and on the
+  finalize that creates an upload's item; a retried finalize returning the
+  existing item, a rejected upload, or a started upload never finalized
+  sends nothing. `size_bytes` is the stored size.
+- `item_tags_changed`: one event per tag added to or removed from one item
+  (`affected_item_count` 1), whatever the path: `POST /items/{id}/tags`,
+  `DELETE /items/{id}/tags/{tag_id}`, and each tag given when an item is
+  saved (counted exactly as if added afterwards, so tagging on save and
+  tagging later add up the same; the save itself is the `item_saved`).
+  Adding a tag already on the item, or removing one that isn't, sends
+  nothing. `tag_visibility` is the tag's at the time (read before a
+  removal, which may delete the tag). A tag created by its first use, or
+  deleted with its last item, isn't an event of its own; neither is a
+  tag's disappearance when the last item carrying it is deleted. The web
+  client applies a bulk change to selected items one item at a time, so
+  that's one event per item: sum `affected_item_count` for items, count
+  events for tag changes.
+- `tag_visibility_changed`: one per `POST /tags/visibility` that changed
+  something, `affected_tag_count` the tags whose state actually changed.
+  Uploading the hidden tags a device kept on its own before they were kept
+  with the account (`imported_from_device`) isn't counted.
+- `item_favourite_changed`: only when the state changes (marking a favorite
+  again is a no-op). There's no favourite on save.
+- `items_deleted`: one per committed `DELETE /items/{id}` or
+  `POST /items/delete`, counting only items actually deleted (ids that
+  aren't the user's, or are gone, aren't); nothing if none were. The web
+  client deletes a selection item by item, so that's one event per item.
+  Account deletion is `account_deleted` only.
+- `item_description_edited`: a `PATCH /items/{id}` that changed the user's
+  text (a note's or link's text, an image's or file's caption, including
+  removing it); a rename, a type change or an unchanged text isn't one.
+- `search_completed`: once per search the user makes, after it succeeded
+  (a 503 or 429 isn't). The client sends `rerun: true` on `POST /search`
+  for a query it already got results for (results refreshed after an edit,
+  a favorite or a filter change, a restart), and those aren't counted; the
+  query is forgotten when the search box is emptied, so searching it again
+  later counts. Search has no pagination, and listing (`GET /items`) is
+  never a search. Search-as-you-type sends a query after each pause in
+  typing, so "cat", a pause, then "cats" are two searches. A request the
+  client abandons while it's in flight (the user typed on, or changed a
+  filter) still counts if the server completed it, and the client, not
+  having seen its results, sends the next one as new.
+- `item_opened`: an item opened in the viewer from a card, each item
+  stepped to in the viewer, each item "Surprise me" shows, and a file or
+  link opened from its card. Switching between viewing and editing isn't.
+  `from_search`: opened from search results.
+- `filters_changed`: when the type, tag or favourites filter changes (by
+  the user: tags dropped from the filter because they no longer exist
+  aren't); the date and collection filters aren't tracked. Changing the
+  order (`sort_changed`) is separate; reshuffling a random order isn't a
+  change.
+- `privacy_opened`: opening the Privacy section of the settings.
+- Collections are hidden in the clients and aren't tracked.
+
+### Delivery
+
+Analytics never gets in the way of what it records, and loses events rather
+than wait:
+
+- API: `PostHogAnalytics.capture` puts the event on the SDK's bounded queue
+  (`ANALYTICS_MAX_QUEUE_SIZE`, 1,000; full drops) and never raises; the
+  SDK's consumer thread sends it, each request bounded by
+  `ANALYTICS_TIMEOUT_SECONDS` (3 s), one retry. A Lambda environment is
+  frozen as soon as the handler returns, and nothing guarantees the
+  consumer thread runs after that, so the handler flushes at the end of
+  every invocation, after metrics and traces, bounded by
+  `ANALYTICS_FLUSH_TIMEOUT_SECONDS` (2 s); what isn't sent by then may go
+  with a later invocation, or be lost. Only requests that captured
+  something wait for it.
+- Clients: events go straight to PostHog's batch endpoint, never through the
+  API, from a bounded queue (100 events; the oldest dropped), one request
+  at a time (at most 50 events), abandoned after 5 s, never retried. The
+  sending runs detached from the UI, so closing a view doesn't cancel it.
 
 ## Environments
 
@@ -1205,10 +1362,12 @@ in search) leaves out every item carrying any of the given tags, in a
 `NOT EXISTS` on `item_tags`. It backs the clients' Blind mode (hiding items
 with the tags the user marked hidden), so `GET /items/counts` and
 `GET /items/random` ("Surprise me") take it too, and an item hidden from the
-list isn't counted or surprised with either. The hidden-tag set and the mode
-are client preferences, not stored server-side: the client sends the ids
-while Blind mode is on, and an id that isn't one of the user's tags (e.g. a
-tag since deleted) excludes nothing.
+list isn't counted or surprised with either. The hidden tags are kept with
+the account (`tags.is_hidden`; `GET /tags/hidden`, `POST /tags/visibility`,
+at most 100), so every device hides the same ones, and go with the tag;
+the mode is each device's own. The server still doesn't apply them by
+itself: the client sends the ids while Blind mode is on, and an id that
+isn't one of the user's tags (e.g. a tag since deleted) excludes nothing.
 
 Listing is newest first by default; `sort=oldest` reverses it (same
 keyset pagination on `created_at, id`, the cursor recording its order),
@@ -1324,7 +1483,10 @@ again, as on creation.
 
 `GET /users/me` returns the signed-in user's `id` and `email`. Tokens are
 opaque, so this is how clients learn who is signed in (the app uses the
-email for the avatar's initials).
+email for the avatar's initials). Also their `analytics_id` (see "Product
+analytics") and the UI `language` they chose, if any (`PUT
+/users/me/language`, `en` or `uk`): kept with the account, so every device
+they sign in on uses it.
 
 ### Changing the password
 
@@ -1687,6 +1849,15 @@ database, while their objects are already gone from storage (the bucket
 isn't versioned). After a restore, accounts deleted since the backup must
 be deleted again.
 
+### Product analytics (PostHog)
+
+Usage events (see "Product analytics") go to PostHog, under the account's
+random `analytics_id`, with no content, names, queries, URLs or IP
+addresses (the PostHog project discards client IPs). They're kept for the
+PostHog project's retention period. Deleting the account doesn't delete
+them, but removes the only link between that id and the account. The
+Privacy section shows this point only in builds with analytics on.
+
 ### OpenAI
 
 User content is sent to OpenAI for processing:
@@ -1800,12 +1971,23 @@ Component-specific `CLAUDE.md` files may be added inside individual directories.
 - The UI is translated (English, Ukrainian) with `dioxus-i18n` (Fluent):
   strings live in `frontend/packages/ui/i18n/<lang>.ftl` and components look
   them up by key with `t!`; see `frontend/packages/ui/src/i18n.rs`. The
-  language is the user's saved choice (kept by the platform, `localStorage`
-  on the web), else the browser's, else English, which also fills in any
-  key a translation lacks. Only UI text is translated: user content, API
-  values and backend validation messages are shown as they are.
-- Viewing preferences — the hidden tags (by id, chosen in Settings) and the
-  Normal/Blind mode (toggled in the top bar) — are kept per device by the
-  platform (`PreferenceStore`, `localStorage` on the web), like the language;
-  see `frontend/packages/ui/src/preferences.rs`. Blind mode sends the hidden
-  tags as `exclude_tag_id` to listing, search, counts and "Surprise me".
+  language is the account's (chosen in Settings, saved with `PUT
+  /users/me/language` and applied on every device once the account loads),
+  else this device's last one (kept by the platform, `localStorage` on the
+  web: what the sign-in screen uses), else the browser's, else English,
+  which also fills in any key a translation lacks. Only UI text is
+  translated: user content, API values and backend validation messages are
+  shown as they are.
+- Viewing preferences (`frontend/packages/ui/src/preferences.rs`): the
+  hidden tags (chosen in Settings) are the account's (see "Tags,
+  collections, favorites and filtering"); the device keeps a copy
+  (`PreferenceStore`, `localStorage` on the web), used until the account's
+  list has loaded, so Blind mode never shows hidden items in between.
+  Hidden tags a device kept on its own before they were kept with the
+  account are uploaded once (`imported_from_device`). The Normal/Blind mode
+  (toggled in the top bar) is per device. Blind mode sends the hidden tags
+  as `exclude_tag_id` to listing, search, counts and "Surprise me".
+- Product analytics (see "Product analytics"): the `analytics` crate (events,
+  session clock, queue, PostHog transport) and `ui/src/analytics.rs`
+  (`use_init_analytics`, `ActivityTracker`), configured at build time by
+  each platform crate.

@@ -181,6 +181,14 @@ pub struct ItemCreated {
 pub struct CurrentUser {
     pub id: String,
     pub email: String,
+    /// The account's id in product analytics: random, unrelated to `id`,
+    /// the same on every device. Empty from an API that predates it.
+    #[serde(default)]
+    pub analytics_id: String,
+    /// The UI language the user chose (`"en"`, `"uk"`), kept with the
+    /// account; None if they haven't chosen one.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// How many items the user has: of each type and each kind (every one
@@ -248,6 +256,23 @@ pub struct SuggestedTagsResponse {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AssignTagRequest {
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SetLanguageRequest {
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SetTagVisibilityRequest {
+    pub tag_ids: Vec<String>,
+    pub hidden: bool,
+    pub imported_from_device: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct HiddenTagsResponse {
+    pub tags: Vec<Tag>,
 }
 
 /// A user's collection: a named group of items. An item can be in any
@@ -427,6 +452,9 @@ pub(crate) struct SearchRequest {
     pub created_from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_before: Option<String>,
+    /// A search run again for a query already searched (see
+    /// `ApiClient::search_items`).
+    pub rerun: bool,
 }
 
 /// Same item shape as `ListItemsResponse`, best match first; no paging.

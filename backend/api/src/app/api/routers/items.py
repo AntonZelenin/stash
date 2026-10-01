@@ -37,6 +37,7 @@ from app.api.schemas.items import (
     UploadType,
     PlaybackUrl,
 )
+from app.analytics import Analytics, get_analytics
 from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM, InvalidCollectionNameError
 from app.config import get_settings
 from app.body_size import BodyLimitedRoute, content_body
@@ -99,11 +100,14 @@ async def create_text_item(
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    analytics: Analytics = Depends(get_analytics),
 ) -> ItemCreated:
     # Each saved note is sent for embedding.
     await limiter.consume(Charge(limiter.limits.item_writes_per_user, str(current_user.id)))
     try:
-        item = await ItemService(session, storage, outbox).create_text_item(
+        item = await ItemService(
+            session, storage, outbox, analytics=analytics.for_user(current_user.analytics_id)
+        ).create_text_item(
             user_id=current_user.id,
             text=payload.text,
             tags=payload.tags,
@@ -213,11 +217,14 @@ async def finalize_upload(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
+    analytics: Analytics = Depends(get_analytics),
 ) -> ItemCreated:
     """Step 2: creates the item once the upload is in storage, and starts
     its processing."""
     try:
-        item = await ItemService(session, storage, outbox).finalize_upload(
+        item = await ItemService(
+            session, storage, outbox, analytics=analytics.for_user(current_user.analytics_id)
+        ).finalize_upload(
             user_id=current_user.id, upload_id=upload_id
         )
     except UploadNotFoundError:
@@ -434,11 +441,14 @@ async def update_item(
     storage: ObjectStorage = Depends(get_object_storage),
     outbox: OutboxPublisher = Depends(get_outbox),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    analytics: Analytics = Depends(get_analytics),
 ) -> ListedItem:
     # An edited text or caption is sent for embedding again.
     await limiter.consume(Charge(limiter.limits.item_writes_per_user, str(current_user.id)))
     try:
-        listed = await ItemService(session, storage, outbox).update_item(
+        listed = await ItemService(
+            session, storage, outbox, analytics=analytics.for_user(current_user.analytics_id)
+        ).update_item(
             user_id=current_user.id,
             item_id=item_id,
             edit=ItemEdit(text=payload.text, filename=payload.filename, item_type=_domain_text_type(payload.type)),
@@ -460,8 +470,10 @@ async def mark_favorite(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
+    analytics: Analytics = Depends(get_analytics),
 ) -> Response:
-    return await _set_favorite(ItemService(session, storage), current_user, item_id, is_favorite=True)
+    service = ItemService(session, storage, analytics=analytics.for_user(current_user.analytics_id))
+    return await _set_favorite(service, current_user, item_id, is_favorite=True)
 
 
 @router.delete(
@@ -474,8 +486,10 @@ async def unmark_favorite(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
+    analytics: Analytics = Depends(get_analytics),
 ) -> Response:
-    return await _set_favorite(ItemService(session, storage), current_user, item_id, is_favorite=False)
+    service = ItemService(session, storage, analytics=analytics.for_user(current_user.analytics_id))
+    return await _set_favorite(service, current_user, item_id, is_favorite=False)
 
 
 async def _set_favorite(service: ItemService, user: User, item_id: UUID, *, is_favorite: bool) -> Response:
@@ -497,9 +511,15 @@ async def delete_item(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
+    analytics: Analytics = Depends(get_analytics),
 ) -> Response:
     try:
-        await ItemService(session, storage, storage_deletions=storage_deletions).delete_item(
+        await ItemService(
+            session,
+            storage,
+            storage_deletions=storage_deletions,
+            analytics=analytics.for_user(current_user.analytics_id),
+        ).delete_item(
             user_id=current_user.id, item_id=item_id
         )
     except ItemNotFoundError:
@@ -520,8 +540,14 @@ async def delete_items(
     session: AsyncSession = DbSession,
     storage: ObjectStorage = Depends(get_object_storage),
     storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
+    analytics: Analytics = Depends(get_analytics),
 ) -> Response:
-    await ItemService(session, storage, storage_deletions=storage_deletions).delete_items(
+    await ItemService(
+        session,
+        storage,
+        storage_deletions=storage_deletions,
+        analytics=analytics.for_user(current_user.analytics_id),
+    ).delete_items(
         user_id=current_user.id, item_ids=body.ids
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -576,7 +602,7 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
             if listed.item.file
             else None
         ),
-        tags=[ListedTag(id=tag.id, name=tag.name) for tag in listed.item.tags],
+        tags=[ListedTag(id=tag.id, name=tag.name, hidden=tag.is_hidden) for tag in listed.item.tags],
         collections=[
             ListedCollection(id=collection.id, name=collection.name) for collection in listed.item.collections
         ],

@@ -6,9 +6,11 @@ from app.api.schemas.users import (
     ChangePasswordRequest,
     CurrentUserResponse,
     DeleteAccountRequest,
+    SetLanguageRequest,
     UserCreateRequest,
     UserCreateResponse,
 )
+from app.analytics import Analytics, get_analytics
 from app.auth.services import AuthService, IncorrectPasswordError
 from app.body_size import BodyLimitedRoute
 from app.db import DbSession
@@ -17,7 +19,7 @@ from app.rate_limits.limiter import Charge, RateLimiter, client_ip, get_rate_lim
 from app.storage.deletions import StorageDeletionDrainer, get_storage_deletion_drainer
 from app.turnstile import TurnstileUnavailableError, TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
-from app.users.services import EmailAlreadyRegisteredError, UserService
+from app.users.services import EmailAlreadyRegisteredError, UnsupportedLanguageError, UserService
 
 router = APIRouter(tags=["users"], route_class=BodyLimitedRoute)
 
@@ -39,6 +41,7 @@ async def create_user(
     session: AsyncSession = DbSession,
     limiter: RateLimiter = Depends(get_rate_limiter),
     turnstile: TurnstileVerifier = Depends(get_turnstile_verifier),
+    analytics: Analytics = Depends(get_analytics),
 ) -> UserCreateResponse:
     # Every attempt counts, taken or not: a 409 says the email is
     # registered, so this also slows down probing for accounts. Counted
@@ -63,7 +66,7 @@ async def create_user(
             [{"loc": ["body", "turnstile_token"], "msg": "Verification failed, try again", "type": "turnstile"}],
         )
     try:
-        user = await UserService(session).register(payload.email, payload.password)
+        user = await UserService(session, analytics=analytics).register(payload.email, payload.password)
     except EmailAlreadyRegisteredError:
         raise HTTPException(status.HTTP_409_CONFLICT, "User already exists") from None
 
@@ -76,7 +79,35 @@ async def create_user(
     responses={401: {"description": "Unauthorized"}},
 )
 async def get_me(current_user: User = Depends(get_current_user)) -> CurrentUserResponse:
-    return CurrentUserResponse(id=current_user.id, email=current_user.email)
+    return CurrentUserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        analytics_id=current_user.analytics_id,
+        language=current_user.language,
+    )
+
+
+@router.put(
+    "/users/me/language",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={401: {"description": "Unauthorized"}, 422: {"description": "Unsupported language"}},
+)
+async def set_language(
+    payload: SetLanguageRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    analytics: Analytics = Depends(get_analytics),
+) -> Response:
+    """The UI language the user chose, kept with the account so every
+    device they sign in on uses it."""
+    try:
+        await UserService(session, analytics=analytics).set_language(current_user, payload.language)
+    except UnsupportedLanguageError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            [{"loc": ["body", "language"], "msg": "Unsupported language", "type": "value_error"}],
+        ) from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -94,13 +125,14 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
     limiter: RateLimiter = Depends(get_rate_limiter),
+    analytics: Analytics = Depends(get_analytics),
 ) -> TokenPairResponse:
     # Reserved, then refunded if the current password was right, like a
     # login: a stolen access token mustn't allow guessing the password.
     failure = Charge(limiter.limits.password_change_failures_per_user, str(current_user.id))
     await limiter.consume(failure)
     try:
-        tokens = await AuthService(session).change_password(
+        tokens = await AuthService(session, analytics).change_password(
             current_user, payload.current_password, payload.new_password
         )
     except IncorrectPasswordError:
@@ -133,13 +165,14 @@ async def delete_account(
     session: AsyncSession = DbSession,
     limiter: RateLimiter = Depends(get_rate_limiter),
     storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
+    analytics: Analytics = Depends(get_analytics),
 ) -> Response:
     # The password, like changing it: a stolen access token mustn't be
     # enough to delete everything. Wrong ones count against the same limit.
     failure = Charge(limiter.limits.password_change_failures_per_user, str(current_user.id))
     await limiter.consume(failure)
     try:
-        await UserService(session, storage_deletions).delete_account(current_user, payload.password)
+        await UserService(session, storage_deletions, analytics).delete_account(current_user, payload.password)
     except IncorrectPasswordError:
         # Not a 401, as for a password change: the token is fine.
         raise HTTPException(

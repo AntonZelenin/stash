@@ -76,7 +76,7 @@ jobs:
       # The web app and what it's built from; desktop and mobile need native
       # GUI libraries and aren't shipped.
       - name: Test
-        run: cargo test --locked -p api -p ui -p web
+        run: cargo test --locked -p analytics -p api -p ui -p web
 
       - name: Check the web build (wasm32)
         run: cargo check --locked -p web --target wasm32-unknown-unknown

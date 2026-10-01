@@ -315,11 +315,13 @@ impl AuthSession {
         .await
     }
 
+    /// `rerun`: see `ApiClient::search_items`.
     pub async fn search_items(
         &self,
         query: String,
         limit: u32,
         filters: ItemQuery,
+        rerun: bool,
     ) -> Result<SearchResponse, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
@@ -328,7 +330,55 @@ impl AuthSession {
             let filters = filters.clone();
             async move {
                 client
-                    .search_items(&access_token, &query, limit, &filters)
+                    .search_items(&access_token, &query, limit, &filters, rerun)
+                    .await
+            }
+        })
+        .await
+    }
+
+    /// Saves the chosen UI language with the account.
+    pub async fn set_language(&self, language: &str) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        let language = language.to_string();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let language = language.clone();
+            async move { client.set_language(&access_token, &language).await }
+        })
+        .await
+    }
+
+    /// The ids of the tags the user hid.
+    pub async fn hidden_tag_ids(&self) -> Result<Vec<String>, ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            async move {
+                client
+                    .hidden_tags(&access_token)
+                    .await
+                    .map(|tags| tags.into_iter().map(|tag| tag.id).collect())
+            }
+        })
+        .await
+    }
+
+    /// Hides these tags, or shows them again (see
+    /// `ApiClient::set_tag_visibility`).
+    pub async fn set_tag_visibility(
+        &self,
+        tag_ids: Vec<String>,
+        hidden: bool,
+        imported_from_device: bool,
+    ) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let tag_ids = tag_ids.clone();
+            async move {
+                client
+                    .set_tag_visibility(&access_token, &tag_ids, hidden, imported_from_device)
                     .await
             }
         })

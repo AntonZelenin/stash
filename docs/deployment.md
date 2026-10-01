@@ -53,6 +53,9 @@ In this order, with your own AWS credentials (see
    | `LAMBDA_PERMISSIONS_BOUNDARY_ARN` | `arn:aws:iam::123456789012:policy/stash-prod-lambda-boundary` |
    | `TF_VARS` *(optional)* | any other `live/` variables as HCL, one per line, e.g. `alarm_email = "ops@example.com"` |
    | `TURNSTILE_SITE_KEY` | the Cloudflare Turnstile widget's site key, e.g. `0x4AAAAAAA...` (see below); compiled into the frontend |
+   | `ANALYTICS_ENABLED` *(optional)* | `true` to compile product analytics into the frontend ([below](#product-analytics-posthog)) |
+   | `POSTHOG_PROJECT_API_KEY` *(optional)* | the PostHog project API key, `phc_...`; compiled into the frontend |
+   | `POSTHOG_HOST` *(optional)* | the PostHog ingestion host, e.g. `https://eu.i.posthog.com`; compiled into the frontend |
 
    No GitHub *secrets* are needed.
 
@@ -110,6 +113,86 @@ turnstile_secret_key_secret_arn`):
 Until it's set, registration answers 503 (it never lets a registration
 through unverified); everything else works. The API reads it on the next
 registration, no redeploy needed.
+
+### Product analytics (PostHog)
+
+Optional, and off until configured on both sides; see
+[architecture](architecture.md#product-analytics) for what's sent.
+
+1. **Get the key and host.** In PostHog (cloud), create a project for
+   production (and a separate one for development: never send local events
+   to production's). *Project settings → General → Project ID & API key*
+   has the **project API key** (`phc_...`, public, write-only: it's
+   compiled into the frontend) and the region; the ingestion host is
+   `https://eu.i.posthog.com` for EU Cloud, `https://us.i.posthog.com` for
+   US Cloud (self-hosted: your instance's URL). Never use a personal API key
+   (`phx_...`): the build and Terraform refuse one.
+2. **Required project settings** (*Project settings*), before any event
+   arrives: turn **Discard client IP data** on. The frontend talks to
+   PostHog directly, and PostHog otherwise stores the browser's IP with
+   each event; the app's privacy notes rely on it being discarded. The
+   clients don't use PostHog's JavaScript SDK, so autocapture, session
+   replay, pageviews and exception capture never run, but turn them off in
+   the project too (*Autocapture*, *Session replay*, *Web analytics →
+   heatmaps*, *Exception autocapture*) so nothing changes if that ever does.
+3. **Configure the deployment.** The API: add to `TF_VARS`
+
+       analytics_enabled       = true
+       posthog_project_api_key = "phc_..."
+       posthog_host            = "https://eu.i.posthog.com"
+
+   (Lambda environment `ANALYTICS_ENABLED`, `POSTHOG_PROJECT_API_KEY`,
+   `POSTHOG_HOST`). The frontend: set the repository variables
+   `ANALYTICS_ENABLED=true`, `POSTHOG_PROJECT_API_KEY` and `POSTHOG_HOST`
+   (compiled in as `STASH_ANALYTICS_ENABLED`, `STASH_POSTHOG_PROJECT_API_KEY`,
+   `STASH_POSTHOG_HOST`). Either side stays off while any of its three is
+   unset. Deploy.
+4. **Locally**: in `.env`, `ANALYTICS_ENABLED=true`,
+   `POSTHOG_PROJECT_API_KEY`, `POSTHOG_HOST` for the API, and the same three
+   with the `STASH_` prefix for the frontend container (or the shell running
+   `dx serve`), with the development project's key; then rebuild
+   (`docker compose up -d --build api frontend`).
+5. **Verify.** In PostHog → *Activity* (live events), with a fresh account:
+   - Frontend: open the app → `session_started` (`platform`, `mode`); open
+     an item → `item_opened`; switch Normal/Blind → `mode_changed`. In the
+     browser's network panel the requests go to `<host>/batch/`, never to
+     the API, and carry only the event properties, `distinct_id`,
+     `$geoip_disable` and `$lib`.
+   - Backend: register → `account_registered`; save a note →
+     `item_saved`; search → `search_completed`. Events arrive within a few
+     seconds (the API flushes at the end of each invocation).
+   - Identity: both kinds of event show the same person, whose
+     `distinct_id` is `analytics_id` from `GET /users/me` (not the user id),
+     on every device. Sign out and in as someone else: the next events are
+     the other person's.
+   - Privacy: an event's *Properties* tab shows no email, URL, filename,
+     query, tag name or IP.
+
+Suggested insights (all on events, by person):
+
+- **Activation**: a funnel `account_registered` → `item_saved` → `item_saved`
+  (2nd) → `search_completed` or `item_opened`, within 7 days; or a cohort of
+  people who saved at least 3 items in their first week.
+- **Retention** (1/7/30-day): a retention insight, *first time*
+  `account_registered`, returning event `session_started`, daily
+  intervals; read days 1, 7 and 30 (or *Weekly*, and an *N-day unbounded*
+  variant for "came back at all by day N").
+- **Active days**: a trends insight of `session_started`, *Unique users*,
+  daily (DAU), weekly and monthly; and its *Lifecycle* view for new,
+  returning, resurrecting and dormant users. Per person: count distinct days
+  with a `session_started` in the last 30 (a HogQL insight:
+  `count(distinct toDate(timestamp))` grouped by `person_id`).
+- **Feature adoption**: a trends insight with one series per feature event
+  (`search_completed`, `item_tags_changed`, `item_favourite_changed`,
+  `item_description_edited`, `filters_changed`, `sort_changed`,
+  `mode_changed`, `tag_visibility_changed`), *Unique users*, weekly, as a
+  share of weekly active users (formula `A / B` with `session_started` as
+  B); `item_saved` broken down by `item_type`.
+- **Searches followed by item opens**: a funnel `search_completed` →
+  `item_opened` with the filter `from_search = true`, conversion window 10
+  minutes, sequential; break down `search_completed` by `result_count = 0`
+  to see what empty searches do to it. `item_opened` broken down by
+  `from_search` gives the share of opens that come from search.
 
 ### After the first deployment: document analyzer memory
 

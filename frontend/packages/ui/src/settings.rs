@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use dioxus_i18n::t;
 
 use crate::AuthSession;
+use crate::analytics::use_analytics;
 use crate::auth::{MIN_PASSWORD_CHARS, validate_new_password};
 use crate::confirm::ConfirmDialog;
 use crate::filters::{FILTERS_CSS, FilterSection, FilterSectionOptions};
@@ -52,6 +53,7 @@ impl Section {
 #[component]
 pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
     let mut section = use_signal(|| Section::Password);
+    let analytics = use_analytics();
     // Whether the current click started on the backdrop itself. A click
     // that starts inside the window and ends outside it (selecting text in
     // a field, say) is delivered to the backdrop too, but must not close.
@@ -93,7 +95,15 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                             class: if section() == item { "settings-nav-item active" } else { "settings-nav-item" },
                             r#type: "button",
                             aria_current: if section() == item { "page" } else { "false" },
-                            onclick: move |_| section.set(item),
+                            onclick: {
+                                let analytics = analytics.clone();
+                                move |_| {
+                                    if item == Section::Privacy && section() != Section::Privacy {
+                                        analytics.privacy_opened();
+                                    }
+                                    section.set(item);
+                                }
+                            },
                             match item {
                                 Section::Password => rsx! { IconLock {} },
                                 Section::Language => rsx! { IconGlobe {} },
@@ -290,10 +300,12 @@ fn PasswordSettings() -> Element {
 }
 
 /// The UI language, chosen from every supported one (each listed by its
-/// own name). Takes effect at once and is remembered on this device.
+/// own name). Takes effect at once, and is saved with the account so every
+/// device the user signs in on uses it.
 #[component]
 fn LanguageSettings() -> Element {
     let localization = use_context::<Localization>();
+    let session = use_context::<AuthSession>();
     let current = localization.language();
 
     rsx! {
@@ -309,7 +321,14 @@ fn LanguageSettings() -> Element {
                     value: current.code(),
                     onchange: move |evt| {
                         if let Some(language) = Language::from_tag(&evt.value()) {
+                            // At once here; then for the account, so every
+                            // device uses it (best effort: this device
+                            // keeps it either way).
                             localization.set_language(language);
+                            let session = session.clone();
+                            spawn(async move {
+                                let _ = session.set_language(language.code()).await;
+                            });
                         }
                     },
                     for language in Language::ALL {
@@ -327,13 +346,15 @@ fn LanguageSettings() -> Element {
 }
 
 /// The tags Blind mode hides: the user's tags as checkboxes (checked =
-/// hidden), with the same search as the tag filter. Takes effect at once
-/// and is remembered on this device, by tag id.
+/// hidden), with the same search as the tag filter. Saved with the
+/// account, so every device hides the same tags; takes effect once saved.
 #[component]
 fn HiddenTagsSettings() -> Element {
     let preferences = use_context::<Preferences>();
+    let session = use_context::<AuthSession>();
     let hidden = preferences.hidden_tag_ids();
     let at_limit = hidden.len() >= MAX_HIDDEN_TAGS;
+    let mut error = use_signal(|| None::<String>);
 
     rsx! {
         document::Link { rel: "stylesheet", href: FILTERS_CSS }
@@ -345,7 +366,19 @@ fn HiddenTagsSettings() -> Element {
             FilterSectionOptions {
                 section: FilterSection::Tags,
                 selected: hidden,
-                on_toggle: move |tag: Tag| preferences.toggle_hidden_tag(&tag.id),
+                on_toggle: move |tag: Tag| {
+                    let preferences = preferences.clone();
+                    let session = session.clone();
+                    spawn(async move {
+                        match preferences.toggle_hidden_tag(&session, &tag.id).await {
+                            Ok(()) => error.set(None),
+                            Err(err) => error.set(Some(api_error_message(&err))),
+                        }
+                    });
+                },
+            }
+            if let Some(message) = error() {
+                p { class: "settings-error", role: "alert", "{message}" }
             }
             if at_limit {
                 p { class: "settings-hint", {t!("settings-hidden-tags-limit", max: MAX_HIDDEN_TAGS)} }
@@ -360,7 +393,8 @@ fn HiddenTagsSettings() -> Element {
 #[component]
 fn PrivacySettings() -> Element {
     // Each point: its heading, its paragraphs, and a bulleted list after them.
-    let points: [(String, Vec<String>, Vec<String>); 6] = [
+    let analytics_enabled = use_analytics().is_enabled();
+    let mut points: Vec<(String, Vec<String>, Vec<String>)> = vec![
         (
             t!("settings-privacy-private-title"),
             vec![t!("settings-privacy-private-text")],
@@ -407,6 +441,18 @@ fn PrivacySettings() -> Element {
             vec![],
         ),
     ];
+    // Only where this build sends analytics (see "Product analytics" in
+    // docs/architecture.md).
+    if analytics_enabled {
+        points.push((
+            t!("settings-privacy-analytics-title"),
+            vec![
+                t!("settings-privacy-analytics-text"),
+                t!("settings-privacy-analytics-text-2"),
+            ],
+            vec![],
+        ));
+    }
 
     rsx! {
         h3 { class: "settings-title", {t!("settings-section-privacy")} }

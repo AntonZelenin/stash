@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "packages/analytics",
     "packages/api",
     "packages/ui",
     "packages/web",
@@ -13,6 +14,7 @@ dioxus = { version = "0.7.1", features = ["router"] }
 base64 = "0.22"
 
 # workspace
+analytics = { path = "packages/analytics" }
 api = { path = "packages/api" }
 ui = { path = "packages/ui" }
 

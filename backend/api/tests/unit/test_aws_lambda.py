@@ -30,14 +30,21 @@ def test_handler_serves_the_app():
     assert response["body"] == '{"status":"ok"}'
 
 
-def test_handler_flushes_metrics_and_traces(monkeypatch):
+def test_handler_flushes_metrics_traces_and_analytics(monkeypatch):
     flushed = []
     monkeypatch.setattr(aws_lambda.metrics, "flush", lambda: flushed.append("metrics"))
     monkeypatch.setattr(aws_lambda.tracing, "flush", lambda: flushed.append("tracing"))
 
+    class Analytics:
+        def flush(self):
+            flushed.append("analytics")
+
+    monkeypatch.setattr(aws_lambda, "get_analytics", lambda: Analytics())
+
     aws_lambda.handler(_http_api_event("GET", "/health"), None)
 
-    assert flushed == ["metrics", "tracing"]
+    # Before the handler returns: the environment may be frozen after.
+    assert flushed == ["metrics", "tracing", "analytics"]
 
 
 @pytest.mark.parametrize("task", [tasks.DRAIN_STORAGE_DELETIONS, tasks.RECONCILE_STORAGE])

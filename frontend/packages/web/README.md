@@ -34,6 +34,14 @@ in [`src/config.rs`](src/config.rs):
 | Variable             | Debug builds (`dx serve`)          | Release builds (`dx build --release`) |
 |----------------------|------------------------------------|---------------------------------------|
 | `STASH_API_BASE_URL` | optional, default `http://localhost:8000` | **required**; the build fails without it |
+| `STASH_TURNSTILE_SITE_KEY` | optional, default Cloudflare's test key | **required** (empty: no widget) |
+| `STASH_ANALYTICS_ENABLED` | optional; `true` turns product analytics on | same |
+| `STASH_POSTHOG_PROJECT_API_KEY` | the PostHog project API key (`phc_...`) | same |
+| `STASH_POSTHOG_HOST` | e.g. `https://eu.i.posthog.com` | same |
+
+Analytics is off unless all three analytics variables are set (see
+[docs/deployment.md](../../../docs/deployment.md#product-analytics-posthog));
+an invalid key or host fails the build.
 
 The value is the backend API's base URL: `http://` or `https://`, no
 trailing slash (e.g. Terraform's `api_url` output). Invalid values fail the

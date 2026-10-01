@@ -5,11 +5,12 @@ use crate::error::{ApiError, FieldError};
 use crate::models::{
     AddToCollectionRequest, AssignTagRequest, ChangePasswordRequest, Collection,
     CreateTextItemRequest, CurrentUser, DeleteAccountRequest, DuplicateGroup, DuplicatesResponse,
-    FindDuplicatesRequest, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
-    ListCollectionsResponse, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
-    NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
-    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, SuggestedTagsResponse, Tag,
-    TextItemType, TokenPair, UploadCandidate, UploadStarted,
+    FindDuplicatesRequest, HiddenTagsResponse, ItemCounts, ItemCreated, ItemQuery, ItemSort,
+    ItemUpdate, ListCollectionsResponse, ListItemsResponse, ListTagsResponse, ListedItem,
+    LoginRequest, NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest,
+    RegisterResponse, SavedYear, SavedYearsResponse, SearchRequest, SearchResponse,
+    SetLanguageRequest, SetTagVisibilityRequest, SuggestedTagsResponse, Tag, TextItemType,
+    TokenPair, UploadCandidate, UploadStarted,
 };
 
 /// Most files `find_duplicates` takes at once (the API's limit).
@@ -524,13 +525,16 @@ impl ApiClient {
     }
 
     /// Semantic search over the user's items, most similar first,
-    /// narrowed by `filters`.
+    /// narrowed by `filters`. `rerun`: the same query searched again (to
+    /// refresh the results), not a search the user just made; only the
+    /// latter count as searches in product analytics.
     pub async fn search_items(
         &self,
         access_token: &str,
         query: &str,
         limit: u32,
         filters: &ItemQuery,
+        rerun: bool,
     ) -> Result<SearchResponse, ApiError> {
         let response = self
             .authenticated(Method::POST, "/search", access_token)
@@ -545,6 +549,7 @@ impl ApiClient {
                 favorite: filters.favorites_only,
                 created_from: filters.created_from.clone(),
                 created_before: filters.created_before.clone(),
+                rerun,
             })
             .send()
             .await
@@ -552,6 +557,79 @@ impl ApiClient {
 
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Saves the UI language the user chose (`"en"`, `"uk"`) with the
+    /// account, for every device.
+    pub async fn set_language(&self, access_token: &str, language: &str) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(Method::PUT, "/users/me/language", access_token)
+            .json(&SetLanguageRequest {
+                language: language.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// The tags the user hid (left out in Blind mode), kept with the
+    /// account.
+    pub async fn hidden_tags(&self, access_token: &str) -> Result<Vec<Tag>, ApiError> {
+        let response = self
+            .authenticated(Method::GET, "/tags/hidden", access_token)
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            200 => response
+                .json::<HiddenTagsResponse>()
+                .await
+                .map(|response| response.tags)
+                .map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Hides these of the user's tags, or shows them again (at most 100
+    /// ids). `imported_from_device`: uploading the hidden tags this device
+    /// used to keep itself, rather than the user changing them now.
+    pub async fn set_tag_visibility(
+        &self,
+        access_token: &str,
+        tag_ids: &[String],
+        hidden: bool,
+        imported_from_device: bool,
+    ) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(Method::POST, "/tags/visibility", access_token)
+            .json(&SetTagVisibilityRequest {
+                tag_ids: tag_ids.to_vec(),
+                hidden,
+                imported_from_device,
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
             401 => Err(ApiError::Unauthorized),
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,

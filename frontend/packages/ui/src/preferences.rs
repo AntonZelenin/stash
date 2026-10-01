@@ -1,14 +1,29 @@
-//! Viewing preferences kept on this device between sessions: the hidden
-//! tags (chosen in Settings) and the Normal/Blind mode (toggled in the top
-//! bar). In Blind mode, items carrying any hidden tag are left out of the
-//! list, search, counts and "Surprise me": the server does the excluding
-//! (`exclude_tag_id`), on top of every other filter.
+//! Viewing preferences: the hidden tags (chosen in Settings) and the
+//! Normal/Blind mode (toggled in the top bar). In Blind mode, items
+//! carrying any hidden tag are left out of the list, search, counts and
+//! "Surprise me": the server does the excluding (`exclude_tag_id`), on top
+//! of every other filter.
+//!
+//! The mode is this device's own. The hidden tags are kept with the
+//! account (`GET /tags/hidden`, `POST /tags/visibility`), so every device
+//! hides the same ones; this device keeps a copy, used from the moment the
+//! app opens until the account's list arrives (`sync_hidden_tags`), so
+//! Blind mode never shows hidden items in between. Hidden tags this device
+//! kept on its own, before they were kept with the account, are uploaded
+//! once.
 
 use std::sync::Arc;
 
 use dioxus::prelude::*;
 
+use crate::AuthSession;
+
+/// This device's copy of the account's hidden tags (before they were kept
+/// with the account: the only list).
 const HIDDEN_TAGS_KEY: &str = "hidden-tags";
+/// Set once the hidden tags this device kept on its own were uploaded to
+/// an account.
+const HIDDEN_TAGS_IMPORTED_KEY: &str = "hidden-tags-imported";
 const DISPLAY_MODE_KEY: &str = "display-mode";
 
 /// Most tags that can be hidden: as many as one request can exclude (the
@@ -74,21 +89,51 @@ impl Preferences {
         (self.hidden_tag_ids)()
     }
 
-    /// Hides the tag `id` if it isn't hidden yet (unless `MAX_HIDDEN_TAGS`
-    /// already are), otherwise shows it again.
-    pub fn toggle_hidden_tag(&self, id: &str) {
-        let mut ids = self.hidden_tag_ids;
-        let current = ids();
-        let updated = toggled_id(&current, id);
-        if updated.len() > MAX_HIDDEN_TAGS {
-            return;
+    /// The hidden tags as the account now has them (from the server, or
+    /// after a change was saved there), also kept as this device's copy.
+    pub(crate) fn set_hidden_tag_ids(&self, ids: Vec<String>) {
+        let ids = decode_ids(&encode_ids(&ids));
+        self.store.save(HIDDEN_TAGS_KEY, &encode_ids(&ids));
+        let mut slot = self.hidden_tag_ids;
+        if *slot.peek() != ids {
+            slot.set(ids);
         }
-        self.store.save(HIDDEN_TAGS_KEY, &encode_ids(&updated));
-        ids.set(updated);
+    }
+
+    /// Hides the tag `id` for the account if it isn't hidden yet (unless
+    /// `MAX_HIDDEN_TAGS` already are), otherwise shows it again; applied
+    /// here once the server has saved it.
+    pub(crate) async fn toggle_hidden_tag(
+        &self,
+        session: &AuthSession,
+        id: &str,
+    ) -> Result<(), api::ApiError> {
+        let current = self.hidden_tag_ids.peek().clone();
+        let hide = !current.iter().any(|existing| existing == id);
+        if hide && current.len() >= MAX_HIDDEN_TAGS {
+            return Ok(());
+        }
+        session
+            .set_tag_visibility(vec![id.to_string()], hide, false)
+            .await?;
+        // Toggled against the list as it is now, which may have changed
+        // while saving.
+        let latest = self.hidden_tag_ids.peek().clone();
+        let shown = latest.iter().any(|existing| existing == id);
+        if shown != hide {
+            self.set_hidden_tag_ids(toggled_id(&latest, id));
+        }
+        Ok(())
     }
 
     pub fn display_mode(&self) -> DisplayMode {
         (self.display_mode)()
+    }
+
+    /// The mode right now, without subscribing the caller to changes (for
+    /// event handlers, analytics).
+    pub fn current_display_mode(&self) -> DisplayMode {
+        *self.display_mode.peek()
     }
 
     pub fn set_display_mode(&self, mode: DisplayMode) {
@@ -119,6 +164,26 @@ pub fn use_init_preferences(store: Arc<dyn PreferenceStore>) -> Preferences {
             display_mode: Signal::new(display_mode),
         }
     })
+}
+
+/// Loads the account's hidden tags into `preferences`, once per sign-in,
+/// after uploading those this device kept on its own (before they were
+/// kept with the account) if it hasn't yet. Uploaded as
+/// `imported_from_device`, so it isn't counted as the user hiding them.
+/// Ids that aren't the account's tags are ignored by the server. On
+/// failure, this device's copy stays in use.
+pub(crate) async fn sync_hidden_tags(session: &AuthSession, preferences: &Preferences) {
+    if preferences.store.load(HIDDEN_TAGS_IMPORTED_KEY).is_none() {
+        let local = preferences.hidden_tag_ids.peek().clone();
+        let imported =
+            local.is_empty() || session.set_tag_visibility(local, true, true).await.is_ok();
+        if imported {
+            preferences.store.save(HIDDEN_TAGS_IMPORTED_KEY, "1");
+        }
+    }
+    if let Ok(ids) = session.hidden_tag_ids().await {
+        preferences.set_hidden_tag_ids(ids);
+    }
 }
 
 /// `ids` with `id` removed if it's there, else added at the end.

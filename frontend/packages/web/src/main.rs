@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use api::ApiClient;
 use dioxus::prelude::*;
-use ui::{AuthSession, Route, TurnstileSiteKey, use_init_localization, use_init_preferences};
+use ui::{
+    ActivityTracker, AuthSession, Platform, Route, TurnstileSiteKey, use_init_analytics,
+    use_init_localization, use_init_preferences,
+};
 
 mod config;
-use config::{API_BASE_URL, TURNSTILE_SITE_KEY};
+use config::{API_BASE_URL, TURNSTILE_SITE_KEY, analytics_config};
 
 mod language_store;
 use language_store::{LocalStorageLanguageStore, browser_languages};
@@ -34,12 +37,14 @@ fn App() -> Element {
         )
     });
     use_context_provider(|| TurnstileSiteKey(TURNSTILE_SITE_KEY));
+    // After the preferences and the session it reads.
+    use_init_analytics(analytics_config(), Platform::Web);
 
     rsx! {
         document::Title { "Stash" }
         document::Link { rel: "icon", r#type: "image/png", href: FAVICON }
         document::Link { rel: "stylesheet", href: MAIN_CSS }
 
-        Router::<Route> {}
+        ActivityTracker { Router::<Route> {} }
     }
 }

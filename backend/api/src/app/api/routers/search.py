@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.embeddings import Embedder
 
+from app.analytics import Analytics, get_analytics
 from app.api.routers.items import item_filters, to_listed_item
 from app.api.schemas.search import SearchRequest, SearchResponse
 from app.body_size import BodyLimitedRoute
@@ -37,11 +38,14 @@ async def search_items(
     embedder: Embedder = Depends(get_embedder),
     normalizer: QueryNormalizer = Depends(get_query_normalizer),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    analytics: Analytics = Depends(get_analytics),
 ) -> SearchResponse:
     # Each search calls OpenAI twice (query rewrite, embedding).
     await limiter.consume(Charge(limiter.limits.searches_per_user, str(current_user.id)))
     try:
-        results = await ItemService(session, storage).search_items(
+        results = await ItemService(
+            session, storage, analytics=analytics.for_user(current_user.analytics_id)
+        ).search_items(
             user_id=current_user.id,
             query=payload.query,
             limit=payload.limit,
@@ -57,6 +61,7 @@ async def search_items(
                 payload.created_from,
                 payload.created_before,
             ),
+            new_search=not payload.rerun,
         )
     except SearchUnavailableError:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Search is temporarily unavailable") from None

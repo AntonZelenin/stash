@@ -21,6 +21,7 @@ from stash_shared.queue.base import (
     ProcessingJob,
 )
 
+from app.analytics import DisabledAnalytics, Event, UserAnalytics
 from app.collections.names import normalize_collection_names
 from app.collections.repos import CollectionRepository
 from app.config import get_settings
@@ -354,6 +355,10 @@ def _log_semantic_candidates(candidates: list[SemanticMatch], max_distance: floa
         )
 
 
+# Item types as `items_deleted` counts them, each its own property.
+_DELETED_COUNT_PROPERTIES = {item_type: f"{item_type.value}_count" for item_type in ItemType}
+
+
 class ItemService:
     def __init__(
         self,
@@ -361,11 +366,14 @@ class ItemService:
         storage: ObjectStorage,
         outbox: OutboxPublisher | None = None,
         storage_deletions: StorageDeletionDrainer | None = None,
+        analytics: UserAnalytics | None = None,
     ):
         """`outbox` publishes the jobs this service's writes trigger; needed
         by the methods that create or edit items. `storage_deletions`
         carries out the object deletions deleting items schedules; needed
-        by `delete_item(s)`.
+        by `delete_item(s)`. `analytics`: product events for the user the
+        service acts for (`app.analytics`), captured after each commit;
+        none if not given.
 
         Jobs are never published directly: each is added to the outbox in
         the same transaction as the change that needs it (`_add_job`), and
@@ -378,6 +386,33 @@ class ItemService:
         self._storage = storage
         self._outbox = outbox
         self._storage_deletions = storage_deletions
+        self._analytics = analytics or DisabledAnalytics().for_user(uuid.UUID(int=0))
+
+    def _item_saved(self, item: Item, tags: list[Tag], *, size_bytes: int | None = None) -> None:
+        """A new item, committed: `item_saved`, plus one `item_tags_changed`
+        per tag it was saved with, counted like adding each tag afterwards."""
+        properties: dict = {"item_type": item.type.value}
+        if size_bytes is not None:
+            properties["size_bytes"] = size_bytes
+        self._analytics.capture(Event.item_saved, properties)
+        for tag in tags:
+            self._analytics.capture(
+                Event.item_tags_changed,
+                {
+                    "action": "add",
+                    "tag_visibility": "hidden" if tag.is_hidden else "regular",
+                    "affected_item_count": 1,
+                },
+            )
+
+    def _items_deleted(self, item_types: list[ItemType]) -> None:
+        if not item_types:
+            return
+        properties = {name: 0 for name in _DELETED_COUNT_PROPERTIES.values()}
+        for item_type in item_types:
+            properties[_DELETED_COUNT_PROPERTIES[item_type]] += 1
+        properties["deleted_count"] = len(item_types)
+        self._analytics.capture(Event.items_deleted, properties)
 
     async def count_items(self, *, user_id: uuid.UUID, filters: ItemFilters = ItemFilters()) -> ItemCounts:
         """The user's items per type, per kind and favorites, counted on
@@ -467,6 +502,7 @@ class ItemService:
         embedder: Embedder,
         normalizer: QueryNormalizer,
         filters: ItemFilters = ItemFilters(),
+        new_search: bool = True,
     ) -> list[ListedItem]:
         """Hybrid search, in tiers: files and images whose filename matches
         `query` (see `_filename_terms`), then items whose own text (note,
@@ -480,7 +516,12 @@ class ItemService:
         language, so it's matched against the query as typed. Descriptions
         are generated in English, so the full-text and semantic matches use
         the query rewritten into English (see `app.query_normalization`);
-        if that fails, the original query is searched."""
+        if that fails, the original query is searched.
+
+        `new_search`: whether it's a search the user just made (counted as
+        `search_completed` in analytics) rather than one the client runs
+        again for a query already searched (after an edit, a filter
+        change...)."""
         started = time.perf_counter()
         settings = get_settings()
         name_matches = await self._search_by_filename(user_id=user_id, query=query, limit=limit, filters=filters)
@@ -553,7 +594,10 @@ class ItemService:
             favorites_only=filters.favorites_only,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
-        return await self._with_download_urls(rows)
+        listed = await self._with_download_urls(rows)
+        if new_search:
+            self._analytics.capture(Event.search_completed, {"result_count": len(listed)})
+        return listed
 
     async def _search_by_filename(
         self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters
@@ -601,9 +645,15 @@ class ItemService:
 
     async def set_favorite(self, *, user_id: uuid.UUID, item_id: uuid.UUID, is_favorite: bool) -> None:
         """Idempotent: marking a favorite as favorite again is a no-op."""
-        if not await self._repo.set_favorite(item_id=item_id, user_id=user_id, is_favorite=is_favorite):
+        change = await self._repo.set_favorite(item_id=item_id, user_id=user_id, is_favorite=is_favorite)
+        if change is None:
             raise ItemNotFoundError()
         await self._session.commit()
+        if change.changed:
+            self._analytics.capture(
+                Event.item_favourite_changed,
+                {"action": "added" if is_favorite else "removed", "item_type": change.item_type.value},
+            )
 
     @_tracer.start_as_current_span("items.update")
     async def update_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID, edit: ItemEdit) -> ListedItem:
@@ -632,10 +682,16 @@ class ItemService:
             raise InvalidItemEditError("Only notes and links have a selectable type")
 
         needs_embedding = False
+        # Whether the user's text (a note's/link's, or a caption) changed:
+        # `item_description_edited`.
+        text_changed = False
         if edit.text is not None:
             if is_note_or_link:
                 needs_embedding = self._edit_text(item, edit.text)
+                text_changed = needs_embedding
             else:
+                old_caption = item.text_content.text if item.text_content is not None else None
+                text_changed = (edit.text.strip() or None) != old_caption
                 needs_embedding = await self._edit_caption(item, edit.text)
         if is_note_or_link and (edit.text is not None or edit.item_type is not None):
             item.type = resolve_text_item_type(
@@ -653,6 +709,8 @@ class ItemService:
             text_edited=edit.text is not None,
             reembedding=needs_embedding,
         )
+        if text_changed:
+            self._analytics.capture(Event.item_description_edited, {"item_type": item.type.value})
         if needs_embedding:
             await self._publish_jobs()
 
@@ -754,6 +812,7 @@ class ItemService:
             tag_count=len(deleted.tag_ids),
             collection_count=len(deleted.collection_ids),
         )
+        self._items_deleted([deleted.item_type])
         await self._delete_stored_objects(deletion_ids)
 
     async def delete_items(self, *, user_id: uuid.UUID, item_ids: list[uuid.UUID]) -> None:
@@ -765,12 +824,12 @@ class ItemService:
         storage_keys: list[str] = []
         tag_ids: set[uuid.UUID] = set()
         collection_ids: set[uuid.UUID] = set()
-        deleted_count = 0
+        deleted_types: list[ItemType] = []
         for item_id in sorted(set(item_ids)):
             deleted = await self._repo.delete_item(item_id=item_id, user_id=user_id)
             if deleted is None:
                 continue
-            deleted_count += 1
+            deleted_types.append(deleted.item_type)
             storage_keys.extend(deleted.storage_keys)
             tag_ids.update(deleted.tag_ids)
             collection_ids.update(deleted.collection_ids)
@@ -783,11 +842,12 @@ class ItemService:
         logger.info(
             "Items deleted",
             requested_count=len(item_ids),
-            deleted_count=deleted_count,
+            deleted_count=len(deleted_types),
             storage_object_count=len(storage_keys),
             tag_count=len(tag_ids),
             collection_count=len(collection_ids),
         )
+        self._items_deleted(deleted_types)
         await self._delete_stored_objects(deletion_ids)
 
     async def _schedule_object_deletions(self, storage_keys: list[str]) -> list[uuid.UUID]:
@@ -885,6 +945,7 @@ class ItemService:
         _log_created(
             item, text_chars=len(text), tag_count=len(resolved_tags), collection_count=len(resolved_collections)
         )
+        self._item_saved(item, resolved_tags)
         await self._publish_jobs()
         return item
 
@@ -1141,6 +1202,7 @@ class ItemService:
             tag_count=len(resolved_tags),
             collection_count=len(resolved_collections),
         )
+        self._item_saved(item, resolved_tags, size_bytes=stored.size_bytes)
         await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
         return item
@@ -1202,6 +1264,7 @@ class ItemService:
             tag_count=len(resolved_tags),
             collection_count=len(resolved_collections),
         )
+        self._item_saved(item, resolved_tags, size_bytes=stored.size_bytes)
         await self._delete_staging_object(upload.storage_key)
         await self._publish_jobs()
         return item

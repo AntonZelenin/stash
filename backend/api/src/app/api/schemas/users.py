@@ -38,6 +38,17 @@ class UserCreateResponse(BaseModel):
 class CurrentUserResponse(BaseModel):
     id: UUID
     email: str
+    # The user's id in product analytics (random, unrelated to `id`): the
+    # clients identify with it, so their events and the API's are one
+    # person.
+    analytics_id: UUID
+    # The UI language the user chose ("en", "uk"), the same on every
+    # device; None if they haven't chosen one.
+    language: str | None
+
+
+class SetLanguageRequest(BaseModel):
+    language: str = Field(min_length=1, max_length=16)
 
 
 class ChangePasswordRequest(BaseModel):

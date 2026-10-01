@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use api::{Collection, ItemUpdate, ListedItem, Tag, TextItemType};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use dioxus::prelude::*;
@@ -86,10 +88,15 @@ fn column_count(grid_width: f64) -> usize {
 /// `selected`: the ids of the selected items. While any are, the grid is in
 /// selection mode: every card shows a selection circle, and a click on a
 /// card calls `on_toggle_selected` with its id instead of opening it.
+///
+/// `from_search`: the items are search results (for analytics: each item
+/// the user opens from here, in the viewer or a file or link from its
+/// card, is an `item_opened`).
 #[component]
 pub fn ItemGrid(
     items: Vec<ListedItem>,
     #[props(default)] group_by_day: bool,
+    #[props(default)] from_search: bool,
     selected: Vec<String>,
     on_toggle_selected: EventHandler<String>,
     on_delete: EventHandler<String>,
@@ -100,6 +107,16 @@ pub fn ItemGrid(
 ) -> Element {
     let mut columns = use_signal(|| PREFERRED_MAX_COLUMNS);
     let mut open = use_signal(|| None::<OpenItem>);
+    let analytics = crate::analytics::use_analytics();
+    // Item id -> type, to report what was opened.
+    let types: HashMap<String, String> = items
+        .iter()
+        .map(|item| (item.id.clone(), item.r#type.clone()))
+        .collect();
+    let on_opened = use_callback({
+        let analytics = analytics.clone();
+        move |item_type: String| analytics.item_opened(&item_type, from_search)
+    });
 
     // The result set as shown: items without a card are left out, so
     // stepping never lands on one.
@@ -118,12 +135,21 @@ pub fn ItemGrid(
         }
     }));
 
-    let on_view = use_callback(move |(id, mode): (String, Option<ViewMode>)| {
-        open.set(mode.map(|mode| OpenItem {
-            id,
-            mode,
-            arrived_by: None,
-        }));
+    let on_view = use_callback({
+        let types = types.clone();
+        move |(id, mode): (String, Option<ViewMode>)| {
+            // Opened, not just switched between viewing and editing.
+            let newly_open =
+                mode.is_some() && open.peek().as_ref().is_none_or(|open| open.id != id);
+            if newly_open && let Some(item_type) = types.get(&id) {
+                on_opened.call(item_type.clone());
+            }
+            open.set(mode.map(|mode| OpenItem {
+                id,
+                mode,
+                arrived_by: None,
+            }));
+        }
     });
     // Reads the open item when called, not when rendered, so presses
     // quicker than a render each count from the item the last one opened.
@@ -131,8 +157,11 @@ pub fn ItemGrid(
         let ids = ids.clone();
         move |step: Step| {
             let next = open().and_then(|open| open.stepped(&ids, step));
-            if next.is_some() {
-                open.set(next);
+            if let Some(next) = next {
+                if let Some(item_type) = types.get(&next.id) {
+                    on_opened.call(item_type.clone());
+                }
+                open.set(Some(next));
             }
         }
     });
@@ -187,6 +216,7 @@ pub fn ItemGrid(
                                         opened: opened.as_ref().filter(|open| open.id == item.id).map(|open| open.mode),
                                         nav: nav.clone().filter(|_| opened.as_ref().is_some_and(|open| open.id == item.id)),
                                         on_view,
+                                        on_opened,
                                         item,
                                         on_delete,
                                         on_tags_changed,
@@ -441,6 +471,8 @@ fn ItemCard(
     opened: Option<ViewMode>,
     nav: Option<ViewerNav>,
     on_view: Callback<(String, Option<ViewMode>)>,
+    /// A file or link opened from the card, with the item's type.
+    on_opened: Callback<String>,
     on_delete: EventHandler<String>,
     on_tags_changed: EventHandler<()>,
     on_favorite_changed: EventHandler<(String, bool)>,
@@ -489,7 +521,10 @@ fn ItemCard(
         ("link", _, Some(text)) => (
             "item-card-link",
             rsx! {
-                LinkBody { text: text.clone() }
+                LinkBody {
+                    text: text.clone(),
+                    on_open: move |_| on_opened.call("link".to_string()),
+                }
             },
         ),
         // Before the catch-all below: a file with a caption has `text`
@@ -538,6 +573,7 @@ fn ItemCard(
                         filename: file.filename.clone(),
                         size_bytes: file.size_bytes,
                         caption: caption.clone(),
+                        on_open: move |_| on_opened.call("file".to_string()),
                     }
                 },
             ),
@@ -1957,6 +1993,9 @@ fn FileBody(
     filename: String,
     size_bytes: u64,
     caption: Option<String>,
+    /// Called when the user opens it.
+    #[props(default)]
+    on_open: EventHandler<()>,
 ) -> Element {
     let details = file_details(&filename, size_bytes);
 
@@ -1970,6 +2009,7 @@ fn FileBody(
             onclick: move |evt: MouseEvent| {
                 evt.prevent_default();
                 urls.open_download();
+                on_open.call(());
             },
             span { class: "item-card-file-row",
                 span { class: "item-card-file-icon", IconFile {} }
@@ -2042,7 +2082,12 @@ pub(crate) fn TextTypeSelect(
 /// preview image yet), so the domain stands in as the title and the rest of
 /// the URL as the subtitle.
 #[component]
-fn LinkBody(text: String) -> Element {
+fn LinkBody(
+    text: String,
+    /// Called when the user opens the link.
+    #[props(default)]
+    on_open: EventHandler<()>,
+) -> Element {
     let url = first_url(&text).unwrap_or(text.trim()).to_string();
     let note = (text.trim() != url).then(|| text.clone());
     let (domain, rest) = split_url(&url);
@@ -2053,6 +2098,7 @@ fn LinkBody(text: String) -> Element {
             href: "{url}",
             target: "_blank",
             rel: "noopener noreferrer",
+            onclick: move |_| on_open.call(()),
             span { class: "item-card-link-row",
                 span { class: "item-card-link-icon", IconLink {} }
                 span { class: "item-card-link-body",

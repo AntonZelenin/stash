@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from stash_shared.log import get_logger
 
+from app.analytics import Analytics, DisabledAnalytics, Event
 from app.auth.repos import TokenRepository
 from app.auth.security import generate_token, hash_password, hash_token, verify_password
 from app.config import get_settings
@@ -32,9 +33,11 @@ class TokenPair:
 
 
 class AuthService:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, analytics: Analytics | None = None):
+        self._session = session
         self._users = UserRepository(session)
         self._tokens = TokenRepository(session)
+        self._analytics = analytics or DisabledAnalytics()
 
     async def authenticate(self, email: str, password: str) -> User:
         # Emails are personal data and never logged; the user id identifies.
@@ -97,8 +100,11 @@ class AuthService:
 
         user.password_hash = hash_password(new_password)
         await self._tokens.revoke_all_for_user(user.id)
+        tokens = await self.issue_tokens(user)
+        await self._session.commit()
         logger.info("Password changed; all sessions revoked", user_id=user.id)
-        return await self.issue_tokens(user)
+        self._analytics.capture(user.analytics_id, Event.password_changed)
+        return tokens
 
     async def get_user_by_access_token(self, token: str) -> User | None:
         stored = await self._tokens.get_valid_access_token(hash_token(token))

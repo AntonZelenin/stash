@@ -166,6 +166,7 @@ class SemanticMatch:
 
 @dataclass(frozen=True)
 class DeletedItem:
+    item_type: ItemType
     # Objects the item had in storage (original image, thumbnail, uploaded
     # file), for the caller to clean up once the delete is committed.
     storage_keys: list[str]
@@ -173,6 +174,12 @@ class DeletedItem:
     tag_ids: list[uuid.UUID]
     # Collections it was in, which may now be empty.
     collection_ids: list[uuid.UUID]
+
+
+@dataclass(frozen=True)
+class FavoriteChange:
+    item_type: ItemType
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -423,13 +430,26 @@ class ItemRepository:
         otherwise keep matching text it no longer has."""
         await self._session.execute(delete(SearchChunk).where(SearchChunk.item_id == item_id))
 
-    async def set_favorite(self, *, item_id: uuid.UUID, user_id: uuid.UUID, is_favorite: bool) -> bool:
-        """Marks or unmarks the user's item as a favorite. Returns False if
-        there's no such item *owned by this user*."""
-        result = await self._session.execute(
-            update(Item).where(Item.id == item_id, Item.user_id == user_id).values(is_favorite=is_favorite)
-        )
-        return result.rowcount == 1
+    async def set_favorite(
+        self, *, item_id: uuid.UUID, user_id: uuid.UUID, is_favorite: bool
+    ) -> FavoriteChange | None:
+        """Marks or unmarks the user's item as a favorite. Returns None if
+        there's no such item *owned by this user*, else whether it changed
+        (the row is locked, so concurrent toggles each see the state the
+        other left)."""
+        row = (
+            await self._session.execute(
+                select(Item.type, Item.is_favorite)
+                .where(Item.id == item_id, Item.user_id == user_id)
+                .with_for_update()
+            )
+        ).first()
+        if row is None:
+            return None
+        if row.is_favorite == is_favorite:
+            return FavoriteChange(item_type=ItemType(row.type), changed=False)
+        await self._session.execute(update(Item).where(Item.id == item_id).values(is_favorite=is_favorite))
+        return FavoriteChange(item_type=ItemType(row.type), changed=True)
 
     async def delete_item(self, *, item_id: uuid.UUID, user_id: uuid.UUID) -> DeletedItem | None:
         """Deletes the user's item and, via `ON DELETE CASCADE`, every row
@@ -446,6 +466,7 @@ class ItemRepository:
             await self._session.execute(
                 select(
                     Item.id,
+                    Item.type,
                     ImageMetadata.storage_key,
                     ImageMetadata.thumbnail_key,
                     FileMetadata.storage_key.label("file_key"),
@@ -471,7 +492,10 @@ class ItemRepository:
         await self._session.execute(delete(Item).where(Item.id == item_id))
         keys = (row.storage_key, row.thumbnail_key, row.file_key)
         return DeletedItem(
-            storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids, collection_ids=collection_ids
+            item_type=ItemType(row.type),
+            storage_keys=[key for key in keys if key is not None],
+            tag_ids=tag_ids,
+            collection_ids=collection_ids,
         )
 
     async def storage_keys_outside(self, *, user_id: uuid.UUID, prefixes: list[str]) -> list[str]:

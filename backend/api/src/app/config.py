@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     # Metrics (see `stash_shared.metrics`): published to CloudWatch, under
     # this namespace, only when `platform` is "aws"; a no-op elsewhere.
     metrics_namespace: str = "Stash"
+    # Product analytics (`app.analytics`): events go to PostHog only when
+    # this is on *and* both the project API key and host are set; off by
+    # default, so tests and unconfigured environments never send anything.
+    # The project API key is PostHog's public, write-only ingestion key
+    # (`phc_...`), not a secret.
+    analytics_enabled: bool = False
+    posthog_project_api_key: str = ""
+    # E.g. https://eu.i.posthog.com or https://us.i.posthog.com.
+    posthog_host: str = ""
+    # Bounds on what analytics may cost a request (see `app.analytics`):
+    # events waiting to be sent, and how long one send, or the flush at
+    # the end of a Lambda invocation, may take.
+    analytics_max_queue_size: int = 1000
+    analytics_timeout_seconds: float = 3.0
+    analytics_flush_timeout_seconds: float = 2.0
     database_url: str = "postgresql+asyncpg://stash:stash@localhost:5432/stash"
     # AWS: the Secrets Manager secret with the database credentials; when
     # set, `database_url` is built from it (see `stash_shared.secrets`).

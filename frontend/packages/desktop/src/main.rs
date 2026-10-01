@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use ui::Navbar;
+use ui::{ActivityTracker, AnalyticsConfig, Navbar, Platform, use_init_analytics};
 use views::{Blog, Home};
 
 mod views;
@@ -24,13 +24,27 @@ fn main() {
 #[component]
 fn App() -> Element {
     // Build cool things ✌️
+    use_init_analytics(analytics_config(), Platform::Desktop);
 
     rsx! {
         // Global app resources
         document::Link { rel: "stylesheet", href: MAIN_CSS }
 
-        Router::<Route> {}
+        ActivityTracker { Router::<Route> {} }
     }
+}
+
+/// Product analytics (PostHog), compiled in like the web app's: off unless
+/// `STASH_ANALYTICS_ENABLED=true` and both `STASH_POSTHOG_PROJECT_API_KEY`
+/// and `STASH_POSTHOG_HOST` were set at build time. A build with an invalid
+/// key or host fails here, at startup, rather than sending nowhere.
+fn analytics_config() -> Option<AnalyticsConfig> {
+    AnalyticsConfig::from_settings(
+        option_env!("STASH_ANALYTICS_ENABLED"),
+        option_env!("STASH_POSTHOG_PROJECT_API_KEY"),
+        option_env!("STASH_POSTHOG_HOST"),
+    )
+    .expect("invalid STASH_POSTHOG_PROJECT_API_KEY or STASH_POSTHOG_HOST")
 }
 
 /// A desktop-specific Router around the shared `Navbar` component

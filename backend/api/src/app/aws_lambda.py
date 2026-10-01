@@ -19,6 +19,7 @@ from typing import Any
 from mangum import Mangum
 from stash_shared import metrics, tracing
 
+from app.analytics import get_analytics
 from app.db import engine
 from app.main import app
 from app.storage.tasks import TASKS, run_task
@@ -42,3 +43,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # would be written until the next invocation, if ever.
         metrics.flush()
         tracing.flush()
+        # Bounded (`analytics_flush_timeout_seconds`); a no-op when
+        # analytics is off.
+        get_analytics().flush()
