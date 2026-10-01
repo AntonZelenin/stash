@@ -663,24 +663,36 @@ fn ItemCard(
 /// `on_close` fires when it's closed (including by deleting the item or
 /// clicking a tag); `on_delete` receives the item's id to delete,
 /// `on_changed` fires after any change to the item was saved (so the page
-/// can refetch), and `on_tag_click` receives a clicked tag.
+/// can refetch), `on_updated` receives the item as it now is, and
+/// `on_tag_click` receives a clicked tag. With `nav`, it has previous/next
+/// controls, as when opened from a result set.
 #[component]
 pub fn ItemViewer(
     item: ListedItem,
+    #[props(default)] nav: Option<ViewerNav>,
     on_close: EventHandler<()>,
     on_delete: EventHandler<String>,
     on_changed: EventHandler<()>,
+    #[props(default)] on_updated: EventHandler<ListedItem>,
     on_tag_click: EventHandler<Tag>,
 ) -> Element {
     let session = use_context::<AuthSession>();
     let mut mode = use_signal(|| ViewMode::Viewing);
     // The item as last saved here; the prop until something changes.
     let mut current = use_signal(|| item.clone());
+    let mut set_current = move |updated: ListedItem| {
+        current.set(updated.clone());
+        on_updated.call(updated);
+    };
     let item = current();
     let urls = use_url_refresh(&item);
     let item = urls.apply(item);
     let (is_favorite, toggle_favorite) =
-        use_favorite(item.id.clone(), item.is_favorite, move |_| {
+        use_favorite(item.id.clone(), item.is_favorite, move |is_favorite| {
+            set_current(ListedItem {
+                is_favorite,
+                ..current.peek().clone()
+            });
             on_changed.call(())
         });
 
@@ -692,7 +704,7 @@ pub fn ItemViewer(
             let item_id = item_id.clone();
             spawn(async move {
                 if let Ok(Some(updated)) = session.get_item(item_id).await {
-                    current.set(updated);
+                    set_current(updated);
                 }
             });
             on_changed.call(());
@@ -704,6 +716,7 @@ pub fn ItemViewer(
             item: item.clone(),
             urls,
             mode: mode(),
+            nav,
             is_favorite,
             on_toggle_favorite: toggle_favorite,
             on_mode: move |next: Option<ViewMode>| match next {
@@ -717,7 +730,7 @@ pub fn ItemViewer(
             on_tags_changed: tags_changed,
             on_tag_click,
             on_saved: move |updated: ListedItem| {
-                current.set(updated);
+                set_current(updated);
                 on_changed.call(());
             },
         }

@@ -33,8 +33,10 @@ use crate::selection::{
     SelectionBar, SelectionEvent, merged, toggled_id, use_selection_events, with_local_edits,
 };
 use crate::settings::AccountSettings;
+use crate::surprise::SurpriseTrail;
 use crate::text_kind::{TextKind, text_kind};
 use crate::toast::{ToastHost, use_toasts};
+use crate::viewer_nav::{Step, ViewerNav};
 
 const FILE_UPLOAD_INPUT_ID: &str = "home-file-upload-input";
 /// The capture box: files pasted while it has focus are staged.
@@ -45,6 +47,9 @@ const LOGO_PNG: Asset = asset!("/assets/stash-logo.png");
 /// How long typing must pause before a search request is sent.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const SEARCH_LIMIT: u32 = 50;
+/// How many more times "Surprise me"'s Next asks for a random item when it
+/// gets the one already open.
+const SURPRISE_RETRIES: usize = 3;
 
 /// Image content types by file extension; any other file is uploaded as a
 /// generic file item.
@@ -393,8 +398,10 @@ pub fn Home() -> Element {
     });
 
     // "Surprise me": one of the user's items, picked at random by the
-    // server and open in its own view until closed.
-    let mut surprise = use_signal(|| None::<ListedItem>);
+    // server and open in its own view until closed, stepping back to the
+    // ones shown before it or on to another (see `SurpriseTrail`).
+    let mut surprise = use_signal(|| None::<SurpriseTrail>);
+    let mut surprise_picking = use_signal(|| false);
 
     // Collections and tags go away with their last item (deleted, or
     // edited out of them), so after either, drops any gone from the active
@@ -492,12 +499,9 @@ pub fn Home() -> Element {
                     }
                 }
                 if !deleted.is_empty() {
-                    if surprise
-                        .peek()
-                        .as_ref()
-                        .is_some_and(|item| deleted.contains(&item.id))
-                    {
-                        surprise.set(None);
+                    let trail = surprise.peek().clone();
+                    if let Some(trail) = trail {
+                        surprise.set(trail.without(&deleted));
                     }
                     selection.write().retain(|id| !deleted.contains(id));
                     saved_items.restart();
@@ -593,14 +597,47 @@ pub fn Home() -> Element {
         }
     });
 
-    let surprise_me = use_callback({
+    // Picks a random item: a new trail from "Surprise me", or the next on
+    // the open one, from its end. One pick at a time, so a quick double
+    // press doesn't skip one. The server doesn't know what's been shown, so
+    // a pick of the open item is retried a few times (it may be the only
+    // one left).
+    let surprise_pick = use_callback({
         let session = session.clone();
-        move |()| {
+        move |continuing: bool| {
+            if surprise_picking() {
+                return;
+            }
             let session = session.clone();
             let excluded = excluded_tag_ids.peek().clone();
+            let shown = surprise
+                .peek()
+                .as_ref()
+                .filter(|_| continuing)
+                .map(|trail| trail.current().id.clone());
             spawn(async move {
-                match session.random_item(excluded).await {
-                    Ok(Some(item)) => surprise.set(Some(item)),
+                surprise_picking.set(true);
+                let mut picked = session.random_item(excluded.clone()).await;
+                for _ in 0..SURPRISE_RETRIES {
+                    match &picked {
+                        Ok(Some(item)) if Some(&item.id) == shown.as_ref() => {
+                            picked = session.random_item(excluded.clone()).await;
+                        }
+                        _ => break,
+                    }
+                }
+                surprise_picking.set(false);
+                match picked {
+                    Ok(Some(item)) if continuing => {
+                        // Unless closed meanwhile, or the same item again.
+                        let mut trail = surprise.write();
+                        if let Some(trail) = trail.as_mut()
+                            && trail.current().id != item.id
+                        {
+                            trail.push(item);
+                        }
+                    }
+                    Ok(Some(item)) => surprise.set(Some(SurpriseTrail::new(item))),
                     Ok(None) => status.set(Some(t!("surprise-me-nothing"))),
                     Err(err) => status.set(Some(t!(
                         "surprise-me-failed",
@@ -608,6 +645,16 @@ pub fn Home() -> Element {
                     ))),
                 }
             });
+        }
+    });
+    let surprise_me = use_callback(move |()| surprise_pick.call(false));
+    let surprise_step = use_callback(move |step: Step| {
+        let stepped = surprise
+            .write()
+            .as_mut()
+            .is_some_and(|trail| trail.step(step));
+        if !stepped && step == Step::Next {
+            surprise_pick.call(true);
         }
     });
 
@@ -981,13 +1028,19 @@ pub fn Home() -> Element {
                 on_surprise: surprise_me,
             }
 
-            if let Some(item) = surprise() {
+            if let Some(trail) = surprise() {
                 ItemViewer {
-                    key: "{item.id}",
-                    item,
+                    key: "{trail.current().id}",
+                    item: trail.current().clone(),
+                    nav: surprise_nav(&trail, counts, surprise_step),
                     on_close: move |_| surprise.set(None),
                     on_delete: delete_item,
                     on_changed: refresh_items,
+                    on_updated: move |item| {
+                        if let Some(trail) = surprise.write().as_mut() {
+                            trail.update(item);
+                        }
+                    },
                     on_tag_click: filter_by_tag,
                 }
             }
@@ -1442,6 +1495,24 @@ fn item_results(
             }
         }
     }
+}
+
+/// The previous/next controls of a "Surprise me" item: back along `trail`,
+/// and on to another item, unless the counts show there's no other. None
+/// when neither goes anywhere.
+fn surprise_nav(
+    trail: &SurpriseTrail,
+    counts: Option<ItemCounts>,
+    on_step: Callback<Step>,
+) -> Option<ViewerNav> {
+    let has_next = !trail.at_end() || counts.is_none_or(|counts| counts.types.total() > 1);
+    (trail.has_previous() || has_next).then(|| ViewerNav {
+        has_previous: trail.has_previous(),
+        has_next,
+        arrived_by: trail.arrived_by,
+        preload: Vec::new(),
+        on_step,
+    })
 }
 
 /// The page's header. "Surprise me" calls `on_surprise`, and is disabled

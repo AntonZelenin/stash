@@ -31,6 +31,7 @@ mod filters;
 mod items;
 mod media;
 mod selection;
+mod surprise;
 mod text_kind;
 mod toast;
 mod url_refresh;
