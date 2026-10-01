@@ -52,7 +52,7 @@ async def test_existing_tag_is_reused_ignoring_case(client: AsyncClient):
     # Same tag, keeping the name as first entered.
     assert again == python
     tags = (await client.get("/tags", headers=_auth(token))).json()["tags"]
-    assert tags == [python]
+    assert tags == [{**python, "item_count": 2}]
 
 
 async def test_assigning_twice_is_a_no_op(client: AsyncClient):
@@ -98,7 +98,9 @@ async def test_invalid_tag_names_are_rejected(client: AsyncClient, name):
 
 
 async def _tag_list(client: AsyncClient, token: str) -> list[dict]:
-    return (await client.get("/tags", headers=_auth(token))).json()["tags"]
+    """The user's tags, as assigning returns them (without their counts)."""
+    tags = (await client.get("/tags", headers=_auth(token))).json()["tags"]
+    return [{key: value for key, value in tag.items() if key != "item_count"} for tag in tags]
 
 
 async def test_removing_a_tags_last_use_deletes_the_tag(client: AsyncClient):
@@ -198,8 +200,8 @@ async def test_users_have_separate_tags(client: AsyncClient):
     bob_tag = (await _tag(client, bob, await _note(client, bob, "b"), "Python")).json()
 
     assert alice_tag["id"] != bob_tag["id"]
-    assert (await client.get("/tags", headers=_auth(alice))).json()["tags"] == [alice_tag]
-    assert (await client.get("/tags", headers=_auth(bob))).json()["tags"] == [bob_tag]
+    assert (await client.get("/tags", headers=_auth(alice))).json()["tags"] == [{**alice_tag, "item_count": 1}]
+    assert (await client.get("/tags", headers=_auth(bob))).json()["tags"] == [{**bob_tag, "item_count": 1}]
 
 
 async def test_cannot_tag_or_untag_another_users_item(client: AsyncClient):
@@ -242,6 +244,33 @@ async def test_tag_search_treats_wildcards_literally(client: AsyncClient):
 
     assert await names("%") == ["100% done"]
     assert await names("_") == ["snake_case"]
+
+
+async def test_listed_tags_count_the_items_carrying_them(client: AsyncClient):
+    _, token = await register_and_login(client)
+    first = await _note(client, token, "one")
+    second = await _note(client, token, "two")
+    await _tag(client, token, first, "books")
+    await _tag(client, token, second, "books")
+    await _tag(client, token, second, "movies")
+
+    response = await client.get("/tags", headers=_auth(token))
+
+    assert {t["name"]: t["item_count"] for t in response.json()["tags"]} == {"books": 2, "movies": 1}
+
+
+async def test_listed_tag_counts_leave_out_excluded_items(client: AsyncClient):
+    _, token = await register_and_login(client)
+    first = await _note(client, token, "one")
+    second = await _note(client, token, "two")
+    await _tag(client, token, first, "books")
+    await _tag(client, token, second, "books")
+    nsfw = (await _tag(client, token, second, "nsfw")).json()
+
+    response = await client.get("/tags", params={"exclude_tag_id": nsfw["id"]}, headers=_auth(token))
+
+    # Still listed, but its items (and so its count) are all left out.
+    assert {t["name"]: t["item_count"] for t in response.json()["tags"]} == {"books": 1, "nsfw": 0}
 
 
 # ---- suggestions ----

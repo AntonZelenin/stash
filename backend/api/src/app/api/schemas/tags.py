@@ -10,7 +10,16 @@ class TagResponse(BaseModel):
     name: str
 
 
+class ListedTagResponse(TagResponse):
+    # Items carrying the tag, less those left out by `exclude_tag_id`.
+    item_count: int
+
+
 class ListTagsResponse(BaseModel):
+    tags: list[ListedTagResponse]
+
+
+class SuggestedTagsResponse(BaseModel):
     tags: list[TagResponse]
 
 

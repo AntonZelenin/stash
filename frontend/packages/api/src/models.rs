@@ -222,8 +222,21 @@ pub struct Tag {
     pub name: String,
 }
 
+/// A tag as listed, with how many items carry it (less any excluded).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ListedTag {
+    #[serde(flatten)]
+    pub tag: Tag,
+    pub item_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ListTagsResponse {
+    pub tags: Vec<ListedTag>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SuggestedTagsResponse {
     pub tags: Vec<Tag>,
 }
 
@@ -484,5 +497,22 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.kind, "");
         assert!(!parsed.is_media());
+    }
+
+    #[test]
+    fn listed_tags_parse_with_their_item_counts() {
+        let parsed: ListTagsResponse =
+            serde_json::from_str(r#"{"tags": [{"id": "t1", "name": "books", "item_count": 13}]}"#)
+                .unwrap();
+        assert_eq!(
+            parsed.tags,
+            [ListedTag {
+                tag: Tag {
+                    id: "t1".to_string(),
+                    name: "books".to_string(),
+                },
+                item_count: 13,
+            }]
+        );
     }
 }

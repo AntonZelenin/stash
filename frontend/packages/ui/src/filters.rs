@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use crate::icons::{
     IconCheck, IconChevronDown, IconChevronRight, IconClose, IconFilter, IconHeart,
     IconHeartFilled, IconSort,
 };
+use crate::preferences::Preferences;
 
 /// Also holds the checkbox options (`filter-option`) the collection picker
 /// shares.
@@ -460,18 +462,39 @@ impl FilterSection {
         }
     }
 
-    /// The user's collections or tags containing `query`, as options.
-    async fn fetch(self, session: &AuthSession, query: String) -> Result<Vec<Tag>, ApiError> {
-        match self {
-            FilterSection::Tags => session.list_tags(query, TAG_LIST_LIMIT).await,
+    /// The user's collections or tags containing `query`, as options. With
+    /// `counts_excluding`, tags come with how many items carry them, less
+    /// those carrying any of the tags it lists.
+    async fn fetch(
+        self,
+        session: &AuthSession,
+        query: String,
+        counts_excluding: Option<Vec<String>>,
+    ) -> Result<Vec<(Tag, Option<u32>)>, ApiError> {
+        match (self, counts_excluding) {
+            (FilterSection::Tags, Some(excluded)) => Ok(session
+                .list_counted_tags(query, TAG_LIST_LIMIT, excluded)
+                .await?
+                .into_iter()
+                .map(|listed| (listed.tag, Some(listed.item_count)))
+                .collect()),
+            (FilterSection::Tags, None) => Ok(session
+                .list_tags(query, TAG_LIST_LIMIT)
+                .await?
+                .into_iter()
+                .map(|tag| (tag, None))
+                .collect()),
             // Same shape as a tag; the section only needs ids and names.
-            FilterSection::Collections => Ok(session
+            (FilterSection::Collections, _) => Ok(session
                 .list_collections(query, TAG_LIST_LIMIT)
                 .await?
                 .into_iter()
-                .map(|collection| Tag {
-                    id: collection.id,
-                    name: collection.name,
+                .map(|collection| {
+                    let option = Tag {
+                        id: collection.id,
+                        name: collection.name,
+                    };
+                    (option, None)
                 })
                 .collect()),
         }
@@ -645,6 +668,7 @@ fn FilterSectionPanel(
                     section,
                     selected: selected.iter().map(|option| option.id.clone()).collect::<Vec<_>>(),
                     selected_options: selected,
+                    show_counts: true,
                     on_toggle,
                 }
             }
@@ -658,14 +682,20 @@ fn FilterSectionPanel(
 /// ids of the checked options; `selected_options`: those of them whose names
 /// are known, so they can be listed even if the first page of options
 /// doesn't have them. `on_toggle` gets an option (un)checked.
+///
+/// With `show_counts`, each tag fetched shows how many items carry it, "books
+/// (13)": those the list would show, so in Blind mode less the ones with a
+/// hidden tag.
 #[component]
 pub(crate) fn FilterSectionOptions(
     section: FilterSection,
     selected: Vec<String>,
     #[props(default)] selected_options: Vec<Tag>,
+    #[props(default)] show_counts: bool,
     on_toggle: EventHandler<Tag>,
 ) -> Element {
     let session = use_context::<AuthSession>();
+    let preferences = use_context::<Preferences>();
     let mut query = use_signal(String::new);
     // What was selected when it mounted, listed first: the ids, and the
     // options known by name.
@@ -680,11 +710,13 @@ pub(crate) fn FilterSectionOptions(
     let matches = use_resource(move || {
         let session = session.clone();
         let query = query().trim().to_string();
+        // Read here, so switching modes refetches the counts.
+        let counts_excluding = show_counts.then(|| preferences.excluded_tag_ids());
         async move {
             if !query.is_empty() {
                 Delay::new(TAG_SEARCH_DEBOUNCE).await;
             }
-            section.fetch(&session, query).await
+            section.fetch(&session, query, counts_excluding).await
         }
     });
 
@@ -705,6 +737,13 @@ pub(crate) fn FilterSectionOptions(
         div { class: "filters-options",
             match &*matches.read() {
                 Some(Ok(found)) => {
+                    // Counts only for those fetched: an option pinned
+                    // without being on this page shows none.
+                    let counts: HashMap<String, u32> = found
+                        .iter()
+                        .filter_map(|(option, count)| Some((option.id.clone(), (*count)?)))
+                        .collect();
+                    let found: Vec<Tag> = found.iter().map(|(option, _)| option.clone()).collect();
                     // While browsing, the ones selected when it mounted
                     // first (those known by name even if not fetched), so
                     // they stay in reach however many there are, and
@@ -744,6 +783,9 @@ pub(crate) fn FilterSectionOptions(
                                         },
                                     }
                                     span { "{option.name}" }
+                                    if let Some(count) = counts.get(&option.id) {
+                                        span { class: "filter-option-count", "({count})" }
+                                    }
                                 }
                             }
                             // Only the first page is listed: searching finds

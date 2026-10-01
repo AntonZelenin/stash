@@ -537,7 +537,8 @@ paths:
       description: >-
         Tags are per user. Returns the user's tags whose name contains
         `query` (case-insensitive; all of them if empty), names starting
-        with it first, then alphabetically.
+        with it first, then alphabetically, each with how many items carry
+        it (less any left out by `exclude_tag_id`).
       operationId: listTags
       tags: [tags]
 
@@ -560,6 +561,7 @@ paths:
             minimum: 1
             maximum: 200
             default: 50
+        - $ref: "#/components/parameters/ExcludeTagId"
 
       responses:
         "200":
@@ -574,7 +576,7 @@ paths:
                   tags:
                     type: array
                     items:
-                      $ref: "#/components/schemas/Tag"
+                      $ref: "#/components/schemas/ListedTag"
 
         "401":
           description: Unauthorized
@@ -1811,6 +1813,20 @@ components:
           format: uuid
         name:
           type: string
+
+    ListedTag:
+      allOf:
+        - $ref: "#/components/schemas/Tag"
+        - type: object
+          required:
+            - item_count
+          properties:
+            item_count:
+              description: >-
+                How many of the user's items carry the tag, leaving out
+                those carrying any `exclude_tag_id`.
+              type: integer
+              minimum: 0
 
     Collection:
       type: object

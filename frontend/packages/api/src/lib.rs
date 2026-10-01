@@ -11,7 +11,7 @@ pub use error::{ApiError, FieldError};
 pub use models::{
     Collection, CurrentUser, DuplicateGroup, ItemCounts, ItemCreated, ItemKindCounts, ItemQuery,
     ItemSort, ItemTypeCounts, ItemUpdate, ListCollectionsResponse, ListItemsResponse,
-    ListTagsResponse, ListedFile, ListedItem, NewUpload, PlaybackUrl, PresignedUpload,
+    ListTagsResponse, ListedFile, ListedItem, ListedTag, NewUpload, PlaybackUrl, PresignedUpload,
     RegisterResponse, SavedYear, SearchResponse, Tag, TextItemType, TokenPair, UploadCandidate,
     UploadStarted, UploadType,
 };

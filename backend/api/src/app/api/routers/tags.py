@@ -3,7 +3,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas.tags import AssignTagRequest, ListTagsResponse, TagResponse
+from app.api.schemas.items import MAX_EXCLUDED_TAGS
+from app.api.schemas.tags import (
+    AssignTagRequest,
+    ListedTagResponse,
+    ListTagsResponse,
+    SuggestedTagsResponse,
+    TagResponse,
+)
 from app.body_size import BodyLimitedRoute
 from app.db import DbSession
 from app.dependencies import get_current_user
@@ -23,17 +30,22 @@ router = APIRouter(tags=["tags"], route_class=BodyLimitedRoute)
 async def list_tags(
     query: str = Query(default="", max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
+    exclude_tag_id: list[UUID] = Query(default=[], max_length=MAX_EXCLUDED_TAGS),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
 ) -> ListTagsResponse:
-    tags = await TagService(session).search_tags(user_id=current_user.id, query=query, limit=limit)
-    return ListTagsResponse(tags=[TagResponse(id=tag.id, name=tag.name) for tag in tags])
+    tags = await TagService(session).search_tags(
+        user_id=current_user.id, query=query, limit=limit, excluded_tag_ids=tuple(dict.fromkeys(exclude_tag_id))
+    )
+    return ListTagsResponse(
+        tags=[ListedTagResponse(id=tag.id, name=tag.name, item_count=item_count) for tag, item_count in tags]
+    )
 
 
 @router.get(
     "/tags/suggestions",
     status_code=status.HTTP_200_OK,
-    response_model=ListTagsResponse,
+    response_model=SuggestedTagsResponse,
     responses={401: {"description": "Unauthorized"}, 404: {"description": "Item not found"}},
 )
 async def suggest_tags(
@@ -41,12 +53,12 @@ async def suggest_tags(
     limit: int = Query(default=6, ge=1, le=20),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = DbSession,
-) -> ListTagsResponse:
+) -> SuggestedTagsResponse:
     try:
         tags = await TagService(session).suggest_tags(user_id=current_user.id, item_id=item_id, limit=limit)
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
-    return ListTagsResponse(tags=[TagResponse(id=tag.id, name=tag.name) for tag in tags])
+    return SuggestedTagsResponse(tags=[TagResponse(id=tag.id, name=tag.name) for tag in tags])
 
 
 @router.post(

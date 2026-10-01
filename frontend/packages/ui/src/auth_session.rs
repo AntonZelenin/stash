@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use api::{
     ApiClient, ApiError, Collection, CurrentUser, DuplicateGroup, ItemCounts, ItemCreated,
-    ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListedItem, MAX_FILES_PER_DUPLICATE_CHECK,
-    NewUpload, PlaybackUrl, SavedYear, SearchResponse, Tag, TextItemType, TokenPair, TokenStore,
-    UploadCandidate, UploadType,
+    ItemQuery, ItemSort, ItemUpdate, ListItemsResponse, ListedItem, ListedTag,
+    MAX_FILES_PER_DUPLICATE_CHECK, NewUpload, PlaybackUrl, SavedYear, SearchResponse, Tag,
+    TextItemType, TokenPair, TokenStore, UploadCandidate, UploadType,
 };
 use dioxus::prelude::*;
 
@@ -321,13 +321,26 @@ impl AuthSession {
     }
 
     pub async fn list_tags(&self, query: String, limit: u32) -> Result<Vec<Tag>, ApiError> {
+        let tags = self.list_counted_tags(query, limit, Vec::new()).await?;
+        Ok(tags.into_iter().map(|listed| listed.tag).collect())
+    }
+
+    /// Like `list_tags`, with how many items carry each tag, less those
+    /// carrying any of `excluded_tag_ids`.
+    pub async fn list_counted_tags(
+        &self,
+        query: String,
+        limit: u32,
+        excluded_tag_ids: Vec<String>,
+    ) -> Result<Vec<ListedTag>, ApiError> {
         let client = self.client.clone();
         self.call_authenticated(move |access_token| {
             let client = client.clone();
             let query = query.clone();
+            let excluded_tag_ids = excluded_tag_ids.clone();
             async move {
                 client
-                    .list_tags(&access_token, &query, limit)
+                    .list_tags(&access_token, &query, limit, &excluded_tag_ids)
                     .await
                     .map(|response| response.tags)
             }

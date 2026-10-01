@@ -1,7 +1,7 @@
 import uuid
-from typing import Literal
+from typing import Literal, NamedTuple
 
-from sqlalchemy import case, delete, func, insert, select
+from sqlalchemy import case, delete, exists, func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,11 @@ from app.items.models import Item, Tag, item_tags
 def escape_like(value: str) -> str:
     """Makes user input match literally inside a LIKE pattern."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+class TagUsage(NamedTuple):
+    tag: Tag
+    item_count: int
 
 
 class TagRepository:
@@ -99,10 +104,24 @@ class TagRepository:
         if orphans:
             await self._session.execute(delete(Tag).where(Tag.id.in_(orphans)))
 
-    async def search(self, *, user_id: uuid.UUID, query: str, limit: int) -> list[Tag]:
+    async def search(
+        self, *, user_id: uuid.UUID, query: str, limit: int, excluded_tag_ids: tuple[uuid.UUID, ...] = ()
+    ) -> list[TagUsage]:
         """The user's tags containing `query` (case-insensitive; all of them
-        if it's empty): names starting with it first, then alphabetically."""
-        stmt = select(Tag).where(Tag.user_id == user_id)
+        if it's empty): names starting with it first, then alphabetically.
+        Each with how many items carry it, leaving out items that carry any
+        of `excluded_tag_ids` (as `ItemFilters` does)."""
+        # Aliased: the exclusion's own `item_tags` must not correlate to it.
+        links = item_tags.alias("links")
+        item_count = select(func.count()).select_from(links).where(links.c.tag_id == Tag.id)
+        if excluded_tag_ids:
+            item_count = item_count.where(
+                ~exists().where(
+                    item_tags.c.item_id == links.c.item_id,
+                    item_tags.c.tag_id.in_(excluded_tag_ids),
+                )
+            )
+        stmt = select(Tag, item_count.scalar_subquery()).where(Tag.user_id == user_id)
         order = [func.lower(Tag.name)]
         if query:
             needle = escape_like(query.lower())
@@ -110,7 +129,7 @@ class TagRepository:
             starts_with = func.lower(Tag.name).like(f"{needle}%", escape="\\")
             order.insert(0, case((starts_with, 0), else_=1))
         result = await self._session.execute(stmt.order_by(*order).limit(limit))
-        return list(result.scalars().all())
+        return [TagUsage(tag, item_count) for tag, item_count in result]
 
     async def used_tags(
         self, *, user_id: uuid.UUID, by: Literal["recent", "frequent"], exclude_item_id: uuid.UUID | None, limit: int

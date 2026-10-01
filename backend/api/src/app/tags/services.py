@@ -7,7 +7,7 @@ from stash_shared.log import get_logger
 from app.items.models import Tag
 from app.items.services import ItemNotFoundError
 from app.tags.names import InvalidTagNameError, normalize_tag_name
-from app.tags.repos import TagRepository
+from app.tags.repos import TagRepository, TagUsage
 
 __all__ = ["InvalidTagNameError", "TagService"]
 
@@ -19,8 +19,12 @@ class TagService:
         self._session = session
         self._repo = TagRepository(session)
 
-    async def search_tags(self, *, user_id: uuid.UUID, query: str, limit: int) -> list[Tag]:
-        return await self._repo.search(user_id=user_id, query=" ".join(query.split()), limit=limit)
+    async def search_tags(
+        self, *, user_id: uuid.UUID, query: str, limit: int, excluded_tag_ids: tuple[uuid.UUID, ...] = ()
+    ) -> list[TagUsage]:
+        return await self._repo.search(
+            user_id=user_id, query=" ".join(query.split()), limit=limit, excluded_tag_ids=excluded_tag_ids
+        )
 
     async def suggest_tags(self, *, user_id: uuid.UUID, item_id: uuid.UUID | None, limit: int) -> list[Tag]:
         """Up to `limit` of the user's tags to offer when adding one: the

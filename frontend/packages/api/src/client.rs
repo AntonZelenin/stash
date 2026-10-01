@@ -8,8 +8,8 @@ use crate::models::{
     ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListCollectionsResponse,
     ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, NewUpload, PlaybackUrl,
     PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SavedYear,
-    SavedYearsResponse, SearchRequest, SearchResponse, Tag, TextItemType, TokenPair,
-    UploadCandidate, UploadStarted,
+    SavedYearsResponse, SearchRequest, SearchResponse, SuggestedTagsResponse, Tag, TextItemType,
+    TokenPair, UploadCandidate, UploadStarted,
 };
 
 /// Most files `find_duplicates` takes at once (the API's limit).
@@ -173,16 +173,20 @@ impl ApiClient {
     /// item is gone, which is all the caller asked for (e.g. it was already
     /// deleted from another tab).
     /// The user's tags containing `query` (all of them if empty), names
-    /// starting with it first.
+    /// starting with it first, each with how many items carry it, less those
+    /// carrying any of `excluded_tag_ids`.
     pub async fn list_tags(
         &self,
         access_token: &str,
         query: &str,
         limit: u32,
+        excluded_tag_ids: &[String],
     ) -> Result<ListTagsResponse, ApiError> {
+        let mut params = vec![("query", query.to_string()), ("limit", limit.to_string())];
+        params.extend(excluded_tag_params(excluded_tag_ids));
         let response = self
             .authenticated(Method::GET, "/tags", access_token)
-            .query(&[("query", query.to_string()), ("limit", limit.to_string())])
+            .query(&params)
             .send()
             .await
             .map_err(|_| ApiError::Network)?;
@@ -202,7 +206,7 @@ impl ApiClient {
         access_token: &str,
         item_id: Option<&str>,
         limit: u32,
-    ) -> Result<ListTagsResponse, ApiError> {
+    ) -> Result<SuggestedTagsResponse, ApiError> {
         let mut params = vec![("limit", limit.to_string())];
         if let Some(item_id) = item_id {
             params.push(("item_id", item_id.to_string()));
