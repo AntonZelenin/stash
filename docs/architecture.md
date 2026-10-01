@@ -14,6 +14,8 @@ The MVP supports:
   `backend/api/src/app/items/files.py`). `analyzable` formats get an
   automatic description of what the document is and is about.
 - Automatic image description and tag generation.
+- Automatic video description, from frames sampled across each uploaded
+  video (visual only: no audio). See "Save Video".
 - Semantic and keyword-based search across saved content.
 - Searching by tags and generated descriptions.
 
@@ -40,8 +42,9 @@ Processes saved content asynchronously. Lives in `backend/workers/`.
 
 Package layout: each worker is its own package, with its own
 `pyproject.toml`, dependencies, settings, Dockerfile and tests:
-`thumbnailer`, `image_analyzer`, `document_analyzer`, `embedding_worker`
-(each in `backend/workers/<worker>/`, named like its compose service). What
+`thumbnailer`, `image_analyzer`, `document_analyzer`, `video_analyzer`,
+`embedding_worker` (each in `backend/workers/<worker>/`, named like its
+compose service). What
 they all build on (the `Worker`, the status/completion SQL, S3 store,
 OpenAI client setup, settings base, both runtimes, test fakes) is a library
 package, `stash-worker-core` (`backend/workers/core/`, import
@@ -57,12 +60,15 @@ depends on `stash-shared` and has no use for worker code.
 
 Responsibilities:
 - Generate image descriptions.
+- Generate document and video descriptions (see "Save File" and "Save
+  Video").
 - Generate tags.
 - Generate embeddings.
 - Store processing results in PostgreSQL.
 
-Current implementation (MVP): only images are processed (text/link items are
-stored already `completed`). Images go through a two-stage pipeline, each
+Current implementation (MVP): text/link items are stored already
+`completed`; analyzable documents and videos go to one worker each (see
+"Save File" and "Save Video"). Images go through a two-stage pipeline, each
 stage a separate worker with its own package (see
 "Package layout" above):
 
@@ -96,8 +102,9 @@ stage a separate worker with its own package (see
    yet.
 
 What's sent to OpenAI is the user's content (a thumbnail, a document's text
-and filename, search chunks, search queries), so every Responses API call
-(image and document descriptions, search query normalization) sets
+and filename, frames sampled from a video, search chunks, search queries),
+so every Responses API call (image, document and video descriptions,
+search query normalization) sets
 `store=False`: OpenAI keeps no stored response to retrieve later, and
 nothing here reads one back. The Embeddings API has no such option (it
 stores no responses). Both remain under OpenAI's own API data retention
@@ -168,8 +175,9 @@ Stores:
 - Text content.
 - Image metadata.
 - Descriptions — one per item, the single text source search reads from:
-  AI-generated for images (by the worker), the item's own text for
-  notes/links (written by the API on save).
+  AI-generated for images, documents and videos (by the workers, after
+  any caption), the item's own text for notes/links (written by the API on
+  save).
 - Tags and collections.
 - Search chunks — each description split into short pieces, each with its
   embedding (`item_search_chunks`).
@@ -374,8 +382,9 @@ Start (`ItemService.start_upload`): the API validates the declared metadata
 first — size (images ≤ 100 MB, files ≤ 500 MB, not empty; a size over the
 limit is a 413), an image's type (PNG/JPEG/GIF/WebP), caption and tags — and
 issues nothing if it's invalid. It then charges the upload to the user's
-quotas (uploads, bytes, and an AI analysis for images and analyzable
-formats; see "Rate limits and quotas"): a 429, and nothing issued, if it
+quotas (uploads, bytes, and AI analysis for images and analyzable
+formats: one each, `AI_ANALYSIS_VIDEO_COST` (5) for a video; see "Rate
+limits and quotas"): a 429, and nothing issued, if it
 doesn't fit. It then generates the item id and a staging key for it
 (`uploads/{user_id}/{upload_id}`: never an item's key). The upload URL is
 signed for that key, that content type, that exact `Content-Length` and
@@ -619,7 +628,7 @@ redeliveries of jobs whose item has already failed:
   once past `MAX_DELIVERY_ATTEMPTS`) until SQS moves it.
 
 Lambda runtime (SQS only). Each queue worker has a Lambda handler,
-`{thumbnailer,image_analyzer,document_analyzer,embedding_worker}.aws_lambda.handler`,
+`{thumbnailer,image_analyzer,document_analyzer,video_analyzer,embedding_worker}.aws_lambda.handler`,
 for a function whose SQS event source mapping has `ReportBatchItemFailures`
 on. The handler runs the same worker as locally, settling deliveries on a
 `stash_shared.queue.sqs_lambda.LambdaSqsQueue` instead of the queue itself,
@@ -644,8 +653,8 @@ timeout.
 Outbox. Nothing publishes a job directly after a commit. The API and the
 workers add each job to the `outbox_events` table with
 `stash_shared.outbox.add_event`, in the same database transaction as the
-change that needs it: item creation (thumbnail, document-analysis and
-embedding jobs; for uploads, on finalize), an edit of an item's searchable text (embedding), a
+change that needs it: item creation (thumbnail, document-analysis,
+video-analysis and embedding jobs; for uploads, on finalize), an edit of an item's searchable text (embedding), a
 recorded thumbnail (content analysis), and an analyzer completing an item
 (embedding). The change and its job are committed together or not at all.
 After the commit, `OutboxPublisher.flush` publishes every unpublished event,
@@ -673,8 +682,9 @@ letters in `stash:<name>:dead-letter`):
 - `thumbnail_jobs`: API → thumbnail worker.
 - `content_analysis_jobs`: thumbnail worker → image-analyzer worker.
 - `document_analysis_jobs`: API → document-analyzer worker.
-- `embedding_jobs`: API, content analyzer, document analyzer → embedding
-  worker.
+- `video_analysis_jobs`: API → video-analyzer worker.
+- `embedding_jobs`: API, content analyzer, document analyzer, video
+  analyzer → embedding worker.
 
 Queue trust. A queue message is not a trust boundary. A job
 (`ProcessingJob`) is identifiers only: `item_id`, `user_id`, `item_type`,
@@ -792,7 +802,8 @@ What's traced:
 - Business operations: the API's item create/update/delete/search and
   upload start/finalize, the
   thumbnail stage's image processing, the document stage's text
-  extraction.
+  extraction, the video stage's download and frame sampling
+  (`video.sample_frames`).
 - The queue: `publish <queue>` (producer) for every published job and
   dead letter, `process <queue>` (consumer) for every delivery.
 
@@ -1082,7 +1093,8 @@ The complete application runs locally using Docker Compose.
 
 Expected services:
 - API
-- Workers (thumbnailer, image analyzer, document analyzer, embedding worker)
+- Workers (thumbnailer, image analyzer, document analyzer, video analyzer,
+  embedding worker)
 - PostgreSQL
 - MinIO
 - Queue
@@ -1116,7 +1128,8 @@ Infrastructure (Terraform, `infra/terraform/live/`):
 
 The Lambdas run the same code as the local services, packaged as one zip
 per function (`scripts/build_lambda_packages.py`), with environment-specific
-configuration.
+configuration. What isn't Python goes in a Lambda layer built by the same
+script: the video analyzer's ffmpeg (see "Save Video").
 
 CI/CD is GitHub Actions ([deployment.md](deployment.md)). Pull requests and
 `main` are validated (tests, Terraform fmt/validate, plus a read-only plan
@@ -1132,7 +1145,7 @@ Secrets are plain settings locally (`DATABASE_URL`, `OPENAI_API_KEY`). On
 AWS the functions get Secrets Manager ARNs instead (`DATABASE_SECRET_ARN`,
 `OPENAI_API_KEY_SECRET_ARN`), each only the ones it uses: its own database
 login (see "Database roles"), the OpenAI key only for the API and the
-three workers that call OpenAI, the Turnstile key only for the API. The
+four workers that call OpenAI, the Turnstile key only for the API. The
 settings classes resolve them into those
 same fields when they're built (`stash_shared.secrets`): once per execution
 environment, at cold start, never per request or message. Application code
@@ -1205,6 +1218,169 @@ else. Clients open a file from a URL fetched when it's clicked, not the
 listed one, which may have expired (see "Expired listing URLs" under
 "Object Storage").
 
+### Save Video
+
+Client → API (start upload) → PostgreSQL (`pending_uploads`)
+Client → Object Storage (`uploads/{user_id}/{upload_id}`, pre-signed PUT)
+Client → API (finalize) → PostgreSQL (`item_files`, item `pending`)
+                        → video_analysis_jobs → Video Analyzer → Object Storage (download to /tmp)
+                                                               → ffmpeg (frames)
+                                                               → OpenAI (all frames, one request)
+                                                               → PostgreSQL (description, `completed`)
+                                                               → embedding_jobs → Embedding Worker
+
+A video is a `file` item like any other (see "Uploads" and "Save File"):
+same upload, size limit (500 MB), canonical copy, playback, and filename
+and caption search. What's new is that it's described: its visual content
+becomes searchable the way an image's is. Visual only: the audio is never
+decoded or sent (no transcription), and no tags or other metadata are
+generated.
+
+Which uploads: every recognized video format (`app.items.files`, kind
+`video`: MP4, M4V, MOV, 3GP, WebM, MKV, AVI, MPEG, OGV, WMV) is
+`analyzable` with `Analysis.video`. `start_upload` charges it
+`AI_ANALYSIS_VIDEO_COST` (5) against `AI_ANALYSIS_QUOTA_PER_USER`, where
+an image or document costs 1: its analysis sends up to 20 frames in one
+request, so a few images' worth of tokens; like documents, it's charged by
+extension, before any bytes are sent. On finalize, a file whose content
+matches a video format is created `pending` with a `ProcessingJob` on
+`video_analysis_jobs` in the outbox, in the item's transaction (one whose
+content doesn't match is stored generic, `completed`, not analyzed, as for
+any format). Audio files aren't analyzed. Videos finalized before video
+analysis existed stay `completed` without a description: nothing
+backfills them.
+
+The video analyzer (`video_analyzer` service, `backend/workers/video_analyzer`)
+uses the same `Worker` as the other stages (item checks, `pending →
+processing → completed`/`failed`, retries, 5 attempts, dead-lettering,
+ack after a durable outcome), for `file` items. For each job:
+
+1. Reads the item's `storage_key`, `content_etag` and `content_type` from
+   `item_files` (joined on the job's user), never from the job. A type
+   with no ffmpeg demuxer here (`video_analyzer.frames.DEMUXERS`, one per
+   format the API analyzes; a test keeps the two in step) fails it.
+2. Downloads the whole original, pinned to its ETag, in 8 MB ranges
+   (`download_to_file`), to a fixed path in a fixed directory in `/tmp`
+   (`stash-video-analyzer/video`; never a name from the upload), at most
+   `VIDEO_MAX_DOWNLOAD_BYTES` (512 MB, above the upload limit, so no video
+   is refused for its size). ffmpeg needs random access, which ranged
+   reads over HTTP would also give, but a local file keeps every read
+   pinned to the validated content and ffmpeg off the network. The
+   directory is emptied before each job (a Lambda timeout restarts the
+   environment with `/tmp` intact, so a dead job's download is cleared,
+   never added to) and after it, before the OpenAI call.
+3. Probes it with `ffmpeg -i` (duration, and the size of the first video
+   stream that isn't cover art), then extracts the frames
+   (`sampling.sample_times`, below), one short ffmpeg run per frame:
+   input seeking to the frame's time, decoding from the keyframe before
+   it, one frame, scaled to fit 768x768 (`VIDEO_FRAME_MAX_DIMENSION`, never
+   upscaled, rotation applied), written to stdout as a JPEG (quality 4),
+   never to disk. A frame that can't be had (past the real end, undecodable,
+   over `VIDEO_MAX_FRAME_BYTES`, or timed out) is left out; a frame
+   identical to an earlier one (a still video, a long keyframe interval) is
+   sent once. With no frame at all, the item fails.
+4. Sends every frame, in order, in one Responses API request
+   (`describer`, `OPENAI_MODEL`, `store=False`, structured output), each
+   preceded by its time ("Frame 3 at 1:15") after the video's length. The
+   instructions say the frames are chronological samples of one video, to
+   be described as a whole: main subjects, actions, setting, meaningful
+   changes across it, visible text transcribed as written, concrete
+   search terms; people named by what's visibly apparent (woman, man,
+   child...), as for images; nothing that only sound would tell; and
+   never who someone is (names), or specific places, events or dates the
+   frames don't make plain. The answer is a one-sentence `summary`, `chunks` and
+   `visible_text`.
+5. Stores one description for the whole video, exactly like an image's:
+   search chunks one per line (the summary first, then the chunks, then
+   each text as `text: …`), after any caption, in `item_descriptions`,
+   completing the item and adding its `embedding_jobs` job in one
+   transaction (`complete_item`). From there it's searchable like any
+   description: full-text (`search_vector`, the description match) and
+   semantic (the embedding worker embeds each line as a chunk). Filename,
+   caption and tag search are unchanged.
+
+Frame sampling (`video_analyzer.sampling`): the number of frames depends on
+the duration, then they're spread evenly over the whole timeline, at the
+midpoint of each of n equal segments (so never the first or last moment,
+often black or past the last decodable frame):
+
+| Duration | Frames |
+|---|---|
+| up to 30 s | 5 |
+| 30 s - 2 min | 8 |
+| 2 - 10 min | 12 |
+| 10 - 30 min | 16 |
+| over 30 min | 20 |
+
+at most `VIDEO_MAX_FRAMES` (20), and at least `VIDEO_MIN_FRAME_GAP_SECONDS`
+(1 s) apart: a 3 s clip gets 3 frames (0.5, 1.5, 2.5 s), anything under 2 s
+one, from its middle. An unknown duration gets one frame, at the start. So
+a 30 s video is sampled at 3, 9, 15, 21 and 27 s, and the work doesn't
+grow with the duration: a 3-hour film costs what a 30-minute one does.
+There's no scene detection: a short scene between two samples can be
+missed.
+
+Limits (`video_analyzer.config`, `VIDEO_*`; reaching one with no frame
+yet fails the item, `PROCESSING_LIMIT_EXCEEDED`, never retried):
+
+| Limit | Default | Why |
+|---|---|---|
+| Download (`VIDEO_MAX_DOWNLOAD_BYTES`) | 512 MB | above the 500 MB upload limit; the function's `/tmp` is 1 GB |
+| Duration (`VIDEO_MAX_DURATION_SECONDS`) | 12 h | a sanity bound on what the container claims; the work doesn't depend on it |
+| Frame size (`VIDEO_MAX_WIDTH`/`_HEIGHT`, `VIDEO_MAX_PIXELS`) | 8192 px, 8K (33.2 MP) | checked from the probe, and enforced by the decoder itself (`-max_pixels`), so a stream lying about its size can't decode bigger; bounds ffmpeg's memory |
+| Frames (`VIDEO_MAX_FRAMES`) | 20 | bounds ffmpeg time, the request size and its tokens |
+| Probe (`VIDEO_PROBE_TIMEOUT_SECONDS`) | 15 s, 1 MB of output | |
+| Each frame (`VIDEO_FRAME_TIMEOUT_SECONDS`) | 20 s | a long keyframe interval means decoding from far before the frame |
+| All frames (`VIDEO_EXTRACTION_TIMEOUT_SECONDS`) | 120 s | frames done by then are described |
+| Frame output (`VIDEO_MAX_FRAME_BYTES`) | 1 MB | a 768 px JPEG is ~50-150 KB |
+
+ffmpeg on untrusted files. It runs as a child process (`asyncio`
+subprocess), never in-process: a decoder crashing or running out of
+memory kills that run, not the worker, and every run is killed at its
+timeout; its output is read with a cap and never logged (it quotes the
+file's tags). It's given only the validated type's demuxer (`-f mov`,
+`matroska`, `avi`, `mpeg`, `ogg`, `asf`), never left to guess the format
+from the bytes, so a file can't make it run a playlist, concat or image
+sequence demuxer that would read other local files or URLs (the classic
+ffmpeg SSRF/local-file-read); only the `file` protocol is allowed; one
+decoder thread; and its environment is `PATH` only, so the function's
+credentials aren't in it. The probe's report is parsed only from lines at
+their exact indentation: tags (user content) are printed indented
+further, so none can pass for a stream.
+
+Failures: as for documents. Not a video ffmpeg can open, no video stream
+(sound only, or only cover art), no decodable frame: `MALFORMED_INPUT`;
+over a limit: `PROCESSING_LIMIT_EXCEEDED`; both fail the item at once,
+since ffmpeg is deterministic on the same file. Storage errors, OpenAI
+429/5xx/timeouts and a missing ffmpeg binary are transient: retried, the
+item `processing` in between, `failed` after the 5th attempt; never left
+`processing`. A worker without ffmpeg doesn't start at all
+(`FFMPEG_PATH` checked at startup).
+
+Logs: one `Video frames sampled` line per job, with sizes, duration,
+dimensions and frame counts (scheduled, sent, failed, timed out,
+duplicate, `stopped_by`), never content; the OpenAI call as
+`purpose=video_description` with `frame_count` and `input_bytes`. Traced
+as `video.sample_frames` (download and ffmpeg) under the delivery span.
+
+Runtime:
+- ffmpeg is a static build (ffmpeg 7.0.2, GPL, the one bundled in the
+  `imageio-ffmpeg` 0.6.0 wheel, pinned by hash). On Lambda it's a layer,
+  `stash-<env>-ffmpeg` (`bin/ffmpeg`, so `/opt/bin/ffmpeg`, the function's
+  `FFMPEG_PATH`), built by `scripts/build_lambda_packages.py ffmpeg`: in
+  the function's zip it would pass the 50 MB limit on directly uploaded
+  packages (25 MB zipped; ~130 MB unzipped with the function, of the
+  250 MB allowed). Locally, the worker's Dockerfile copies in the same
+  binary from the same wheel (for the build's architecture). The tests
+  run it too (skipped without ffmpeg; CI unpacks the layer).
+- Lambda: 2048 MB (ffmpeg decoding one frame of up to 8K on one thread,
+  a few hundred MB at worst, next to the runtime; more memory is also more
+  CPU, which decoding is bound by), 1 GB `/tmp`, a 360 s timeout (the
+  download, up to 135 s of ffmpeg, a 120 s OpenAI call), batch 1, at most
+  2 at a time, visibility timeout 1080 s. Locally (Valkey) its visibility
+  timeout is 600 s. Memory is an estimate until measured
+  ([deployment.md](deployment.md)).
+
 ### Save Image
 
 Client → API (start upload) → PostgreSQL (`pending_uploads`)
@@ -1271,16 +1447,16 @@ even when some other part matches.
 
 What's embedded comes from each item's `item_descriptions` text — the
 single searchable text per item (a note's/link's text, a caption, a
-generated image/document description, or caption + description) — split
+generated image/document/video description, or caption + description) — split
 into search chunks (`stash_shared.descriptions.search_chunks`): the
 user's own text (note, link, caption) is one chunk however many lines it
 has, and each line of the generated description is a chunk of its own. So
-an image is its caption plus each of the analyzer's chunks; a document's
-description is normally a single chunk. Embedding is its own asynchronous
+an image or a video is its caption plus each of its analyzer's chunks; a
+document's description is normally a single chunk. Embedding is its own asynchronous
 stage, separate from content analysis:
 
-    text/link item created, or upload with a caption → API ─┐
-    image/document description saved → content analyzer ───┴→ embedding_jobs
+    text/link item created, or upload with a caption → API ───┐
+    image/document/video description saved → its analyzer ────┴→ embedding_jobs
         → embedding_worker → OpenAI Embeddings (all chunks, one request) → item_search_chunks
 
 Events carry only the item id; the embedding worker reads the current
@@ -1631,7 +1807,7 @@ exceeded`, with `limit`).
 | `PASSWORD_CHANGE_FAILURE_LIMIT_PER_USER` | wrong current passwords | user | 5/15m, 20/1d |
 | `UPLOAD_LIMIT_PER_USER` | uploads started | user | 100/5m, 1000/1d |
 | `UPLOAD_BYTES_QUOTA_PER_USER` | declared bytes of uploads started | user | 5 GiB/1d |
-| `AI_ANALYSIS_QUOTA_PER_USER` | uploads that will be analyzed | user | 300/1h, 1000/1d |
+| `AI_ANALYSIS_QUOTA_PER_USER` | uploads that will be analyzed: an image or document 1, a video `AI_ANALYSIS_VIDEO_COST` (5) | user | 300/1h, 1000/1d |
 | `SEARCH_LIMIT_PER_USER` | searches | user | 60/1m, 3000/1d |
 | `ITEM_WRITE_LIMIT_PER_USER` | notes/links created, items edited | user | 120/5m, 3000/1d |
 
@@ -1866,6 +2042,9 @@ User content is sent to OpenAI for processing:
 - a document's extracted text (truncated to
   `DOCUMENT_ANALYSIS_MAX_CHARS`) and its filename, for document
   descriptions;
+- still frames sampled from a video (at most 20, scaled to at most 768 px;
+  never the video itself, its sound or its filename), for video
+  descriptions;
 - search chunks (captions, note and link text, generated descriptions),
   for embeddings;
 - search queries, for normalization and embedding.
@@ -1942,7 +2121,8 @@ stash/
     │   │   ├── thumbnailer/       ─┐
     │   │   ├── image_analyzer/     │ one package per worker:
     │   │   ├── document_analyzer/  │ pyproject.toml, Dockerfile,
-    │   │   └── embedding_worker/  ─┘ src/, tests/
+    │   │   ├── video_analyzer/     │ src/, tests/
+    │   │   └── embedding_worker/  ─┘
     │   │
     │   └── shared/
     │       └── src/

@@ -8,6 +8,7 @@
 #                                                      consume own
 #   image_analyzer     get thumbnails                  send: embedding, consume own    db (worker), openai
 #   document_analyzer  get files                       send: embedding, consume own    db (worker), openai
+#   video_analyzer     get files                       send: embedding, consume own    db (worker), openai
 #   embedding_worker   -                               consume own                     db (worker), openai
 #   migrations         -                               -                               db (master, and the
 #                                                                                      api/worker ones it provisions)
@@ -59,6 +60,12 @@ locals {
       delete = []
       list   = true
     }
+    video_analyzer = {
+      put    = []
+      get    = ["users/*/files/*"]
+      delete = []
+      list   = true
+    }
     embedding_worker = {
       put    = []
       get    = []
@@ -79,6 +86,7 @@ locals {
     thumbnailer       = ["content_analysis_jobs"]
     image_analyzer    = ["embedding_jobs"]
     document_analyzer = ["embedding_jobs"]
+    video_analyzer    = ["embedding_jobs"]
     embedding_worker  = []
     migrations        = []
   }

@@ -41,8 +41,10 @@ variables {
     thumbnailer       = "tests/package.zip"
     image_analyzer    = "tests/package.zip"
     document_analyzer = "tests/package.zip"
+    video_analyzer    = "tests/package.zip"
     embedding_worker  = "tests/package.zip"
     migrations        = "tests/package.zip"
+    ffmpeg            = "tests/package.zip"
   }
 }
 
@@ -192,6 +194,71 @@ run "document_analyzer_has_disk_for_pdfs" {
   }
 }
 
+# ---- Video analyzer (lambda.tf) ----
+
+run "video_analyzer_has_memory_disk_and_ffmpeg" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.main["video_analyzer"].memory_size == 2048
+    error_message = "ffmpeg decodes frames of up to 8K in a child process: the video analyzer needs 2 GB."
+  }
+  assert {
+    condition     = aws_lambda_function.main["video_analyzer"].ephemeral_storage[0].size >= 1024
+    error_message = "The video analyzer downloads videos (up to 512 MB) to /tmp."
+  }
+  assert {
+    condition     = aws_lambda_layer_version.ffmpeg.layer_name == "stash-dev-ffmpeg" && tolist(aws_lambda_layer_version.ffmpeg.compatible_architectures) == tolist(["arm64"])
+    error_message = "The ffmpeg layer is built for the functions' architecture."
+  }
+  assert {
+    condition     = length(aws_lambda_function.main["video_analyzer"].layers) == 1
+    error_message = "The video analyzer runs ffmpeg from its layer."
+  }
+  assert {
+    condition     = aws_lambda_function.main["video_analyzer"].environment[0].variables["FFMPEG_PATH"] == "/opt/bin/ffmpeg"
+    error_message = "The video analyzer finds ffmpeg where its layer puts it."
+  }
+  assert {
+    condition = alltrue([
+      for name in ["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker", "migrations"] :
+      length(aws_lambda_function.main[name].layers) == 0 && !contains(keys(aws_lambda_function.main[name].environment[0].variables), "FFMPEG_PATH")
+    ])
+    error_message = "No other function gets ffmpeg."
+  }
+}
+
+run "video_analysis_queue_covers_a_whole_video" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.main["video_analyzer"].timeout == 360
+    error_message = "One video: download, ffmpeg (up to 135 s) and the OpenAI call (120 s)."
+  }
+  assert {
+    condition     = aws_sqs_queue.main["video_analysis_jobs"].visibility_timeout_seconds == 1080
+    error_message = "The visibility timeout exceeds the function's."
+  }
+  assert {
+    condition     = aws_lambda_event_source_mapping.worker["video_analysis_jobs"].batch_size == 1 && one(aws_lambda_event_source_mapping.worker["video_analysis_jobs"].scaling_config).maximum_concurrency == 2
+    error_message = "One video per invocation, two at a time."
+  }
+  assert {
+    condition     = contains(keys(aws_cloudwatch_metric_alarm.worker_errors), "video_analyzer") && contains(keys(aws_cloudwatch_metric_alarm.dlq_not_empty), "video_analysis_jobs")
+    error_message = "The video analyzer's crashes and dead letters are alarmed."
+  }
+}
+
+run "layered_functions_keep_the_layers_architecture" {
+  command = plan
+
+  variables {
+    lambda_config = { video_analyzer = { architecture = "x86_64" } }
+  }
+
+  expect_failures = [aws_lambda_function.main]
+}
+
 # ---- Deployment order ----
 
 # The deployment's first apply (deploy.yml): only the migration function and
@@ -232,6 +299,7 @@ run "each_function_has_only_the_actions_its_code_uses" {
         thumbnailer       = ["logs:CreateLogStream", "logs:PutLogEvents", "s3:DeleteObject", "s3:GetObject", "s3:ListBucket", "s3:PutObject", "secretsmanager:GetSecretValue", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]
         image_analyzer    = ["logs:CreateLogStream", "logs:PutLogEvents", "s3:GetObject", "s3:ListBucket", "secretsmanager:GetSecretValue", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]
         document_analyzer = ["logs:CreateLogStream", "logs:PutLogEvents", "s3:GetObject", "s3:ListBucket", "secretsmanager:GetSecretValue", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]
+        video_analyzer    = ["logs:CreateLogStream", "logs:PutLogEvents", "s3:GetObject", "s3:ListBucket", "secretsmanager:GetSecretValue", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]
         embedding_worker  = ["logs:CreateLogStream", "logs:PutLogEvents", "secretsmanager:GetSecretValue", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
         migrations        = ["logs:CreateLogStream", "logs:PutLogEvents", "secretsmanager:GetSecretValue"]
       } : sort(distinct(flatten([for s in data.aws_iam_policy_document.lambda[name].statement : tolist(s.actions)]))) == tolist(expected)
@@ -270,18 +338,22 @@ run "workers_cannot_overwrite_or_delete_originals" {
   }
   assert {
     condition = alltrue([
-      for name in ["image_analyzer", "document_analyzer"] :
+      for name in ["image_analyzer", "document_analyzer", "video_analyzer"] :
       local.lambda_s3_access[name].put == [] && local.lambda_s3_access[name].delete == []
     ])
     error_message = "The analyzers only read."
   }
   assert {
-    condition     = local.lambda_s3_access["image_analyzer"].get == ["users/*/thumbnails/*"] && local.lambda_s3_access["document_analyzer"].get == ["users/*/files/*"]
+    condition = (
+      local.lambda_s3_access["image_analyzer"].get == ["users/*/thumbnails/*"]
+      && local.lambda_s3_access["document_analyzer"].get == ["users/*/files/*"]
+      && local.lambda_s3_access["video_analyzer"].get == ["users/*/files/*"]
+    )
     error_message = "Each analyzer reads only its own kind of object."
   }
   assert {
     condition = alltrue(flatten([
-      for name in ["thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker"] : [
+      for name in ["thumbnailer", "image_analyzer", "document_analyzer", "video_analyzer", "embedding_worker"] : [
         for p in concat(local.lambda_s3_access[name].get, local.lambda_s3_access[name].put, local.lambda_s3_access[name].delete) : !startswith(p, "uploads/")
       ]
     ]))
@@ -298,9 +370,10 @@ run "each_queue_admits_only_its_producers_and_its_worker" {
         thumbnail_jobs         = ["api"]
         content_analysis_jobs  = ["api", "thumbnailer"]
         document_analysis_jobs = ["api"]
-        embedding_jobs         = ["api", "document_analyzer", "image_analyzer"]
+        video_analysis_jobs    = ["api"]
+        embedding_jobs         = ["api", "document_analyzer", "image_analyzer", "video_analyzer"]
       } : local.queue_producers[queue] == tolist(producers)
-    ]) && length(local.queue_producers) == 4
+    ]) && length(local.queue_producers) == 5
     error_message = "Only the stage before a queue (and the API, which flushes every queue's outbox events) may send to it."
   }
   assert {
@@ -353,7 +426,7 @@ run "runtime_functions_use_their_own_database_logins" {
   assert {
     condition = (
       local.lambdas["api"].db_role == "api"
-      && alltrue([for name in ["thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker"] : local.lambdas[name].db_role == "worker"])
+      && alltrue([for name in ["thumbnailer", "image_analyzer", "document_analyzer", "video_analyzer", "embedding_worker"] : local.lambdas[name].db_role == "worker"])
       && local.lambdas["migrations"].db_role == null
     )
     error_message = "The API and workers connect as their own roles; only migrations as the master user."

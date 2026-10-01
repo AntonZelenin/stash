@@ -250,6 +250,15 @@ async def test_worker_runs_the_workers_statements(worker, owner):
             ),
             params,
         )
+        # Video analyzer: likewise, without the filename.
+        await conn.execute(
+            text(
+                "SELECT item_files.storage_key, item_files.content_etag, item_files.content_type "
+                "FROM item_files JOIN items ON items.id = item_files.item_id "
+                "WHERE item_files.item_id = :item_id AND items.user_id = :user_id"
+            ),
+            params,
+        )
         # Analyzers: completing the item with its description.
         await conn.execute(text("SELECT text FROM item_text_contents WHERE item_id = :item_id"), params)
         await conn.execute(

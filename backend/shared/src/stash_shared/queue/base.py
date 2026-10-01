@@ -19,8 +19,13 @@ CONTENT_ANALYSIS_JOBS = "content_analysis_jobs"
 # Carries a `ProcessingJob` naming the file item.
 DOCUMENT_ANALYSIS_JOBS = "document_analysis_jobs"
 
+# Uploaded videos:
+#   API -> VIDEO_ANALYSIS_JOBS -> video-analyzer worker
+# Carries a `ProcessingJob` naming the file item.
+VIDEO_ANALYSIS_JOBS = "video_analysis_jobs"
+
 # Items whose searchable text (their `item_descriptions` row) changed:
-#   API (text items, captions) / content analyzers -> EMBEDDING_JOBS
+#   API (text items, captions) / content, document and video analyzers -> EMBEDDING_JOBS
 #       -> embedding worker
 # Carries a `ProcessingJob` identifying the item only; the worker reads the
 # current text from the database.

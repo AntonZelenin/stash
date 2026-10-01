@@ -33,6 +33,10 @@ jobs:
             install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/image_analyzer[test]"
           - package: workers/document_analyzer
             install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/document_analyzer[test]"
+          - package: workers/video_analyzer
+            install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/video_analyzer[test]"
+            # Its frame extraction tests run the real thing.
+            ffmpeg: true
           - package: workers/embedding_worker
             install: -e backend/shared -e "backend/workers/core[testing]" -e "backend/workers/embedding_worker[test]"
     steps:
@@ -46,6 +50,15 @@ jobs:
 
       - name: Install
         run: python -m pip install --disable-pip-version-check ${{ matrix.install }}
+
+      # The same static ffmpeg build the Lambda layer has (pinned by hash in
+      # the build script), for the runner's architecture.
+      - name: ffmpeg
+        if: matrix.ffmpeg
+        run: |
+          python scripts/build_lambda_packages.py ffmpeg --architecture x86_64
+          unzip -q build/lambda/ffmpeg.zip -d "$RUNNER_TEMP/ffmpeg"
+          echo "FFMPEG_PATH=$RUNNER_TEMP/ffmpeg/bin/ffmpeg" >> "$GITHUB_ENV"
 
       # The API's tests/live (real OpenAI calls) skip themselves unless
       # STASH_LIVE_OPENAI_TESTS=1.

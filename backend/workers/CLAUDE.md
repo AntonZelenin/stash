@@ -4,6 +4,7 @@ Processes saved content asynchronously. Responsibilities:
 - Generate image thumbnails.
 - Generate image descriptions.
 - Generate document descriptions.
+- Generate video descriptions.
 - Generate tags.
 - Generate embeddings.
 - Store processing results in PostgreSQL.
@@ -39,10 +40,21 @@ And one analyzes documents:
    PDF pages and page content, characters, time), never the whole upload
    by default (see the `parsers` docstring).
 
+And one analyzes videos:
+
+4. `video_analyzer/`: consumes `VIDEO_ANALYSIS_JOBS` (published by the API
+   for uploaded videos), downloads the video to local disk, samples frames
+   across its timeline with the `ffmpeg` binary (`sampling` decides when,
+   `frames` runs ffmpeg as a child process within `FrameLimits`), sends
+   them all to OpenAI in one request (`describer`) and stores one
+   description of the whole video, as search chunks like an image's.
+   Visual only: no audio. ffmpeg isn't a Python dependency: its Dockerfile
+   copies in a static build, and on Lambda it's a layer (`FFMPEG_PATH`).
+
 And one turns searchable text into vectors:
 
-4. `embedding_worker/`: consumes `EMBEDDING_JOBS`, published by the API
-   (text items, captions) and by the two analyzers once they've saved a
+5. `embedding_worker/`: consumes `EMBEDDING_JOBS`, published by the API
+   (text items, captions) and by the three analyzers once they've saved a
    description. Analyzers never call the Embeddings API themselves. Splits
    the item's current description into search chunks
    (`stash_shared.descriptions.search_chunks`), embeds them all in one
@@ -85,11 +97,19 @@ Rules:
   a file, use `size` and `read_range_blocking` (or `stash_worker_core.ranged`);
   a parser that needs a whole file gets it on local disk
   (`stash_worker_core.storage.download_to_file`, into a
-  `tempfile.TemporaryFile`: never a name derived from the upload).
+  `tempfile.TemporaryFile`: never a name derived from the upload). A
+  separate program that needs a path (ffmpeg) gets a fixed name in a fixed
+  directory, emptied before and after each job
+  (`video_analyzer.handler`).
 - Bound the work an upload may cost with limits in the worker's settings,
   separate from (and far below) the upload limits. Raise
   `ProcessingLimitExceeded` past one, `MalformedInputError` for input that
   can't be parsed; neither is retried.
+- Run external programs on uploads (ffmpeg) as child processes, never
+  in-process, each with a timeout and capped output, with only the input
+  format the API validated (never letting them guess it) and no
+  credentials in their environment (see `video_analyzer.frames`). Never log
+  their output: it quotes the file.
 - Never put user content in an exception message (it's logged, traced and
   kept in dead letters). When wrapping an exception a parser or decoder
   raised on an upload, name its type only and chain it with

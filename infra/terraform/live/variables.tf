@@ -91,11 +91,12 @@ variable "db_name" {
 }
 
 variable "worker_timeout_seconds" {
-  description = "Upper bound on processing one message, per queue. The worker's Lambda timeout is this times its worker_batch_size. Each analyzer makes one OpenAI call with a 90 s client timeout."
+  description = "Upper bound on processing one message, per queue. The worker's Lambda timeout is this times its worker_batch_size. Each analyzer makes one OpenAI call with a 90 s client timeout (the video analyzer 120 s, after downloading the video (up to 512 MB) and up to 135 s of ffmpeg: VIDEO_PROBE_TIMEOUT_SECONDS + VIDEO_EXTRACTION_TIMEOUT_SECONDS)."
   type = object({
     thumbnail_jobs         = optional(number, 60)
     content_analysis_jobs  = optional(number, 120)
     document_analysis_jobs = optional(number, 180)
+    video_analysis_jobs    = optional(number, 360)
     embedding_jobs         = optional(number, 120)
   })
   default = {}
@@ -112,6 +113,7 @@ variable "worker_batch_size" {
     thumbnail_jobs         = optional(number, 1)
     content_analysis_jobs  = optional(number, 1)
     document_analysis_jobs = optional(number, 1)
+    video_analysis_jobs    = optional(number, 1)
     embedding_jobs         = optional(number, 1)
   })
   default = {}
@@ -133,6 +135,7 @@ variable "worker_max_concurrency" {
     thumbnail_jobs         = optional(number, 5)
     content_analysis_jobs  = optional(number, 3)
     document_analysis_jobs = optional(number, 2)
+    video_analysis_jobs    = optional(number, 2)
     embedding_jobs         = optional(number, 3)
   })
   default = {}
@@ -183,13 +186,13 @@ variable "s3_enforce_create_only_originals" {
 }
 
 variable "lambda_package_dir" {
-  description = "Directory with the Lambda packages (<function>.zip), as built by scripts/build_lambda_packages.py. Relative to this directory."
+  description = "Directory with the Lambda packages (<function>.zip) and layers (<layer>.zip), as built by scripts/build_lambda_packages.py. Relative to this directory."
   type        = string
   default     = "../../../build/lambda"
 }
 
 variable "lambda_package_paths" {
-  description = "Per-function package path overrides, e.g. { api = \"/tmp/api.zip\" }."
+  description = "Per-function package path overrides, e.g. { api = \"/tmp/api.zip\" }; also per layer (ffmpeg)."
   type        = map(string)
   default     = {}
 }
@@ -213,7 +216,8 @@ variable "lambda_architecture" {
 
 variable "lambda_config" {
   description = <<-EOT
-    Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, embedding_worker, migrations.
+    Per-function overrides, keyed by api, thumbnailer, image_analyzer, document_analyzer, video_analyzer, embedding_worker,
+    migrations. A function with layers (video_analyzer) keeps var.lambda_architecture, which they're built for.
     reserved_concurrency: none (-1) by default. A reservation takes that much of the account's concurrency, which
     AWS only allows while 100 stay unreserved; a worker's must not be below its queue's worker_max_concurrency.
     timeout applies to the API (at most 30, API Gateway's integration limit) and migrations (at most 900) only: a
@@ -233,7 +237,7 @@ variable "lambda_config" {
   validation {
     condition = alltrue([
       for name, c in var.lambda_config :
-      contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "embedding_worker", "migrations"], name)
+      contains(["api", "thumbnailer", "image_analyzer", "document_analyzer", "video_analyzer", "embedding_worker", "migrations"], name)
       && (
         name == "api" ? coalesce(c.timeout, 30) <= 30
         : name == "migrations" ? coalesce(c.timeout, 300) <= 900

@@ -257,6 +257,7 @@ settings-privacy-private-text = Ваші записи, файли, теги та
 settings-privacy-openai-title = Частина вмісту обробляється OpenAI
 settings-privacy-openai-text = Щоб працювали пошук і автоматичний аналіз, Stash може надсилати OpenAI:
 settings-privacy-openai-images = прев’ю зображень;
+settings-privacy-openai-videos = кадри з відео (без звуку);
 settings-privacy-openai-documents = текст і назви документів;
 settings-privacy-openai-notes = текст нотаток, підписів і посилань;
 settings-privacy-openai-queries = пошукові запити.

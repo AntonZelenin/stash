@@ -16,6 +16,7 @@ from stash_shared.queue.base import (
     DOCUMENT_ANALYSIS_JOBS,
     EMBEDDING_JOBS,
     THUMBNAIL_JOBS,
+    VIDEO_ANALYSIS_JOBS,
     Delivery,
     JobQueue,
     ProcessingJob,
@@ -325,6 +326,11 @@ def queue(queues: FakeQueues) -> FakeJobQueue:
 @pytest.fixture
 def document_queue(queues: FakeQueues) -> FakeJobQueue:
     return queues(DOCUMENT_ANALYSIS_JOBS)
+
+
+@pytest.fixture
+def video_queue(queues: FakeQueues) -> FakeJobQueue:
+    return queues(VIDEO_ANALYSIS_JOBS)
 
 
 @pytest.fixture

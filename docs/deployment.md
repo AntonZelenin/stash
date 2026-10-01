@@ -194,6 +194,20 @@ Suggested insights (all on events, by person):
   to see what empty searches do to it. `item_opened` broken down by
   `from_search` gives the share of opens that come from search.
 
+### Rolling out video analysis
+
+The first deployment with the video analyzer also publishes a Lambda layer
+(`stash-<env>-ffmpeg`), which the deploy role may only do once
+`infra/terraform/github_oidc` has its `Layers` statement: apply that by
+hand first, as for any change there. Without it the deployment's main
+apply fails with `AccessDenied` on `lambda:PublishLayerVersion` (after
+migrations, so nothing is half-deployed; re-run once applied).
+
+Videos uploaded before it stay as they were (`completed`, no description,
+found by filename and caption only): nothing re-analyzes them. New uploads
+are analyzed and count `AI_ANALYSIS_VIDEO_COST` (5) against the AI
+analysis quota.
+
 ### After the first deployment: document analyzer memory
 
 The document analyzer's 768 MB (`lambda_defaults` in
@@ -212,7 +226,14 @@ DOCX) — then check the function in CloudWatch:
 
 Adjust it with `lambda_config = { document_analyzer = { memory_size = ... } }`
 (more memory also means more CPU on Lambda, so faster parsing). Do the
-same for the thumbnailer (1024 MB) with large images.
+same for the thumbnailer (1024 MB) with large images, and for the video
+analyzer (2048 MB) with videos: a long 4K phone video (HEVC, 10-bit HDR if
+you have one), an 8K clip, a ~500 MB file, a screen recording (long
+keyframe intervals), a WebM/MKV and an AVI. Besides memory and duration,
+check its `Video frames sampled` log lines: `frames_timed_out` or
+`stopped_by=time_limit` mean ffmpeg is too slow for its time limits
+(`VIDEO_FRAME_TIMEOUT_SECONDS`, `VIDEO_EXTRACTION_TIMEOUT_SECONDS`), which
+more memory (CPU) fixes.
 
 ## Pull requests and `main`
 
@@ -224,7 +245,7 @@ same for the thumbnailer (1024 MB) with large images.
   `cargo check` of the web app.
 - **Terraform**: `fmt -check` over `infra/terraform`, then `init
   -backend=false` + `validate` for `bootstrap`, `live` and `github_oidc`.
-- **Plan**: builds the six Lambda packages, then `terraform plan
+- **Plan**: builds the seven Lambda packages and the ffmpeg layer, then `terraform plan
   -lock=false` of `live` against the real state with the read-only plan
   role. The plan is in the job's log and summary. It's skipped for forks,
   and until `AWS_PLAN_ROLE_ARN` is set.
@@ -247,7 +268,8 @@ second one queues and never cancels the running one.
 
     1. tests                      same as CI
     2. Lambda packages            api, thumbnailer, image_analyzer, document_analyzer,
-                                  embedding_worker, migrations: one job each (artifacts lambda-*)
+                                  video_analyzer, embedding_worker, migrations, and the
+                                  ffmpeg layer: one job each (artifacts lambda-*)
     3. plan                       read-only role, no lock: the plan to review
        ── environment "production" (approval here, if configured) ──
     4. migration Lambda           terraform plan + apply -target='aws_lambda_function.main["migrations"]':

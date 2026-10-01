@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Self
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 from stash_shared import secrets
 from stash_shared.embeddings import DEFAULT_EMBEDDING_MODEL
@@ -203,8 +203,12 @@ class Settings(BaseSettings):
     # Bytes of uploads started, by their declared (signed) size.
     upload_bytes_quota_per_user: str = f"{5 * 1024**3}/1d"
     # Uploads that will be analyzed by OpenAI (every image, analyzable
-    # documents), charged when the upload starts.
+    # documents, videos), charged when the upload starts.
     ai_analysis_quota_per_user: str = "300/1h,1000/1d"
+    # What one video costs against that quota, where an image or document
+    # costs 1: its analysis sends up to 20 frames in one request (typically
+    # 8-12, each about half a thumbnail's tokens), so a few images' worth.
+    ai_analysis_video_cost: int = Field(default=5, ge=1)
     # Searches: each one is an LLM rewrite plus an embedding. The client
     # searches as the user types (debounced), hence the generous burst.
     search_limit_per_user: str = "60/1m,3000/1d"

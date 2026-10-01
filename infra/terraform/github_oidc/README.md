@@ -22,8 +22,9 @@ What it creates:
 `../live` manages, found by its names (`stash-<env>-*`), in its region:
 
 - State: only `../live`'s state key and its lock (the plan role reads only).
-- Lambda, SQS, SNS, CloudWatch Logs and alarms: `stash-<env>-*`. Queues are
-  managed but no message can be read, sent or purged.
+- Lambda (functions, and layers: publish, read, delete versions), SQS, SNS,
+  CloudWatch Logs and alarms: `stash-<env>-*`. Queues are managed but no
+  message can be read, sent or purged.
 - Secrets Manager: `stash-<env>/*` secrets. The deploy role can only read and
   write the value of the database secret, which Terraform writes. It can't
   read the OpenAI key.

@@ -8,6 +8,7 @@ from app.items.files import (
     FORMATS,
     GENERIC_CONTENT_TYPE,
     SNIFF_BYTES,
+    Analysis,
     ContentKind,
     classify,
     clean_filename,
@@ -175,30 +176,48 @@ def test_expected_format_comes_from_the_extension_alone(filename, extension, con
 
 
 @pytest.mark.parametrize(
-    ("filename", "data", "content_type"),
+    ("filename", "data", "content_type", "analysis"),
     [
-        ("clip.mp4", _MP4, "video/mp4"),
-        ("clip.MOV", b"\x00\x00\x00\x08wide" + b"\x00" * 16, "video/quicktime"),
-        ("clip.webm", _EBML, "video/webm"),
-        ("film.mkv", _EBML, "video/x-matroska"),
-        ("old.avi", b"RIFF\x00\x00\x00\x00AVI LIST", "video/x-msvideo"),
-        ("tape.mpg", b"\x00\x00\x01\xba" + b"\x00" * 8, "video/mpeg"),
-        ("song.mp3", b"ID3\x04\x00" + b"\x00" * 16, "audio/mpeg"),
-        ("untagged.mp3", b"\xff\xfb\x90\x64" + b"\x00" * 16, "audio/mpeg"),
-        ("voice.m4a", _MP4, "audio/mp4"),
-        ("take.wav", b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav"),
-        ("album.flac", b"fLaC\x00\x00\x00\x22", "audio/flac"),
-        ("memo.ogg", _OGG, "audio/ogg"),
-        ("memo.opus", _OGG, "audio/ogg"),
+        ("clip.mp4", _MP4, "video/mp4", Analysis.video),
+        ("clip.MOV", b"\x00\x00\x00\x08wide" + b"\x00" * 16, "video/quicktime", Analysis.video),
+        ("clip.webm", _EBML, "video/webm", Analysis.video),
+        ("film.mkv", _EBML, "video/x-matroska", Analysis.video),
+        ("old.avi", b"RIFF\x00\x00\x00\x00AVI LIST", "video/x-msvideo", Analysis.video),
+        ("tape.mpg", b"\x00\x00\x01\xba" + b"\x00" * 8, "video/mpeg", Analysis.video),
+        ("song.mp3", b"ID3\x04\x00" + b"\x00" * 16, "audio/mpeg", None),
+        ("untagged.mp3", b"\xff\xfb\x90\x64" + b"\x00" * 16, "audio/mpeg", None),
+        ("voice.m4a", _MP4, "audio/mp4", None),
+        ("take.wav", b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav", None),
+        ("album.flac", b"fLaC\x00\x00\x00\x22", "audio/flac", None),
+        ("memo.ogg", _OGG, "audio/ogg", None),
+        ("memo.opus", _OGG, "audio/ogg", None),
     ],
 )
-def test_recognized_media_formats(filename, data, content_type):
+def test_recognized_media_formats(filename, data, content_type, analysis):
     classified = classify(filename, data)
 
     assert classified.recognized
     assert classified.content_type == content_type
-    # Nothing to extract text from.
-    assert not classified.analyzable
+    # Videos are described from sampled frames; audio isn't analyzed (no
+    # transcription).
+    assert classified.analysis is analysis
+
+
+def test_every_video_format_and_nothing_else_goes_to_the_video_analyzer():
+    """Each analysis queue's worker only handles its own formats: the video
+    analyzer has an ffmpeg demuxer per video type, the document analyzer a
+    parser per document type."""
+    for file_format in FORMATS.values():
+        if file_format.kind == ContentKind.video:
+            assert file_format.analysis is Analysis.video
+        else:
+            assert file_format.analysis in (None, Analysis.document)
+
+
+def test_expected_format_says_which_analysis_an_upload_will_get():
+    assert expected_format("clip.MP4").analysis is Analysis.video
+    assert expected_format("report.pdf").analysis is Analysis.document
+    assert expected_format("song.mp3").analysis is None
 
 
 @pytest.mark.parametrize(

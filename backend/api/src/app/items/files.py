@@ -3,7 +3,9 @@ classified.
 
 Any file can be stored as a `file` item. A *recognized* format gets its real
 MIME type (and can be opened inline if it's safe to), and is marked
-`analyzable` if Stash will extract its text once document analysis exists.
+`analyzable` if a worker describes it once it's uploaded: documents by their
+text (the document analyzer), videos by frames sampled from them (the video
+analyzer); `Analysis` says which.
 Everything else — unknown extensions, and files whose content doesn't match
 their extension — is stored as a generic binary file: always downloaded,
 never displayed inline, never analyzed.
@@ -120,6 +122,15 @@ class ContentKind(str, Enum):
     other = "other"
 
 
+class Analysis(str, Enum):
+    """Which worker describes an analyzable file once it's uploaded."""
+
+    # Its text is extracted and described (`DOCUMENT_ANALYSIS_JOBS`).
+    document = "document"
+    # Frames sampled across it are described (`VIDEO_ANALYSIS_JOBS`).
+    video = "video"
+
+
 @dataclass(frozen=True)
 class FileFormat:
     content_type: str
@@ -128,8 +139,15 @@ class FileFormat:
     # Plain text: gets `; charset=utf-8` when the content is valid UTF-8,
     # so browsers decode it right.
     is_text: bool = False
-    # Stash will extract this format's text once document analysis exists.
+    # A worker describes files of this format: videos the video analyzer,
+    # anything else the document analyzer (see `analysis`).
     analyzable: bool = False
+
+    @property
+    def analysis(self) -> Analysis | None:
+        if not self.analyzable:
+            return None
+        return Analysis.video if self.kind == ContentKind.video else Analysis.document
 
 
 # Recognized formats, by lowercased extension (compound ones like ".fb2.zip"
@@ -178,18 +196,19 @@ FORMATS: dict[str, FileFormat] = {
     ".xml": FileFormat("application/xml", _is_text, is_text=True, analyzable=True),
     ".html": FileFormat("text/html", _is_text, is_text=True, analyzable=True),
     ".htm": FileFormat("text/html", _is_text, is_text=True, analyzable=True),
-    # Video
-    ".mp4": FileFormat("video/mp4", _is_iso_media, ContentKind.video),
-    ".m4v": FileFormat("video/x-m4v", _is_iso_media, ContentKind.video),
-    ".mov": FileFormat("video/quicktime", _is_iso_media, ContentKind.video),
-    ".3gp": FileFormat("video/3gpp", _is_iso_media, ContentKind.video),
-    ".webm": FileFormat("video/webm", _is_ebml, ContentKind.video),
-    ".mkv": FileFormat("video/x-matroska", _is_ebml, ContentKind.video),
-    ".avi": FileFormat("video/x-msvideo", _is_riff(b"AVI "), ContentKind.video),
-    ".mpg": FileFormat("video/mpeg", _is_mpeg_video, ContentKind.video),
-    ".mpeg": FileFormat("video/mpeg", _is_mpeg_video, ContentKind.video),
-    ".ogv": FileFormat("video/ogg", _is_ogg, ContentKind.video),
-    ".wmv": FileFormat("video/x-ms-wmv", _is_asf, ContentKind.video),
+    # Video: described from sampled frames (the video analyzer; every
+    # container here must have an ffmpeg demuxer there).
+    ".mp4": FileFormat("video/mp4", _is_iso_media, ContentKind.video, analyzable=True),
+    ".m4v": FileFormat("video/x-m4v", _is_iso_media, ContentKind.video, analyzable=True),
+    ".mov": FileFormat("video/quicktime", _is_iso_media, ContentKind.video, analyzable=True),
+    ".3gp": FileFormat("video/3gpp", _is_iso_media, ContentKind.video, analyzable=True),
+    ".webm": FileFormat("video/webm", _is_ebml, ContentKind.video, analyzable=True),
+    ".mkv": FileFormat("video/x-matroska", _is_ebml, ContentKind.video, analyzable=True),
+    ".avi": FileFormat("video/x-msvideo", _is_riff(b"AVI "), ContentKind.video, analyzable=True),
+    ".mpg": FileFormat("video/mpeg", _is_mpeg_video, ContentKind.video, analyzable=True),
+    ".mpeg": FileFormat("video/mpeg", _is_mpeg_video, ContentKind.video, analyzable=True),
+    ".ogv": FileFormat("video/ogg", _is_ogg, ContentKind.video, analyzable=True),
+    ".wmv": FileFormat("video/x-ms-wmv", _is_asf, ContentKind.video, analyzable=True),
     # Audio
     ".mp3": FileFormat("audio/mpeg", _is_mp3, ContentKind.audio),
     ".m4a": FileFormat("audio/mp4", _is_iso_media, ContentKind.audio),
@@ -246,7 +265,12 @@ class ClassifiedFile:
     extension: str
     content_type: str
     recognized: bool
-    analyzable: bool
+    # Which worker describes it; None: not analyzed.
+    analysis: Analysis | None
+
+    @property
+    def analyzable(self) -> bool:
+        return self.analysis is not None
 
 
 @dataclass(frozen=True)
@@ -255,8 +279,13 @@ class ExpectedFormat:
     extension: str
     # Without a charset: that depends on the content.
     content_type: str
-    # Will be analyzed if its content turns out to match (`classify`).
-    analyzable: bool = False
+    # Will be analyzed, by this worker, if its content turns out to match
+    # (`classify`).
+    analysis: Analysis | None = None
+
+    @property
+    def analyzable(self) -> bool:
+        return self.analysis is not None
 
 
 def expected_format(filename: str) -> ExpectedFormat:
@@ -268,7 +297,7 @@ def expected_format(filename: str) -> ExpectedFormat:
         file_format = FORMATS.get(extension)
         if file_format is not None:
             return ExpectedFormat(
-                extension=extension, content_type=file_format.content_type, analyzable=file_format.analyzable
+                extension=extension, content_type=file_format.content_type, analysis=file_format.analysis
             )
     return ExpectedFormat(extension="", content_type=GENERIC_CONTENT_TYPE)
 
@@ -291,9 +320,9 @@ def classify(filename: str, data: bytes) -> ClassifiedFile:
             extension=extension,
             content_type=content_type,
             recognized=True,
-            analyzable=file_format.analyzable,
+            analysis=file_format.analysis,
         )
-    return ClassifiedFile(extension="", content_type=GENERIC_CONTENT_TYPE, recognized=False, analyzable=False)
+    return ClassifiedFile(extension="", content_type=GENERIC_CONTENT_TYPE, recognized=False, analysis=None)
 
 
 def is_inline(content_type: str) -> bool:

@@ -1,4 +1,4 @@
-"""What the analyzers (image and document) share once they've described an
+"""What the analyzers (image, document and video) share once they've described an
 item: completing it hands the item on to the embedding stage."""
 
 from stash_shared.log import get_logger
@@ -14,7 +14,7 @@ def embedding_job_for(job: ProcessingJob) -> ProcessingJob:
 
 
 def log_completion(completed: bool, *, description_chars: int, **fields) -> None:
-    """The item's final state transition, shared by the image and document
+    """The item's final state transition, shared by the image, document and video
     analyzers. `fields`: anything else worth logging about the description
     (sizes and counts, never its content)."""
     if completed:

@@ -16,6 +16,7 @@ from helpers import register_and_login, start_upload, upload_file, upload_image
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _PDF_BYTES = b"%PDF-1.7\n" + b"x" * 32
+_MP4_BYTES = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -322,6 +323,30 @@ async def test_ai_analysis_quota_counts_only_uploads_that_will_be_analyzed(
     _assert_rate_limited(await upload_image(client, storage, token, _PNG_BYTES))
     # Not analyzed, so not charged: still accepted.
     assert (await upload_file(client, storage, token, "archive.zip", b"PK\x03\x04" + b"x" * 20)).status_code == 202
+
+
+async def test_a_video_costs_several_ai_analyses(client: AsyncClient, storage: FakeObjectStorage, rate_limits):
+    """Its analysis sends many frames: `ai_analysis_video_cost` (5) of the
+    quota, where an image or document costs 1."""
+    assert Settings().ai_analysis_video_cost == 5
+    _, token = await register_and_login(client)
+    rate_limits(ai_analyses_per_user="6/1d")
+    assert (await upload_file(client, storage, token, "clip.mp4", _MP4_BYTES)).status_code == 202
+    assert (await upload_file(client, storage, token, "doc.pdf", _PDF_BYTES)).status_code == 202
+
+    _assert_rate_limited(await upload_file(client, storage, token, "more.pdf", _PDF_BYTES))
+
+
+async def test_a_video_that_does_not_fit_the_ai_analysis_quota_is_refused(
+    client: AsyncClient, storage: FakeObjectStorage, rate_limits
+):
+    _, token = await register_and_login(client)
+    rate_limits(ai_analyses_per_user="4/1d")
+
+    _assert_rate_limited(await upload_file(client, storage, token, "clip.mp4", _MP4_BYTES))
+    # Nothing was charged for it.
+    for _ in range(4):
+        assert (await upload_file(client, storage, token, "doc.pdf", _PDF_BYTES)).status_code == 202
 
 
 async def test_invalid_uploads_charge_nothing(client: AsyncClient, rate_limits):

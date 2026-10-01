@@ -106,6 +106,7 @@ queue name (`stash_shared.queue.base`), each with its own DLQ:
 | `thumbnail_jobs`         | `stash-{env}-thumbnail[-dlq]`          | thumbnailer       | 1     | 5               | 60 s           | 180 s      |
 | `content_analysis_jobs`  | `stash-{env}-content-analysis[-dlq]`   | image_analyzer    | 1     | 3               | 120 s          | 360 s      |
 | `document_analysis_jobs` | `stash-{env}-document-analysis[-dlq]`  | document_analyzer | 1     | 2               | 180 s          | 540 s      |
+| `video_analysis_jobs`    | `stash-{env}-video-analysis[-dlq]`     | video_analyzer    | 1     | 2               | 360 s          | 1080 s     |
 | `embedding_jobs`         | `stash-{env}-embedding[-dlq]`          | embedding_worker  | 1     | 3               | 120 s          | 360 s      |
 
 - Each queue triggers its worker through an SQS event source mapping with
@@ -150,7 +151,8 @@ One function per service, all in the app subnet (VPC, dual-stack):
 | `api`               | `app.aws_lambda.handler`              | 512 MB  | 30 s    | the account's quota   |
 | `thumbnailer`       | `thumbnailer.aws_lambda.handler`      | 1024 MB | 60 s    | its SQS mapping: 5    |
 | `image_analyzer`    | `image_analyzer.aws_lambda.handler`   | 256 MB  | 120 s   | its SQS mapping: 3    |
-| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 512 MB, 1 GB `/tmp` | 180 s | its SQS mapping: 2 |
+| `document_analyzer` | `document_analyzer.aws_lambda.handler`| 768 MB, 1 GB `/tmp` | 180 s | its SQS mapping: 2 |
+| `video_analyzer`    | `video_analyzer.aws_lambda.handler`   | 2048 MB, 1 GB `/tmp`, ffmpeg layer | 360 s | its SQS mapping: 2 |
 | `embedding_worker`  | `embedding_worker.aws_lambda.handler` | 256 MB  | 120 s   | its SQS mapping: 3    |
 | `migrations`        | `app.aws_lambda_migrations.handler`   | 512 MB  | 300 s   | one deployment at a time |
 
@@ -159,11 +161,23 @@ One function per service, all in the app subnet (VPC, dual-stack):
 - `/tmp` (`ephemeral_storage`) is the free 512 MB, except the document
   analyzer's 1 GB: it downloads a PDF there to parse it (up to 512 MB,
   above the 500 MB upload limit); every other format it reads in ranges.
+  The video analyzer's likewise: it downloads the whole video (up to
+  512 MB) for ffmpeg to seek in.
+- Layers: `ffmpeg` (`aws_lambda_layer_version.ffmpeg`,
+  `stash-{env}-ffmpeg`), the static ffmpeg binary the video analyzer runs
+  (`/opt/bin/ffmpeg`, its `FFMPEG_PATH`), built by
+  `scripts/build_lambda_packages.py ffmpeg` into `build/lambda/ffmpeg.zip`
+  (override with `lambda_package_paths.ffmpeg`). It's a layer, not part of
+  the function's zip, because together they'd pass the 50 MB limit on
+  directly uploaded packages (unzipped they're ~130 MB of the 250 MB
+  allowed). Built for `lambda_architecture` only, so the video analyzer
+  can't override its architecture (a plan-time check). A new version is
+  published only when the zip changes.
 - No function reserves concurrency, so deploying needs no particular
   account concurrency quota. A reservation would take its share of the
   account's regional concurrency whether used or not, and AWS only allows
   one while 100 stay unreserved. The workers are capped by their SQS
-  mappings' `maximum_concurrency` (13 in total), which bounds their RDS
+  mappings' `maximum_concurrency` (15 in total), which bounds their RDS
   connections (about one per instance; a `db.t4g.micro` allows roughly 80)
   and their OpenAI spend. The API is bounded only by the account's
   regional quota. `lambda_config.<function>.reserved_concurrency` still

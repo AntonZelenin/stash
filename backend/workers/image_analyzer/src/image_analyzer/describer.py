@@ -3,6 +3,7 @@ import json
 from abc import ABC, abstractmethod
 
 from stash_shared.log import get_logger, logged_call
+from stash_worker_core.chunks import clean_chunks
 from stash_worker_core.errors import PermanentProcessingError
 from stash_worker_core.openai_client import PERMANENT_OPENAI_ERRORS, build_openai_client
 
@@ -156,20 +157,6 @@ def parse_chunks(output: str) -> list[str]:
     if not isinstance(raw_chunks, list) or not isinstance(raw_texts, list):
         raise RuntimeError("OpenAI returned search chunks that aren't a list")
     seen: set[str] = set()
-    chunks = _clean(raw_chunks, seen)[:_MAX_CHUNKS]
-    texts = _clean(raw_texts, seen)[:_MAX_TEXT_CHUNKS]
+    chunks = clean_chunks(raw_chunks, seen)[:_MAX_CHUNKS]
+    texts = clean_chunks(raw_texts, seen)[:_MAX_TEXT_CHUNKS]
     return chunks + [_TEXT_CHUNK_PREFIX + value for value in texts]
-
-
-def _clean(values: list, seen: set[str]) -> list[str]:
-    """`values`' strings with whitespace collapsed, leaving out empty ones
-    and any already in `seen` (case-insensitively), which it adds to."""
-    cleaned: list[str] = []
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        value = " ".join(value.split())
-        if value and value.casefold() not in seen:
-            seen.add(value.casefold())
-            cleaned.append(value)
-    return cleaned

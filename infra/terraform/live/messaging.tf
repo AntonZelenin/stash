@@ -22,6 +22,10 @@ locals {
       slug   = "document-analysis"
       worker = "document_analyzer"
     }
+    video_analysis_jobs = {
+      slug   = "video-analysis"
+      worker = "video_analyzer"
+    }
     embedding_jobs = {
       slug   = "embedding"
       worker = "embedding_worker"

@@ -305,9 +305,55 @@ async def test_delete_file_item_removes_stored_file(client: AsyncClient, storage
 
 
 @pytest.mark.parametrize(
+    ("filename", "data", "content_type"),
+    [
+        ("Holiday.MP4", b"\x00\x00\x00\x20ftypisom" + b"\x00" * 32, "video/mp4"),
+        ("clip.webm", b"\x1a\x45\xdf\xa3" + b"\x00" * 32, "video/webm"),
+    ],
+)
+async def test_videos_are_pending_and_sent_to_the_video_analyzer(
+    client: AsyncClient,
+    session: AsyncSession,
+    storage: FakeObjectStorage,
+    queue: FakeJobQueue,
+    document_queue: FakeJobQueue,
+    video_queue: FakeJobQueue,
+    filename,
+    data,
+    content_type,
+):
+    user_id, token = await register_and_login(client)
+
+    response = await upload_file(client, storage, token, filename, data)
+
+    assert response.status_code == 202
+    # Described from sampled frames: pending until the video analyzer is
+    # done, and on its queue only.
+    assert response.json()["status"] == "pending"
+    assert queue.published == [] and document_queue.published == []
+    [job] = video_queue.published
+    assert json.loads(codec.encode_job(job)) == {"item_id": response.json()["id"], "user_id": user_id, "item_type": "file"}
+    stored = await session.get(FileMetadata, UUID(response.json()["id"]))
+    assert stored.content_type == content_type
+
+
+async def test_a_video_whose_content_is_not_a_video_is_stored_generic_and_not_analyzed(
+    client: AsyncClient, storage: FakeObjectStorage, video_queue: FakeJobQueue
+):
+    _, token = await register_and_login(client)
+
+    response = await upload_file(client, storage, token, "renamed.mp4", b"MZ\x90\x00" + b"\x00" * 16)
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "completed"
+    assert video_queue.published == []
+
+
+@pytest.mark.parametrize(
     ("filename", "data"),
     [
         ("setup.exe", b"MZ\x90\x00"),  # unrecognized
+        ("voice.mp3", b"ID3\x04\x00" + b"\x00" * 16),  # audio: no transcription
         ("book.mobi", b"\x00" * 60 + b"BOOKMOBI" + b"\x00" * 16),  # recognized, not analyzable
         ("stuff.zip", b"PK\x03\x04" + b"\x00" * 16),
     ],

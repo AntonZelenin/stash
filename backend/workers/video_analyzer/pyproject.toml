@@ -1,0 +1,34 @@
+[project]
+name = "stash-video-analyzer"
+version = "0.1.0"
+description = "Stash video-analyzer worker (VIDEO_ANALYSIS_JOBS)"
+requires-python = ">=3.14"
+# Needs `stash-shared` (../../shared) and `stash-worker-core` (../core)
+# installed alongside, by path (no index/workspace); see the Dockerfile.
+# And the `ffmpeg` binary (FFMPEG_PATH), which isn't a Python package: the
+# Dockerfile installs it, and on Lambda it's the ffmpeg layer
+# (scripts/build_lambda_packages.py).
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "openai>=1.66",
+]
+
+[project.optional-dependencies]
+# Includes what `stash_worker_core.testing` (the shared fakes) needs. The
+# frame extraction tests also need ffmpeg (on PATH, or FFMPEG_PATH), and
+# skip without it.
+test = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "aiosqlite>=0.20",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/video_analyzer"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

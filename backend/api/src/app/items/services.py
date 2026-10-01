@@ -18,13 +18,14 @@ from stash_shared.queue.base import (
     DOCUMENT_ANALYSIS_JOBS,
     EMBEDDING_JOBS,
     THUMBNAIL_JOBS,
+    VIDEO_ANALYSIS_JOBS,
     ProcessingJob,
 )
 
 from app.analytics import DisabledAnalytics, Event, UserAnalytics
 from app.collections.names import normalize_collection_names
 from app.collections.repos import CollectionRepository
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.items import files
 from app.items.files import ContentKind
 from app.items.models import (
@@ -148,6 +149,21 @@ class UploadChangedError(Exception):
 ABANDONED_UPLOAD_GRACE = timedelta(days=1)
 # Abandoned pending rows of the user deleted per upload started.
 _ABANDONED_UPLOADS_PURGED_PER_START = 100
+
+# The queue each kind of file analysis goes to.
+_ANALYSIS_QUEUES = {
+    files.Analysis.document: DOCUMENT_ANALYSIS_JOBS,
+    files.Analysis.video: VIDEO_ANALYSIS_JOBS,
+}
+
+
+def _analysis_cost(analysis: files.Analysis | None, settings: Settings) -> int:
+    """What a file upload costs against the AI analysis quota: nothing if
+    it isn't analyzed, 1 like an image for a document, more for a video,
+    whose analysis sends many frames (`ai_analysis_video_cost`)."""
+    if analysis is None:
+        return 0
+    return settings.ai_analysis_video_cost if analysis is files.Analysis.video else 1
 
 
 # The stored content failed validation: the upload is discarded.
@@ -1004,7 +1020,7 @@ class ItemService:
             # Kept only to name downloads; without one, they're unnamed.
             filename = files.clean_filename(filename) if filename and filename.strip() else None
             # Every image is described by the image analyzer.
-            analyzed = True
+            analysis_cost = 1
         elif item_type == ItemType.file:
             _check_size(size_bytes, settings.max_file_upload_bytes, empty=EmptyFileError, too_large=FileTooLargeError)
             filename = files.clean_filename(filename)
@@ -1012,7 +1028,7 @@ class ItemService:
             content_type = expected.content_type
             # Charged as analyzed if its extension says so, even if its
             # content later turns out generic (and isn't).
-            analyzed = expected.analyzable
+            analysis_cost = _analysis_cost(expected.analysis, settings)
         else:
             raise ValueError(f"{item_type} items aren't uploaded")
         storage_key = storage_keys.staging_key(user_id, upload_id)
@@ -1022,7 +1038,7 @@ class ItemService:
         await limiter.consume(
             Charge(limiter.limits.uploads_per_user, user),
             Charge(limiter.limits.upload_bytes_per_user, user, cost=size_bytes),
-            Charge(limiter.limits.ai_analyses_per_user, user, cost=1 if analyzed else 0),
+            Charge(limiter.limits.ai_analyses_per_user, user, cost=analysis_cost),
         )
 
         ttl = settings.upload_url_ttl_seconds
@@ -1211,7 +1227,8 @@ class ItemService:
         """Any file type is accepted: a recognized format keeps its real
         content type, anything else is stored as a generic binary (see
         `app.items.files`). An `analyzable` format is created `pending` and
-        enqueued for document analysis; anything else is `completed` right
+        enqueued for its analysis (documents to the document analyzer,
+        videos to the video analyzer); anything else is `completed` right
         away."""
         _check_size(
             stored.size_bytes, get_settings().max_file_upload_bytes, empty=EmptyFileError, too_large=FileTooLargeError
@@ -1244,9 +1261,9 @@ class ItemService:
             tags=resolved_tags,
             collections=resolved_collections,
         )
-        if classified.analyzable:
+        if classified.analysis is not None:
             await self._add_job(
-                DOCUMENT_ANALYSIS_JOBS,
+                _ANALYSIS_QUEUES[classified.analysis],
                 ProcessingJob(item_id=item.id, user_id=item.user_id, item_type=QueueItemType.file),
             )
         if upload.caption is not None:
@@ -1260,6 +1277,7 @@ class ItemService:
             content_type=classified.content_type,
             size_bytes=stored.size_bytes,
             analyzable=classified.analyzable,
+            analysis=classified.analysis,
             has_caption=upload.caption is not None,
             tag_count=len(resolved_tags),
             collection_count=len(resolved_collections),

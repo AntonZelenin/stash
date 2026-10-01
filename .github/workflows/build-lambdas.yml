@@ -1,6 +1,7 @@
-# Builds every Lambda package, each in its own job, into an artifact
-# lambda-<function> holding build/lambda/<function>.zip, where Terraform
-# (infra/terraform/live) expects it. Terraform never builds anything: it
+# Builds every Lambda package and layer, each in its own job, into an
+# artifact lambda-<target> holding build/lambda/<target>.zip, where
+# Terraform (infra/terraform/live) expects it (ffmpeg: the video analyzer's
+# layer). Terraform never builds anything: it
 # deploys these zips and redeploys a function only when its zip's hash
 # changes.
 name: Build Lambda packages
@@ -18,7 +19,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        function: [api, thumbnailer, image_analyzer, document_analyzer, embedding_worker, migrations]
+        function: [api, thumbnailer, image_analyzer, document_analyzer, video_analyzer, embedding_worker, migrations, ffmpeg]
     steps:
       - uses: actions/checkout@v5
 

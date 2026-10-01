@@ -2,7 +2,8 @@
 #
 # Packages are built outside Terraform (scripts/build_lambda_packages.py)
 # into build/lambda/<function>.zip; a function is only redeployed when its
-# own zip changes.
+# own zip changes. Likewise the layers (build/lambda/<layer>.zip): what a
+# function needs that isn't Python (the video analyzer's ffmpeg).
 #
 # Every function runs in the app subnet: private IPv4 to RDS, IPv6 through
 # the egress-only IGW to OpenAI and AWS APIs. S3 and SQS are only reachable
@@ -54,6 +55,27 @@ locals {
       # everything else is read in ranges, within its processing limits.
       ephemeral_storage = 1024
     }
+    video_analyzer = {
+      handler = "video_analyzer.aws_lambda.handler"
+      db_role = "worker"
+      queue   = "video_analysis_jobs"
+      # ffmpeg decodes one frame at a time in a child process, on one
+      # thread, at most VIDEO_MAX_PIXELS (8K): a few hundred MB for the
+      # worst (10-bit HEVC with a full reference buffer), next to the
+      # runtime's ~150 MB. 2 GB also buys more CPU (Lambda scales it with
+      # memory), which decoding is bound by. An estimate until measured:
+      # tune it (lambda_config) from CloudWatch's Max Memory Used, see
+      # docs/deployment.md.
+      memory_size = 2048
+      openai      = true
+      # The whole video is downloaded to /tmp for ffmpeg to seek in (up to
+      # VIDEO_MAX_DOWNLOAD_BYTES, 512 MB, above the 500 MB upload limit);
+      # frames never touch the disk. A job's leftovers are cleared before
+      # the next one, so this needn't hold two.
+      ephemeral_storage = 1024
+      # bin/ffmpeg, as /opt/bin/ffmpeg.
+      layers = ["ffmpeg"]
+    }
     embedding_worker = {
       handler     = "embedding_worker.aws_lambda.handler"
       db_role     = "worker"
@@ -98,7 +120,13 @@ locals {
       ephemeral_storage = coalesce(try(var.lambda_config[name].ephemeral_storage, null), try(d.ephemeral_storage, null), 512)
       architecture      = coalesce(try(var.lambda_config[name].architecture, null), var.lambda_architecture)
       runtime           = coalesce(try(var.lambda_config[name].runtime, null), var.lambda_runtime)
+      layers            = try(d.layers, [])
     })
+  }
+
+  # The layers' ARNs (with their version), by the names functions use.
+  lambda_layer_arns = {
+    ffmpeg = aws_lambda_layer_version.ffmpeg.arn
   }
 
   # Settings every service reads (app.config.Settings,
@@ -156,6 +184,8 @@ locals {
         S3_SECRET_KEY   = ""
       } : {},
       l.openai ? { OPENAI_API_KEY_SECRET_ARN = aws_secretsmanager_secret.openai_api_key.arn } : {},
+      # Where the ffmpeg layer puts it (video_analyzer.config).
+      contains(l.layers, "ffmpeg") ? { FFMPEG_PATH = "/opt/bin/ffmpeg" } : {},
       name == "api" ? {
         S3_PUBLIC_ENDPOINT_URL = ""
         # The CloudFront frontend (frontend.tf) plus any extra origins.
@@ -180,6 +210,24 @@ locals {
   }
 }
 
+# ffmpeg for the video analyzer: the static Linux build pinned in
+# scripts/build_lambda_packages.py (FFMPEG_WHEEL), bin/ffmpeg only. Built for
+# one architecture, var.lambda_architecture; a new version is published
+# only when its zip changes, and the function moves to it.
+resource "aws_lambda_layer_version" "ffmpeg" {
+  layer_name  = "${local.name_prefix}-ffmpeg"
+  description = "ffmpeg (static build) for the video analyzer"
+
+  filename                 = local.ffmpeg_layer_path
+  source_code_hash         = filebase64sha256(local.ffmpeg_layer_path)
+  compatible_architectures = [var.lambda_architecture]
+  compatible_runtimes      = [var.lambda_runtime]
+}
+
+locals {
+  ffmpeg_layer_path = coalesce(lookup(var.lambda_package_paths, "ffmpeg", null), "${var.lambda_package_dir}/ffmpeg.zip")
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
   for_each = local.lambdas
 
@@ -202,6 +250,7 @@ resource "aws_lambda_function" "main" {
   memory_size                    = each.value.memory_size
   timeout                        = each.value.timeout
   reserved_concurrent_executions = each.value.reserved_concurrency
+  layers                         = [for name in each.value.layers : local.lambda_layer_arns[name]]
 
   ephemeral_storage {
     size = each.value.ephemeral_storage
@@ -232,6 +281,13 @@ resource "aws_lambda_function" "main" {
     aws_secretsmanager_secret_version.db,
     aws_secretsmanager_secret_version.db_app,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = length(each.value.layers) == 0 || each.value.architecture == var.lambda_architecture
+      error_message = "${each.key} uses layers, which are built for lambda_architecture only: don't override its architecture."
+    }
+  }
 }
 
 # The API's scheduled task: draining the object deletions that couldn't be

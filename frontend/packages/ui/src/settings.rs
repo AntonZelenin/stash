@@ -405,6 +405,7 @@ fn PrivacySettings() -> Element {
             vec![t!("settings-privacy-openai-text")],
             vec![
                 t!("settings-privacy-openai-images"),
+                t!("settings-privacy-openai-videos"),
                 t!("settings-privacy-openai-documents"),
                 t!("settings-privacy-openai-notes"),
                 t!("settings-privacy-openai-queries"),

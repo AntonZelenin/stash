@@ -228,6 +228,54 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  # Describes uploaded videos via OpenAI, from frames sampled across them
+  # with ffmpeg (bundled in its image). Its own package and image, built on
+  # the shared worker core.
+  video_analyzer:
+    build:
+      context: ./backend
+      dockerfile: workers/video_analyzer/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stash}:${POSTGRES_PASSWORD:-stash}@postgres:5432/${POSTGRES_DB:-stash}
+      # Logging (see stash_shared.log): PLATFORM picks the format, ENVIRONMENT labels it.
+      PLATFORM: ${PLATFORM:-local}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Tracing (see stash_shared.tracing): spans go to Jaeger over OTLP.
+      TRACING_ENABLED: ${TRACING_ENABLED:-true}
+      TRACING_OTLP_ENDPOINT: ${TRACING_OTLP_ENDPOINT:-http://jaeger:4318}
+      VALKEY_URL: redis://valkey:6379
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-stash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      # Processing limits (video_analyzer.config): passed on only if set (in
+      # .env or the shell); unset, the worker's own default applies.
+      VIDEO_MAX_DOWNLOAD_BYTES:
+      VIDEO_MAX_DURATION_SECONDS:
+      VIDEO_MAX_WIDTH:
+      VIDEO_MAX_HEIGHT:
+      VIDEO_MAX_PIXELS:
+      VIDEO_MAX_FRAMES:
+      VIDEO_MIN_FRAME_GAP_SECONDS:
+      VIDEO_FRAME_MAX_DIMENSION:
+      VIDEO_MAX_FRAME_BYTES:
+      VIDEO_PROBE_TIMEOUT_SECONDS:
+      VIDEO_FRAME_TIMEOUT_SECONDS:
+      VIDEO_EXTRACTION_TIMEOUT_SECONDS:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
   # Turns items' searchable text into embeddings for semantic search.
   # Its own package and image, built on the shared worker core.
   embedding_worker:

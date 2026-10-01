@@ -257,6 +257,7 @@ settings-privacy-private-text = Your items, files, tags and collections are avai
 settings-privacy-openai-title = Some content is processed by OpenAI
 settings-privacy-openai-text = To power search and automatic analysis, Stash may send OpenAI:
 settings-privacy-openai-images = image previews;
+settings-privacy-openai-videos = still frames from videos (never their sound);
 settings-privacy-openai-documents = the text and names of documents;
 settings-privacy-openai-notes = the text of notes, captions and links;
 settings-privacy-openai-queries = search queries.

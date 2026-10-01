@@ -6,8 +6,10 @@
 #   S3 (state)        live's state key and its lock only
 #   S3                buckets <prefix>-objects-<acct>, <prefix>-frontend-<acct>;
 #                     objects only in the frontend bucket (site upload)
-#   Lambda, SQS, SNS,
-#   Logs, CloudWatch,
+#   Lambda (functions
+#   and layers), SQS,
+#   SNS, Logs,
+#   CloudWatch,
 #   EventBridge rules <prefix>-* names
 #   Secrets Manager   <prefix>/* secrets; values only of <prefix>/rds/* (the
 #                     DB secrets Terraform writes), never the OpenAI key
@@ -33,6 +35,7 @@ locals {
   frontend_bucket  = "arn:aws:s3:::${local.name_prefix}-frontend-${local.account_id}"
   lambda_roles     = "arn:aws:iam::${local.account_id}:role/${local.name_prefix}-*"
   functions        = "arn:aws:lambda:${local.region_account}:function:${local.name_prefix}-*"
+  layers           = "arn:aws:lambda:${local.region_account}:layer:${local.name_prefix}-*"
   queues           = "arn:aws:sqs:${local.region_account}:${local.name_prefix}-*"
   topics           = "arn:aws:sns:${local.region_account}:${local.name_prefix}-*"
   secrets          = "arn:aws:secretsmanager:${local.region_account}:secret:${local.name_prefix}/*"
@@ -404,6 +407,15 @@ data "aws_iam_policy_document" "deploy_compute" {
     sid       = "Functions"
     actions   = ["lambda:*"]
     resources = [local.functions, "${local.functions}:*"]
+  }
+
+  # Layers (the video analyzer's ffmpeg): publishing a version when its zip
+  # changes, reading it (also needed to attach it to a function), and
+  # deleting the versions Terraform replaces.
+  statement {
+    sid       = "Layers"
+    actions   = ["lambda:PublishLayerVersion", "lambda:GetLayerVersion", "lambda:DeleteLayerVersion"]
+    resources = [local.layers, "${local.layers}:*"]
   }
 
   statement {

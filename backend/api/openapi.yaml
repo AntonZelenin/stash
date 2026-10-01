@@ -459,17 +459,21 @@ paths:
 
         Every upload started counts against the user's upload, byte and
         (for images and analyzable files) AI analysis quotas, whether or
-        not it's finalized; finalizing costs nothing.
+        not it's finalized; finalizing costs nothing. An image or document
+        costs one AI analysis, a video several (`AI_ANALYSIS_VIDEO_COST`,
+        5 by default).
 
 
         Files: any file up to 500 MB. Analyzable formats (PDF,
-        DOCX/XLSX/PPTX, ODT/ODS/ODP, RTF, EPUB, FB2, FB2.ZIP and the
-        text/data formats) are created `pending` and analyzed
-        asynchronously into a searchable description; everything else is
+        DOCX/XLSX/PPTX, ODT/ODS/ODP, RTF, EPUB, FB2, FB2.ZIP, the text/data
+        formats, and every video format) are created `pending` and analyzed
+        asynchronously into a searchable description (a video from frames
+        sampled across it; its audio isn't analyzed); everything else is
         created already `completed`. Recognized formats — documents (PDF,
         Office, OpenDocument, RTF, iWork), books (EPUB, FB2, FB2.ZIP,
         MOBI/AZW/AZW3, DjVu), text/data (TXT, MD, CSV, TSV, JSON, YAML, XML,
-        HTML, LOG) and ZIP — keep their real content type, taken from the
+        HTML, LOG), video (MP4, M4V, MOV, 3GP, WebM, MKV, AVI, MPEG, OGV,
+        WMV), audio and ZIP — keep their real content type, taken from the
         filename's extension and verified against the content on finalize.
         Any other file, or one whose content doesn't match its extension,
         is stored as `application/octet-stream`. The client's content type

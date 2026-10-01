@@ -16,13 +16,15 @@ Modules:
   (receive, call `process_message`, pause after errors, sample queue
   stats). Put per-message behaviour in the former, never the latter.
 - `items` — the guarded SQL status writes every worker's `Worker` makes,
-  and `complete_item` (both analyzers). Every status write stamps
+  and `complete_item` (every analyzer). Every status write stamps
   `status_updated_at`. A write that triggers a next-stage job adds that job
   to the outbox (`stash_shared.outbox.add_event`) in the same transaction;
   the handler then flushes the outbox. Never publish a job straight to a
   queue. Worker-specific SQL lives in that worker's own `items`.
-- `completion` — what both analyzers do on completing an item (the
+- `completion` — what the analyzers do on completing an item (the
   embedding job, the log line).
+- `chunks` — `clean_chunks`, how the image and video analyzers tidy the
+  model's search chunks before storing them one per line.
 - `openai_client` — OpenAI client setup shared by the workers that call
   OpenAI, and which OpenAI errors are permanent
   (`errors.PermanentProcessingError`) vs. transient (anything else).

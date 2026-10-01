@@ -1,13 +1,18 @@
 """Builds the Lambda deployment packages: one zip per function, with only
 that function's packages and their dependencies, as Linux wheels for the
-Lambda runtime (whatever OS this runs on).
+Lambda runtime (whatever OS this runs on); and the Lambda layers.
 
-    python scripts/build_lambda_packages.py              # all functions
+    python scripts/build_lambda_packages.py              # everything
     python scripts/build_lambda_packages.py thumbnailer  # just one
+    python scripts/build_lambda_packages.py ffmpeg       # the ffmpeg layer
 
-Writes build/lambda/<function>.zip, the paths Terraform
-(infra/terraform/live) deploys by default. Run it with Python 3.14 (the
-runtime's version); needs network access to PyPI.
+Writes build/lambda/<function>.zip and build/lambda/<layer>.zip, the paths
+Terraform (infra/terraform/live) deploys by default. Run it with Python
+3.14 (the runtime's version); needs network access to PyPI.
+
+Layers (`LAYERS`) hold what isn't Python: the ffmpeg binary the video
+analyzer runs. It's in its own layer rather than the function's zip, which
+it would push past Lambda's 50 MB limit on directly uploaded packages.
 """
 
 import argparse
@@ -41,6 +46,7 @@ FUNCTIONS = {
     "image_analyzer": ["shared", "workers/core", "workers/image_analyzer"],
     "document_analyzer": ["shared", "workers/core", "workers/document_analyzer"],
     "embedding_worker": ["shared", "workers/core", "workers/embedding_worker"],
+    "video_analyzer": ["shared", "workers/core", "workers/video_analyzer"],
     # `alembic upgrade head` in the VPC (app.aws_lambda_migrations), run by
     # the deployment: the API's code plus its migrations.
     "migrations": ["shared", "api"],
@@ -52,6 +58,22 @@ EXTRAS = {"shared": "[aws]"}
 EXTRA_FILES = {
     "migrations": {"api/alembic.ini": "migrations/alembic.ini", "api/alembic": "migrations/alembic"},
 }
+
+# The ffmpeg layer's binary: the static Linux build bundled in the
+# imageio-ffmpeg wheel (ffmpeg 7.0.2), taken from PyPI pinned by version and
+# hash, so the same input always gives the same layer. Only the binary goes
+# in, at bin/ffmpeg, so on Lambda it's /opt/bin/ffmpeg (FFMPEG_PATH). Keep
+# in step with backend/workers/video_analyzer/Dockerfile, which takes the
+# local image's ffmpeg from the same wheel.
+FFMPEG_WHEEL = "imageio-ffmpeg==0.6.0"
+FFMPEG_WHEEL_SHA256 = {
+    "arm64": "1d47bebd83d2c5fc770720d211855f208af8a596c82d17730aa51e815cdee6dc",
+    "x86_64": "c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282",
+}
+_FFMPEG_MEMBER_PREFIX = "imageio_ffmpeg/binaries/ffmpeg-linux-"
+
+# Layer -> its builder (architecture -> zip written).
+LAYERS = {"ffmpeg": lambda architecture: build_ffmpeg_layer(architecture)}
 
 # Never needed at runtime; skipped when zipping.
 _SKIP_DIRS = {"__pycache__", "tests"}
@@ -97,6 +119,46 @@ def build(function: str, platforms: list[str]) -> Path:
     return archive
 
 
+def build_ffmpeg_layer(architecture: str) -> Path:
+    """build/lambda/ffmpeg.zip: `bin/ffmpeg` (executable), from the pinned
+    wheel for `architecture`, its hash checked."""
+    tmp = WORK_DIR / "ffmpeg"
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        _pip(
+            "download",
+            FFMPEG_WHEEL,
+            "--no-deps",
+            "--only-binary=:all:",
+            *(arg for platform in PLATFORMS[architecture] for arg in ("--platform", platform)),
+            "--python-version", PYTHON_VERSION,
+            "--implementation", "cp",
+            "--dest", tmp,
+        )
+        [wheel] = tmp.glob("*.whl")
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        if digest != FFMPEG_WHEEL_SHA256[architecture]:
+            raise SystemExit(f"{wheel.name}: sha256 {digest}, expected {FFMPEG_WHEEL_SHA256[architecture]}")
+        with zipfile.ZipFile(wheel) as zf:
+            [member] = [name for name in zf.namelist() if name.startswith(_FFMPEG_MEMBER_PREFIX)]
+            binary = zf.read(member)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        archive = OUT_DIR / "ffmpeg.zip"
+        archive.unlink(missing_ok=True)
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            info = zipfile.ZipInfo("bin/ffmpeg", date_time=(1980, 1, 1, 0, 0, 0))
+            # Executable: Lambda keeps a layer's file modes. Made on Unix
+            # (3) whatever builds it, or the mode is ignored when it's
+            # extracted (zipfile says MS-DOS on Windows).
+            info.create_system = 3
+            info.external_attr = 0o755 << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, binary)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return archive
+
+
 def _zip(source: Path, archive: Path) -> None:
     archive.unlink(missing_ok=True)
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -118,13 +180,17 @@ def _pip(*args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("functions", nargs="*", metavar="function", help=f"default: all ({', '.join(FUNCTIONS)})")
+    targets = [*FUNCTIONS, *LAYERS]
+    parser.add_argument("targets", nargs="*", metavar="target", help=f"default: all ({', '.join(targets)})")
     parser.add_argument("--architecture", choices=PLATFORMS, default="arm64")
     args = parser.parse_args()
-    if unknown := set(args.functions) - FUNCTIONS.keys():
-        parser.error(f"unknown function(s): {', '.join(sorted(unknown))}")
-    for function in args.functions or FUNCTIONS:
-        archive = build(function, PLATFORMS[args.architecture])
+    if unknown := set(args.targets) - set(targets):
+        parser.error(f"unknown function(s) or layer(s): {', '.join(sorted(unknown))}")
+    for target in args.targets or targets:
+        if target in LAYERS:
+            archive = LAYERS[target](args.architecture)
+        else:
+            archive = build(target, PLATFORMS[args.architecture])
         sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
         print(f"{archive.relative_to(ROOT)}: {archive.stat().st_size / 1024 / 1024:.1f} MiB, sha256 {sha256}")
 

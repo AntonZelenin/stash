@@ -4,13 +4,13 @@
 # docs/architecture.md "Metrics") complement these and aren't duplicated.
 #
 # Alarms are kept to conditions worth being notified about and
-# investigating, 10 alarm metrics in all (the CloudWatch free tier covers
-# 10). Everything else (latency, throttles, concurrency, queue depth, RDS
-# connections) is on the dashboard only.
+# investigating, 12 alarm metrics in all (the CloudWatch free tier covers
+# 10; each one more is $0.10 a month). Everything else (latency, throttles,
+# concurrency, queue depth, RDS connections) is on the dashboard only.
 #
-#   DLQ not empty (4)          a job was given up on
+#   DLQ not empty (5)          a job was given up on
 #   API 5xx (1)                the API is failing requests
-#   worker errors (2)          thumbnailer / document analyzer crashing
+#   worker errors (3)          thumbnailer / document / video analyzer crashing
 #   oldest message age (1)     embedding_jobs isn't being consumed
 #   RDS CPU, free storage (2)  the database is saturated or filling up
 #
@@ -22,12 +22,12 @@ locals {
   alarm_actions = [aws_sns_topic.alarms.arn]
 
   # Workers whose invocation errors (crash, timeout, out of memory) get an
-  # alarm: the two that handle large, untrusted inputs (images up to 100 MB,
-  # arbitrary documents) and are the likeliest to time out or run out of
-  # memory. Summing all workers in one alarm would cost one metric each
+  # alarm: the three that handle large, untrusted inputs (images up to
+  # 100 MB, arbitrary documents, videos up to 500 MB) and are the likeliest
+  # to time out or run out of memory. Summing all workers in one alarm would cost one metric each
   # anyway. Failures of any worker still surface through its DLQ alarm once
   # the retries are used up.
-  alarmed_workers = ["thumbnailer", "document_analyzer"]
+  alarmed_workers = ["thumbnailer", "document_analyzer", "video_analyzer"]
 
   # The queue watched for not being consumed at all (event source mapping
   # disabled, function unable to run): such messages never reach the DLQ,

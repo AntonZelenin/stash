@@ -8,8 +8,8 @@ embedding worker splits that text into the chunks it embeds
 from stash_shared.embeddings import MAX_INPUT_CHARS
 
 _SEPARATOR = "\n\n"
-# A generated image description is a list of short search chunks (see the
-# image analyzer), stored one per line.
+# A generated image or video description is a list of short search chunks (see the
+# image and video analyzers), stored one per line.
 _CHUNK_SEPARATOR = "\n"
 
 
