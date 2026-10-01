@@ -241,7 +241,14 @@ custom domain yet.
 - API Gateway gives up after 30 s, so the API function's timeout is
   capped at 30.
 - Only API Gateway may invoke the function (`aws_lambda_permission`,
-  scoped to this API).
+  scoped to this API), and the EventBridge rule below.
+- Scheduled storage deletion drain (`lambda.tf`): every
+  `storage_deletion_drain_minutes` (15), an EventBridge rule invokes the
+  API function with `{"task": "drain_storage_deletions"}`, which retries
+  the object deletions that couldn't be done right after the commit that
+  recorded them (e.g. a deleted account's objects while S3 was failing;
+  `app.storage.deletions`). The API runs it with its own role: it already
+  lists and deletes under `users/*` and `uploads/*`.
 - Throttling: the `$default` stage lets through at most
   `api_throttling_rate_limit` requests/s (300) with bursts of
   `api_throttling_burst_limit` (600), all clients together; over it, API

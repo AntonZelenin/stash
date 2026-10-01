@@ -4,12 +4,12 @@ use serde::Deserialize;
 use crate::error::{ApiError, FieldError};
 use crate::models::{
     AddToCollectionRequest, AssignTagRequest, ChangePasswordRequest, Collection,
-    CreateTextItemRequest, CurrentUser, DuplicateGroup, DuplicatesResponse, FindDuplicatesRequest,
-    ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate, ListCollectionsResponse,
-    ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest, NewUpload, PlaybackUrl,
-    PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse, SavedYear,
-    SavedYearsResponse, SearchRequest, SearchResponse, SuggestedTagsResponse, Tag, TextItemType,
-    TokenPair, UploadCandidate, UploadStarted,
+    CreateTextItemRequest, CurrentUser, DeleteAccountRequest, DuplicateGroup, DuplicatesResponse,
+    FindDuplicatesRequest, ItemCounts, ItemCreated, ItemQuery, ItemSort, ItemUpdate,
+    ListCollectionsResponse, ListItemsResponse, ListTagsResponse, ListedItem, LoginRequest,
+    NewUpload, PlaybackUrl, PresignedUpload, RefreshRequest, RegisterRequest, RegisterResponse,
+    SavedYear, SavedYearsResponse, SearchRequest, SearchResponse, SuggestedTagsResponse, Tag,
+    TextItemType, TokenPair, UploadCandidate, UploadStarted,
 };
 
 /// Most files `find_duplicates` takes at once (the API's limit).
@@ -121,6 +121,29 @@ impl ApiClient {
 
         match response.status().as_u16() {
             200 => response.json().await.map_err(|_| ApiError::Server),
+            401 => Err(ApiError::Unauthorized),
+            422 => Err(ApiError::Validation(
+                parse_validation_errors(response).await,
+            )),
+            status => Err(ApiError::from_status(status)),
+        }
+    }
+
+    /// Permanently deletes the account and everything in it. Every session
+    /// ends with it. A wrong password is a validation error on `password`,
+    /// and deletes nothing.
+    pub async fn delete_account(&self, access_token: &str, password: &str) -> Result<(), ApiError> {
+        let response = self
+            .authenticated(Method::POST, "/users/me/delete", access_token)
+            .json(&DeleteAccountRequest {
+                password: password.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|_| ApiError::Network)?;
+
+        match response.status().as_u16() {
+            204 => Ok(()),
             401 => Err(ApiError::Unauthorized),
             422 => Err(ApiError::Validation(
                 parse_validation_errors(response).await,

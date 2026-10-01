@@ -53,6 +53,12 @@ def is_staging_key(key: str) -> bool:
     return key.startswith(STAGING_PREFIX)
 
 
+def user_prefixes(user_id: UUID) -> list[str]:
+    """Every prefix the user's objects are stored under: their canonical
+    area and their staging one. Deleting the account deletes both."""
+    return [f"{_user_prefix(user_id)}/", f"{STAGING_PREFIX}{user_id}/"]
+
+
 def new_object_id() -> str:
     """A fresh, key-safe name for one canonical object: 128 random bits,
     so two copies never share a key."""

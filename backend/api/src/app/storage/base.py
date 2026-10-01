@@ -92,6 +92,14 @@ class ObjectStorage(ABC):
         ...
 
     @abstractmethod
+    async def delete_prefix(self, *, prefix: str, max_objects: int) -> bool:
+        """Removes objects whose key starts with `prefix`, at most
+        `max_objects` of them per call, so one call stays bounded however
+        much is stored there. Returns whether nothing is left under
+        `prefix`; if something is, call again. Raises if a delete fails."""
+        ...
+
+    @abstractmethod
     async def generate_download_url(
         self,
         *,

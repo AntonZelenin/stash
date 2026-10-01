@@ -251,6 +251,15 @@ settings-language-description = Choose the language Stash is shown in. Your choi
 settings-hidden-tags-description = Items with any of the checked tags are left out in Blind mode. Your choice is remembered on this device.
 settings-hidden-tags-limit = At most { $max } tags can be hidden.
 settings-language-label = Language
+settings-section-delete-account = Delete account
+settings-delete-account-description = Permanently delete your account and everything in it: all your items and files, tags and collections. This can't be undone. You'll be signed out on every device.
+settings-delete-account-password = Password
+settings-delete-account-password-missing = Enter your password
+settings-delete-account = Delete account
+settings-delete-account-confirm-title = Delete your account?
+settings-delete-account-confirm-message = Everything you've saved in Stash will be deleted for good. This can't be undone.
+settings-delete-account-confirm = Delete forever
+settings-deleting-account = Deleting…
 
 ## Selecting items (drag a rectangle over the cards) and acting on them all
 

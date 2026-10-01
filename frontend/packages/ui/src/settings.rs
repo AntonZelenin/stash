@@ -6,9 +6,10 @@ use dioxus_i18n::t;
 
 use crate::AuthSession;
 use crate::auth::{MIN_PASSWORD_CHARS, validate_new_password};
+use crate::confirm::ConfirmDialog;
 use crate::filters::{FILTERS_CSS, FilterSection, FilterSectionOptions};
 use crate::i18n::{Language, Localization, api_error_message};
-use crate::icons::{IconClose, IconEyeOff, IconGlobe, IconLock};
+use crate::icons::{IconClose, IconEyeOff, IconGlobe, IconLock, IconTrash};
 use crate::preferences::{MAX_HIDDEN_TAGS, Preferences};
 
 const SETTINGS_CSS: Asset = asset!("/assets/styling/settings.css");
@@ -19,16 +20,24 @@ enum Section {
     Password,
     Language,
     HiddenTags,
+    DeleteAccount,
 }
 
 impl Section {
-    const ALL: [Section; 3] = [Section::Password, Section::Language, Section::HiddenTags];
+    // Deleting the account last, apart from the everyday settings.
+    const ALL: [Section; 4] = [
+        Section::Password,
+        Section::Language,
+        Section::HiddenTags,
+        Section::DeleteAccount,
+    ];
 
     fn label(self) -> String {
         match self {
             Section::Password => t!("settings-section-password"),
             Section::Language => t!("settings-section-language"),
             Section::HiddenTags => t!("settings-section-hidden-tags"),
+            Section::DeleteAccount => t!("settings-section-delete-account"),
         }
     }
 }
@@ -85,6 +94,7 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                                 Section::Password => rsx! { IconLock {} },
                                 Section::Language => rsx! { IconGlobe {} },
                                 Section::HiddenTags => rsx! { IconEyeOff {} },
+                                Section::DeleteAccount => rsx! { IconTrash {} },
                             }
                             "{item.label()}"
                         }
@@ -101,6 +111,9 @@ pub fn AccountSettings(on_close: EventHandler<()>) -> Element {
                         },
                         Section::HiddenTags => rsx! {
                             HiddenTagsSettings {}
+                        },
+                        Section::DeleteAccount => rsx! {
+                            DeleteAccountSettings {}
                         },
                     }
                 }
@@ -328,6 +341,98 @@ fn HiddenTagsSettings() -> Element {
             }
             if at_limit {
                 p { class: "settings-hint", {t!("settings-hidden-tags-limit", max: MAX_HIDDEN_TAGS)} }
+            }
+        }
+    }
+}
+
+/// Deleting the account: the password, then a confirmation, since it can't
+/// be undone. Success signs out (the session's tokens die with the
+/// account), which replaces the whole app, this window included, with the
+/// login screen.
+#[component]
+fn DeleteAccountSettings() -> Element {
+    let session = use_context::<AuthSession>();
+    let mut password = use_signal(String::new);
+    let mut password_error = use_signal(|| None::<String>);
+    let mut confirming = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    // A failure other than a wrong password, shown in the confirmation.
+    let mut confirm_error = use_signal(|| None::<String>);
+    let mut password_input = use_signal(|| None::<Rc<MountedData>>);
+
+    let ask = move |evt: FormEvent| {
+        evt.prevent_default();
+        if password().is_empty() {
+            password_error.set(Some(t!("settings-delete-account-password-missing")));
+            return;
+        }
+        confirm_error.set(None);
+        confirming.set(true);
+    };
+
+    let delete = move |_| {
+        if deleting() {
+            return;
+        }
+        let session = session.clone();
+        let password_value = password();
+        deleting.set(true);
+        confirm_error.set(None);
+        spawn(async move {
+            match session.delete_account(&password_value).await {
+                // Signed out: nothing here is shown any more.
+                Ok(()) => return,
+                Err(ApiError::Validation(errors)) => {
+                    let messages: Vec<String> =
+                        errors.into_iter().map(|error| error.message).collect();
+                    confirming.set(false);
+                    password_error.set(Some(messages.join(" ")));
+                    if let Some(input) = password_input() {
+                        let _ = input.set_focus(true).await;
+                    }
+                }
+                Err(err) => confirm_error.set(Some(api_error_message(&err))),
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        h3 { class: "settings-title", {t!("settings-section-delete-account")} }
+        p { class: "settings-description", {t!("settings-delete-account-description")} }
+
+        form { class: "settings-form", novalidate: true, onsubmit: ask,
+            PasswordField {
+                id: "settings-delete-account-password",
+                label: t!("settings-delete-account-password"),
+                autocomplete: "current-password",
+                value: password(),
+                error: password_error(),
+                on_input: move |value| {
+                    password.set(value);
+                    password_error.set(None);
+                },
+                on_mounted: move |input: Rc<MountedData>| password_input.set(Some(input)),
+            }
+
+            div { class: "settings-actions",
+                button { class: "settings-button settings-button-danger", r#type: "submit",
+                    {t!("settings-delete-account")}
+                }
+            }
+        }
+
+        if confirming() {
+            ConfirmDialog {
+                title: t!("settings-delete-account-confirm-title"),
+                message: t!("settings-delete-account-confirm-message"),
+                confirm_label: t!("settings-delete-account-confirm"),
+                busy_label: t!("settings-deleting-account"),
+                busy: deleting(),
+                error: confirm_error(),
+                on_confirm: delete,
+                on_cancel: move |_| confirming.set(false),
             }
         }
     }

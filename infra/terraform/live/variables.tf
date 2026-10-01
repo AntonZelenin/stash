@@ -261,6 +261,17 @@ variable "lambda_log_retention_days" {
   }
 }
 
+variable "storage_deletion_drain_minutes" {
+  description = "How often, in minutes, the API retries pending object deletions, e.g. of a deleted account's objects while S3 was failing (lambda.tf). At least 2: EventBridge wants \"rate(1 minute)\" for one."
+  type        = number
+  default     = 15
+
+  validation {
+    condition     = var.storage_deletion_drain_minutes >= 2 && floor(var.storage_deletion_drain_minutes) == var.storage_deletion_drain_minutes
+    error_message = "storage_deletion_drain_minutes must be a whole number of minutes, at least 2."
+  }
+}
+
 variable "log_level" {
   description = "LOG_LEVEL for every service."
   type        = string

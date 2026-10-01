@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.auth import TokenPairResponse
 from app.api.schemas.users import (
     ChangePasswordRequest,
     CurrentUserResponse,
+    DeleteAccountRequest,
     UserCreateRequest,
     UserCreateResponse,
 )
@@ -13,6 +14,7 @@ from app.body_size import BodyLimitedRoute
 from app.db import DbSession
 from app.dependencies import get_current_user
 from app.rate_limits.limiter import Charge, RateLimiter, client_ip, get_rate_limiter
+from app.storage.deletions import StorageDeletionDrainer, get_storage_deletion_drainer
 from app.turnstile import TurnstileUnavailableError, TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
 from app.users.services import EmailAlreadyRegisteredError, UserService
@@ -112,3 +114,38 @@ async def change_password(
 
     await limiter.refund(failure)
     return TokenPairResponse(access_token=tokens.access_token, refresh_token=tokens.refresh_token)
+
+
+# POST, not DELETE with a body: request bodies on DELETE aren't reliably
+# passed on by clients and proxies.
+@router.post(
+    "/users/me/delete",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: {"description": "Unauthorized"},
+        422: {"description": "Password is incorrect"},
+        429: {"description": "Too many requests; retry after `Retry-After` seconds"},
+    },
+)
+async def delete_account(
+    payload: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = DbSession,
+    limiter: RateLimiter = Depends(get_rate_limiter),
+    storage_deletions: StorageDeletionDrainer = Depends(get_storage_deletion_drainer),
+) -> Response:
+    # The password, like changing it: a stolen access token mustn't be
+    # enough to delete everything. Wrong ones count against the same limit.
+    failure = Charge(limiter.limits.password_change_failures_per_user, str(current_user.id))
+    await limiter.consume(failure)
+    try:
+        await UserService(session, storage_deletions).delete_account(current_user, payload.password)
+    except IncorrectPasswordError:
+        # Not a 401, as for a password change: the token is fine.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            [{"loc": ["body", "password"], "msg": "Password is incorrect", "type": "value_error"}],
+        ) from None
+
+    await limiter.refund(failure)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

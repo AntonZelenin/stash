@@ -33,6 +33,11 @@ pub(crate) struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DeleteAccountRequest {
+    pub password: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenPair {
     pub access_token: String,

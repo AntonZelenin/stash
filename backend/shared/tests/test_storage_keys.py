@@ -48,3 +48,20 @@ def test_object_ids_are_fresh_and_key_safe():
     ids = {storage_keys.new_object_id() for _ in range(100)}
     assert len(ids) == 100
     assert all(len(object_id) == 32 and object_id.isalnum() for object_id in ids)
+
+
+def test_user_prefixes_cover_every_key_of_the_user_and_no_one_elses():
+    """Deleting an account deletes everything under these."""
+    prefixes = storage_keys.user_prefixes(_USER)
+    for key in (
+        storage_keys.image_key(_USER, _ITEM, _OBJECT, ".png"),
+        storage_keys.file_key(_USER, _ITEM, _OBJECT, ".pdf"),
+        storage_keys.thumbnail_key(_USER, _ITEM),
+        storage_keys.staging_key(_USER, _ITEM),
+    ):
+        assert any(key.startswith(prefix) for prefix in prefixes), key
+    for key in (
+        storage_keys.image_key(_OTHER_USER, _ITEM, _OBJECT, ".png"),
+        storage_keys.staging_key(_OTHER_USER, _ITEM),
+    ):
+        assert not any(key.startswith(prefix) for prefix in prefixes), key

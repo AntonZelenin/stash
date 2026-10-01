@@ -227,3 +227,27 @@ resource "aws_lambda_function" "main" {
     aws_secretsmanager_secret_version.db_app,
   ]
 }
+
+# The API's scheduled task: draining the object deletions that couldn't be
+# done straight after the commit that recorded them, e.g. while S3 was
+# unavailable (app.storage.deletions). The API function itself runs it
+# (app.aws_lambda); this input never comes from API Gateway.
+resource "aws_cloudwatch_event_rule" "drain_storage_deletions" {
+  name                = "${local.name_prefix}-drain-storage-deletions"
+  description         = "Retries pending object deletions (deleted accounts' storage)."
+  schedule_expression = "rate(${var.storage_deletion_drain_minutes} minutes)"
+}
+
+resource "aws_cloudwatch_event_target" "drain_storage_deletions" {
+  rule  = aws_cloudwatch_event_rule.drain_storage_deletions.name
+  arn   = aws_lambda_function.main["api"].arn
+  input = jsonencode({ task = "drain_storage_deletions" })
+}
+
+resource "aws_lambda_permission" "drain_storage_deletions" {
+  statement_id  = "AllowScheduledStorageDeletionDrain"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.main["api"].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.drain_storage_deletions.arn
+}

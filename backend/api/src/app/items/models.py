@@ -64,7 +64,7 @@ class Item(Base):
     __table_args__ = (Index("ix_items_user_id_type", "user_id", "type"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
     type: Mapped[ItemType] = mapped_column(SqlEnum(ItemType, name="item_type"))
     status: Mapped[ItemStatus] = mapped_column(
         SqlEnum(ItemStatus, name="item_status"), default=ItemStatus.pending

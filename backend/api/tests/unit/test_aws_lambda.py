@@ -34,3 +34,21 @@ def test_handler_flushes_metrics_and_traces(monkeypatch):
     aws_lambda.handler(_http_api_event("GET", "/health"), None)
 
     assert flushed == ["metrics", "tracing"]
+
+
+def test_scheduled_event_drains_pending_storage_deletions(monkeypatch):
+    drained = []
+
+    class FakeDrainer:
+        def __init__(self, engine, storage):
+            pass
+
+        async def drain(self) -> int:
+            drained.append(True)
+            return 3
+
+    monkeypatch.setattr(aws_lambda, "StorageDeletionDrainer", FakeDrainer)
+    monkeypatch.setattr(aws_lambda, "get_object_storage", lambda: object())
+
+    assert aws_lambda.handler({"task": aws_lambda.DRAIN_STORAGE_DELETIONS}, None) == {"finished": 3}
+    assert drained == [True]

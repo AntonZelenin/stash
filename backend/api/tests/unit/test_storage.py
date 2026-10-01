@@ -264,3 +264,56 @@ async def test_inspect_other_errors_raise():
 
         with pytest.raises(ClientError):
             await storage.inspect(key="k", head_bytes=5)
+
+
+def _listing(keys: list[str], *, truncated: bool) -> dict:
+    return {"Contents": [{"Key": key} for key in keys], "IsTruncated": truncated}
+
+
+def _list_params(max_keys: int = 1000) -> dict:
+    return {"Bucket": "stash", "Prefix": "users/u/", "MaxKeys": max_keys}
+
+
+def _delete_params(keys: list[str]) -> dict:
+    return {"Bucket": "stash", "Delete": {"Objects": [{"Key": key} for key in keys], "Quiet": True}}
+
+
+async def test_delete_prefix_deletes_listed_pages_until_none_are_left():
+    storage = _storage()
+    with Stubber(storage._client) as stubber:
+        stubber.add_response("list_objects_v2", _listing(["users/u/a", "users/u/b"], truncated=True), _list_params())
+        stubber.add_response("delete_objects", {}, _delete_params(["users/u/a", "users/u/b"]))
+        stubber.add_response("list_objects_v2", _listing(["users/u/c"], truncated=False), _list_params())
+        stubber.add_response("delete_objects", {}, _delete_params(["users/u/c"]))
+
+        assert await storage.delete_prefix(prefix="users/u/", max_objects=5000) is True
+        stubber.assert_no_pending_responses()
+
+
+async def test_delete_prefix_stops_at_max_objects_and_says_more_is_left():
+    storage = _storage()
+    with Stubber(storage._client) as stubber:
+        stubber.add_response("list_objects_v2", _listing(["users/u/a", "users/u/b"], truncated=True), _list_params(2))
+        stubber.add_response("delete_objects", {}, _delete_params(["users/u/a", "users/u/b"]))
+
+        assert await storage.delete_prefix(prefix="users/u/", max_objects=2) is False
+
+
+async def test_delete_prefix_of_nothing_is_done():
+    storage = _storage()
+    with Stubber(storage._client) as stubber:
+        stubber.add_response("list_objects_v2", {"IsTruncated": False}, _list_params())
+
+        assert await storage.delete_prefix(prefix="users/u/", max_objects=5000) is True
+
+
+async def test_delete_prefix_raises_when_some_keys_were_not_deleted():
+    """DeleteObjects answers 200 with per-key errors."""
+    storage = _storage()
+    with Stubber(storage._client) as stubber:
+        stubber.add_response("list_objects_v2", _listing(["users/u/a"], truncated=False), _list_params())
+        errors = {"Errors": [{"Key": "users/u/a", "Code": "AccessDenied"}]}
+        stubber.add_response("delete_objects", errors, _delete_params(["users/u/a"]))
+
+        with pytest.raises(RuntimeError, match="AccessDenied"):
+            await storage.delete_prefix(prefix="users/u/", max_objects=5000)

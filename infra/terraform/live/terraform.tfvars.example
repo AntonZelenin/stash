@@ -50,6 +50,7 @@ aws_region  = "eu-central-1"
 # api_throttling_rate_limit  = 300 # requests/s through API Gateway, all clients together
 # api_throttling_burst_limit = 600
 # turnstile_enabled          = true # registration requires a Cloudflare Turnstile token
+# storage_deletion_drain_minutes = 15 # how often pending object deletions are retried
 
 # Observability. Alarms notify the alarm_topic_arn SNS topic; confirm the
 # email subscription from the message AWS sends.

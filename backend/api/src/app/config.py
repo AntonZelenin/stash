@@ -179,8 +179,9 @@ class Settings(BaseSettings):
     turnstile_verify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     turnstile_timeout_seconds: float = 5.0
     token_refresh_limit_per_ip: str = "60/5m,1000/1d"
-    # Wrong current passwords on `POST /users/me/password`: a stolen access
-    # token must not become a password-guessing oracle.
+    # Wrong current passwords on `POST /users/me/password` and
+    # `POST /users/me/delete`, together: a stolen access token must not
+    # become a password-guessing oracle.
     password_change_failure_limit_per_user: str = "5/15m,20/1d"
     # Uploads started (`POST /uploads`), whether or not they're finalized.
     upload_limit_per_user: str = "100/5m,1000/1d"

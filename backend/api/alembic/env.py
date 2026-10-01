@@ -13,6 +13,7 @@ from app.db import Base
 from app.items import models as items_models  # noqa: F401
 from app import outbox as outbox_models  # noqa: F401
 from app.rate_limits import models as rate_limit_models  # noqa: F401
+from app.storage import deletions as storage_deletion_models  # noqa: F401
 from app.users import models as users_models  # noqa: F401
 
 # this is the Alembic Config object, which provides

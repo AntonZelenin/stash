@@ -474,6 +474,23 @@ class ItemRepository:
             storage_keys=[key for key in keys if key is not None], tag_ids=tag_ids, collection_ids=collection_ids
         )
 
+    async def storage_keys_outside(self, *, user_id: uuid.UUID, prefixes: list[str]) -> list[str]:
+        """The keys of the user's stored objects (originals, thumbnails)
+        that aren't under any of `prefixes`: those of items stored under the
+        oldest, unscoped layout (`images/...`, see
+        `stash_shared.storage_keys`)."""
+        keys = union_all(
+            select(ImageMetadata.storage_key.label("key")).join(Item).where(Item.user_id == user_id),
+            select(ImageMetadata.thumbnail_key).join(Item).where(Item.user_id == user_id),
+            select(FileMetadata.storage_key).join(Item).where(Item.user_id == user_id),
+        ).subquery()
+        result = await self._session.execute(
+            select(keys.c.key).where(
+                keys.c.key.is_not(None), *(~keys.c.key.startswith(prefix, autoescape=True) for prefix in prefixes)
+            )
+        )
+        return list(result.scalars())
+
     async def search_by_chunks(
         self,
         *,

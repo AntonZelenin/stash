@@ -338,3 +338,32 @@ run "runtime_functions_keep_the_master_secret_during_the_rollout" {
     error_message = "Until lambda_master_database_secret_access is turned off, the release still running may read the master secret."
   }
 }
+
+# ---- Scheduled storage deletion drain (lambda.tf) ----
+
+run "api_drains_pending_storage_deletions_on_a_schedule" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_event_rule.drain_storage_deletions.schedule_expression == "rate(15 minutes)"
+    error_message = "Pending object deletions are retried every 15 minutes by default."
+  }
+  assert {
+    condition     = aws_cloudwatch_event_target.drain_storage_deletions.input == jsonencode({ task = "drain_storage_deletions" })
+    error_message = "The schedule invokes the API with the task app.aws_lambda runs (DRAIN_STORAGE_DELETIONS)."
+  }
+  assert {
+    condition     = aws_lambda_permission.drain_storage_deletions.function_name == aws_lambda_function.main["api"].function_name && aws_lambda_permission.drain_storage_deletions.principal == "events.amazonaws.com"
+    error_message = "Only EventBridge, for this rule, gets to invoke the API this way."
+  }
+}
+
+run "storage_deletion_drain_interval_must_be_whole_minutes" {
+  command = plan
+
+  variables {
+    storage_deletion_drain_minutes = 1
+  }
+
+  expect_failures = [var.storage_deletion_drain_minutes]
+}

@@ -66,6 +66,9 @@ class _SlowStorage(ObjectStorage):
     async def delete(self, *, key: str) -> None:
         self.objects.pop(key, None)
 
+    async def delete_prefix(self, **kwargs) -> bool:
+        raise NotImplementedError
+
     async def generate_download_url(self, **kwargs) -> str:
         raise NotImplementedError
 

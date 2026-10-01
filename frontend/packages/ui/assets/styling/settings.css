@@ -203,6 +203,15 @@
     cursor: pointer;
 }
 
+/* Deleting the account: the confirmation dialog's danger red. */
+.settings-button-danger {
+    background: #dc2626;
+}
+
+.settings-button-danger:hover:not(:disabled) {
+    background: #b91c1c;
+}
+
 .settings-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;

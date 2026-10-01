@@ -43,6 +43,7 @@ from app.queue import get_queue_resolver
 from app.rate_limits.limiter import Limit, RateLimiter, RateLimits, get_rate_limiter
 from app.rate_limits.models import RateLimitCounter
 from app.storage.base import ObjectChangedError, ObjectStorage, PresignedUpload, StoredObject
+from app.storage.deletions import storage_deletions
 from app.storage.s3 import get_object_storage
 from app.turnstile import TurnstileVerifier, get_turnstile_verifier
 from app.users.models import User
@@ -64,6 +65,7 @@ _TEST_TABLES = [
     item_collections,
     outbox_events,
     PendingUpload.__table__,
+    storage_deletions,
 ]
 
 
@@ -81,7 +83,8 @@ class FakeObjectStorage(ObjectStorage):
     copy's SHA-256 (`inspect` returns it).
 
     `before_copy`, if set, runs between finalize's inspect and its copy,
-    to model a client racing the finalize."""
+    to model a client racing the finalize. `fail_deletes` makes every
+    delete fail, as if storage were unreachable."""
 
     _UPLOAD_URL_PREFIX = "https://fake-storage.test/upload/"
 
@@ -98,6 +101,7 @@ class FakeObjectStorage(ObjectStorage):
         # key -> the content type its last download URL overrides it with.
         self.download_content_types: dict[str, str | None] = {}
         self.before_copy: Callable[[], None] | None = None
+        self.fail_deletes = False
 
     @staticmethod
     def etag_of(data: bytes) -> str:
@@ -170,9 +174,17 @@ class FakeObjectStorage(ObjectStorage):
         return self.etag(dest_key)
 
     async def delete(self, *, key: str) -> None:
+        if self.fail_deletes:
+            raise ConnectionError("storage is unreachable")
         self.uploads.pop(key, None)
         self.etags.pop(key, None)
         self.checksums.pop(key, None)
+
+    async def delete_prefix(self, *, prefix: str, max_objects: int) -> bool:
+        keys = sorted(key for key in self.uploads if key.startswith(prefix))
+        for key in keys[:max_objects]:
+            await self.delete(key=key)
+        return len(keys) <= max_objects
 
     async def generate_download_url(
         self,

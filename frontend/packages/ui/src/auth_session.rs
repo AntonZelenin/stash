@@ -109,6 +109,21 @@ impl AuthSession {
         Ok(())
     }
 
+    /// Deletes the account for good, then signs out: its tokens no longer
+    /// work anyway.
+    pub async fn delete_account(&self, password: &str) -> Result<(), ApiError> {
+        let client = self.client.clone();
+        let password = password.to_string();
+        self.call_authenticated(move |access_token| {
+            let client = client.clone();
+            let password = password.clone();
+            async move { client.delete_account(&access_token, &password).await }
+        })
+        .await?;
+        self.logout();
+        Ok(())
+    }
+
     pub async fn create_text_item(
         &self,
         text: &str,

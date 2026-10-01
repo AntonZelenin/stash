@@ -38,8 +38,8 @@ locals {
     api = {
       put    = ["uploads/*", "users/*/images/*", "users/*/files/*"] # presigned staging uploads; finalize's copy
       get    = ["uploads/*", "users/*"]                             # finalize reading (and copying) the staged upload; presigned downloads
-      delete = ["uploads/*", "users/*"]                             # staging cleanup; deleting an item removes its original and thumbnail
-      list   = true                                                 # finalizing before the upload arrived: 404, not 403
+      delete = ["uploads/*", "users/*"]                             # staging cleanup; deleting an item (or account) removes its objects
+      list   = true                                                 # finalizing before the upload arrived: 404, not 403; a deleted account's objects
     }
     thumbnailer = {
       put    = ["users/*/thumbnails/*"]

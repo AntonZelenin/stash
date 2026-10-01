@@ -173,6 +173,8 @@ Stores:
 - Search chunks — each description split into short pieces, each with its
   embedding (`item_search_chunks`).
 - Processing status.
+- Pending object deletions (`storage_deletions`, see "Deleting the
+  account").
 
 The schema is managed with Alembic (`backend/api/alembic`). By default the
 API container applies pending migrations on startup. Setting
@@ -268,7 +270,10 @@ someone else's item is indistinguishable from a missing one (404), and
 never for a staging key; and an upload URL only for a staging key it just
 generated for the requesting user. The bucket policy backs both up
 whatever signs the URL: a pre-signed request (`s3:authType` =
-`REST-QUERY-STRING`) can't write outside `uploads/`, or read inside it. Deletes likewise take their keys from the owned item's row. Clients
+`REST-QUERY-STRING`) can't write outside `uploads/`, or read inside it. Deletes likewise take their keys from the owned item's row, or, for a
+deleted account, are the user's own prefixes (`users/{user_id}/`,
+`uploads/{user_id}/`; `storage_keys.user_prefixes`, the only prefixes
+`app.storage.deletions` accepts). Clients
 can never send a key: the upload and edit requests reject unknown fields.
 The user id in a key is for organizing the bucket (per-user cleanup,
 lifecycle rules, usage), not authorization. Ownership in PostgreSQL is the
@@ -936,7 +941,9 @@ Infrastructure (Terraform, `infra/terraform/live/`):
   (`<worker>.aws_lambda.handler`, SQS-triggered), each with its own
   least-privilege execution role, in a private subnet (IPv4 to RDS, IPv6
   out through an egress-only internet gateway, no NAT). Plus the migration
-  function (see PostgreSQL), invoked only by the deployment
+  function (see PostgreSQL), invoked only by the deployment. An
+  EventBridge rule also invokes the API function every 15 minutes to drain
+  pending object deletions (see "Deleting the account")
 - RDS PostgreSQL (with pgvector), Single-AZ
 - Amazon S3
 - SQS queues with DLQs, each with a resource policy admitting only its
@@ -1323,6 +1330,50 @@ revoked), so a leaked token stops working, and returns a fresh token pair
 that keeps the caller signed in. A wrong current password is a 422 on the
 `current_password` field, not a 401, which clients take to mean the
 session itself is gone.
+
+### Deleting the account
+
+`POST /users/me/delete` takes the user's password (wrong ones count
+against the same per-user limit as password changes, and get the same
+422 on the field) and permanently deletes the account. POST rather than
+DELETE because it has a body.
+
+In the database it's one transaction: deleting the `users` row deletes
+everything the user owns by `ON DELETE CASCADE`: items (and through their
+own cascades, text, image and file rows, descriptions, search chunks, tag
+and collection links), tags, collections, pending uploads, and access and
+refresh tokens, so every session ends with it. Rate-limit counters (hashed
+subjects that expire) and outbox events (ids only) are left; a queued job
+for a deleted item is dropped by its worker, which finds the item gone.
+
+Stored objects can't be deleted in that transaction, and deleting them
+after the commit would lose the deletion if storage failed then. So the
+transaction also records what to delete in `storage_deletions`
+(`app.storage.deletions`): the user's two prefixes, `users/{user_id}/`
+(originals and thumbnails) and `uploads/{user_id}/` (staged uploads), plus
+the keys of any of their objects stored under the old unscoped layout.
+After the commit the API drains the table: lists and deletes under each
+prefix (at most 5,000 objects per prefix per drain, so a drain stays
+bounded) and removes a row only once nothing is left. A deletion that fails
+stays, with its attempt count; the drain stops there (storage is likely
+down) and a later drain retries it. On AWS an EventBridge rule invokes the
+API function with `{"task": "drain_storage_deletions"}` every
+`storage_deletion_drain_minutes` (15) for that (`app.aws_lambda`); locally
+there is no schedule, and leftovers wait for the next account deletion.
+Rows that keep failing go to the back of the queue, so they can't hold up
+the rest; from the 100th failed attempt each one is logged as an error.
+Concurrent drains claim rows with `FOR UPDATE SKIP LOCKED`, like the
+outbox, and deleting is idempotent, so a drain dying before it removed its
+row only repeats a deletion.
+
+Races: an upload being finalized holds its pending upload's row lock, which
+the cascade waits for, so its item is either deleted with the account or
+never created. A thumbnail the worker stores after its item is gone is
+deleted by the worker itself (recording it finds no item;
+`thumbnailer.handler`). An upload URL
+issued before the deletion stays valid until it expires and can still put
+an object under `uploads/{user_id}/`, which the staging lifecycle rule
+expires within a day.
 
 ### Rate limits and quotas
 

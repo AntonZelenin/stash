@@ -7,7 +7,8 @@
 #   S3                buckets <prefix>-objects-<acct>, <prefix>-frontend-<acct>;
 #                     objects only in the frontend bucket (site upload)
 #   Lambda, SQS, SNS,
-#   Logs, CloudWatch  <prefix>-* names
+#   Logs, CloudWatch,
+#   EventBridge rules <prefix>-* names
 #   Secrets Manager   <prefix>/* secrets; values only of <prefix>/rds/* (the
 #                     DB secrets Terraform writes), never the OpenAI key
 #   IAM               roles <prefix>-* carrying the Lambda boundary
@@ -39,6 +40,7 @@ locals {
   log_groups       = "arn:aws:logs:${local.region_account}:log-group:/aws/lambda/${local.name_prefix}-*"
   alarms           = "arn:aws:cloudwatch:${local.region_account}:alarm:${local.name_prefix}-*"
   dashboard        = "arn:aws:cloudwatch::${local.account_id}:dashboard/${local.name_prefix}"
+  event_rules      = "arn:aws:events:${local.region_account}:rule/${local.name_prefix}-*"
   api_gateway = [
     "arn:aws:apigateway:${var.aws_region}::/apis",
     "arn:aws:apigateway:${var.aws_region}::/apis/*",
@@ -139,6 +141,9 @@ data "aws_iam_policy_document" "read" {
       "logs:ListTagsLogGroup",
       "cloudwatch:ListTagsForResource",
       "cloudwatch:GetDashboard",
+      "events:DescribeRule",
+      "events:ListTargetsByRule",
+      "events:ListTagsForResource",
     ]
     resources = [
       local.lambda_roles,
@@ -152,6 +157,7 @@ data "aws_iam_policy_document" "read" {
       "${local.log_groups}:*",
       local.alarms,
       local.dashboard,
+      local.event_rules,
     ]
   }
 
@@ -505,6 +511,23 @@ data "aws_iam_policy_document" "deploy_edge" {
     sid       = "Dashboard"
     actions   = ["cloudwatch:PutDashboard", "cloudwatch:DeleteDashboards"]
     resources = [local.dashboard]
+  }
+
+  # Scheduled invocations of the functions (the API's storage deletion
+  # drain); the functions' side of it is under "Functions".
+  statement {
+    sid = "ScheduleRules"
+    actions = [
+      "events:PutRule",
+      "events:DeleteRule",
+      "events:EnableRule",
+      "events:DisableRule",
+      "events:PutTargets",
+      "events:RemoveTargets",
+      "events:TagResource",
+      "events:UntagResource",
+    ]
+    resources = [local.event_rules]
   }
 }
 

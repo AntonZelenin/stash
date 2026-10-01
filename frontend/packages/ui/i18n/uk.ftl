@@ -251,6 +251,15 @@ settings-language-description = Мова, якою показано Stash. Ва�
 settings-hidden-tags-description = У сліпому режимі записи з будь-яким із позначених тегів не показуються. Ваш вибір запам’ятовується на цьому пристрої.
 settings-hidden-tags-limit = Можна приховати щонайбільше { $max } тегів.
 settings-language-label = Мова
+settings-section-delete-account = Видалити акаунт
+settings-delete-account-description = Остаточно видаліть свій акаунт і все, що в ньому є: усі записи й файли, теги та колекції. Цю дію не можна скасувати. Ви вийдете з усіх пристроїв.
+settings-delete-account-password = Пароль
+settings-delete-account-password-missing = Введіть пароль
+settings-delete-account = Видалити акаунт
+settings-delete-account-confirm-title = Видалити акаунт?
+settings-delete-account-confirm-message = Усе, що ви зберегли в Stash, буде видалено назавжди. Цю дію не можна скасувати.
+settings-delete-account-confirm = Видалити назавжди
+settings-deleting-account = Видалення…
 
 ## Вибір записів (прямокутником по картках) і дії з усіма вибраними
 

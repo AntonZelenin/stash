@@ -43,3 +43,7 @@ class CurrentUserResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(max_length=MAX_PASSWORD_INPUT_LENGTH)
     new_password: NewPassword
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(max_length=MAX_PASSWORD_INPUT_LENGTH)

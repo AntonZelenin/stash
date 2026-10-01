@@ -19,6 +19,9 @@ _MISSING_CODES = ("404", "NoSuchKey", "NotFound")
 # A conditional request's condition didn't hold (412), or another
 # conditional write to the same key was in flight (409).
 _CONDITION_FAILED_CODES = ("PreconditionFailed", "412", "ConditionalRequestConflict")
+# Keys per ListObjectsV2 page and DeleteObjects request: S3's maximum for
+# both.
+_DELETE_BATCH = 1000
 
 
 class S3Storage(ObjectStorage):
@@ -163,6 +166,33 @@ class S3Storage(ObjectStorage):
         # S3 DeleteObject already succeeds for a missing key.
         with metrics.external_call("storage.delete"):
             await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
+
+    async def delete_prefix(self, *, prefix: str, max_objects: int) -> bool:
+        with metrics.external_call("storage.delete_prefix"):
+            return await asyncio.to_thread(self._delete_prefix, prefix, max_objects)
+
+    def _delete_prefix(self, prefix: str, max_objects: int) -> bool:
+        deleted = 0
+        while deleted < max_objects:
+            # One listing page per DeleteObjects call (both at most 1,000).
+            page = self._client.list_objects_v2(
+                Bucket=self._bucket, Prefix=prefix, MaxKeys=min(_DELETE_BATCH, max_objects - deleted)
+            )
+            keys = [entry["Key"] for entry in page.get("Contents", [])]
+            if not keys:
+                return True
+            response = self._client.delete_objects(
+                Bucket=self._bucket, Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True}
+            )
+            # DeleteObjects answers 200 even when some keys failed.
+            if errors := response.get("Errors"):
+                raise RuntimeError(
+                    f"Failed to delete {len(errors)} of {len(keys)} objects (first error: {errors[0].get('Code')})"
+                )
+            deleted += len(keys)
+            if not page.get("IsTruncated"):
+                return True
+        return False
 
     async def generate_download_url(
         self,
