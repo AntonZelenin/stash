@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -145,6 +146,17 @@ def _is_file_kind(kind: ContentKind):
         known = set().union(*FILE_KIND_CONTENT_TYPES.values())
         return FileMetadata.content_type.not_in(sorted(known))
     return FileMetadata.content_type.in_(sorted(FILE_KIND_CONTENT_TYPES[kind]))
+
+
+def _any_tsquery(ts_queries: list):
+    """A tsquery matching what any of `ts_queries` matches (`||`); None
+    if there are none."""
+    if not ts_queries:
+        return None
+    combined = ts_queries[0]
+    for ts_query in ts_queries[1:]:
+        combined = combined.op("||")(ts_query)
+    return combined
 
 
 @dataclass(frozen=True)
@@ -598,26 +610,46 @@ class ItemRepository:
         return list(result.scalars().all())
 
     async def search_by_description(
-        self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters = ItemFilters()
+        self,
+        *,
+        user_id: uuid.UUID,
+        queries: Sequence[str],
+        expansions: Sequence[str] = (),
+        limit: int,
+        filters: ItemFilters = ItemFilters(),
     ) -> list[Item]:
         """The user's items whose searchable text (`item_descriptions`: the
         AI-generated description — for an image, all its search chunks —
-        plus the caption) contains every word of `query`, so "city" finds
-        an image with a "cyberpunk city" chunk however far its embedding
-        is (an English query: the text is indexed with the 'english'
-        config, so "cities" finds "city"), best `ts_rank` first, then
-        newest. `websearch_to_tsquery` accepts any input, and a query
-        of only stopwords ("the") matches nothing. Uses the GIN index on
+        plus the caption) contains every word of any of `queries` (the
+        query as typed and its English rewrite) or of any of `expansions`
+        (other terms for it: "cv" for "resume"), so "city" finds an image
+        with a "cyberpunk city" chunk however far its embedding is (the
+        text is indexed with the 'english' config, so "cities" finds
+        "city"). Items matching one of `queries` come first, then those
+        matching only an expansion; within each, best `ts_rank` (against
+        all of them) first, then newest. `websearch_to_tsquery` accepts any
+        input (its operators are the user's, so expansions, written by a
+        model, go through `plainto_tsquery`, which has none), and a query of
+        only stopwords ("the") matches nothing. Uses the GIN index on
         `search_vector`. Postgres only."""
+        direct = _any_tsquery([func.websearch_to_tsquery("english", query) for query in queries])
+        if direct is None:
+            return []
+        expanded = _any_tsquery([func.plainto_tsquery("english", expansion) for expansion in expansions])
         search_vector = literal_column("item_descriptions.search_vector")
-        ts_query = func.websearch_to_tsquery("english", query)
+        ts_query = direct if expanded is None else direct.op("||")(expanded)
         rank = func.ts_rank(search_vector, ts_query)
         stmt = (
             select(Item)
             .join(Description, Description.item_id == Item.id)
             .options(*_LISTED_ITEM_LOADS)
             .where(Item.user_id == user_id, search_vector.op("@@")(ts_query))
-            .order_by(rank.desc(), Item.created_at.desc(), Item.id)
+            .order_by(
+                case((search_vector.op("@@")(direct), 0), else_=1),
+                rank.desc(),
+                Item.created_at.desc(),
+                Item.id,
+            )
             .limit(limit)
         )
         stmt = filters.apply(stmt)

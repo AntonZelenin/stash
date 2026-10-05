@@ -26,3 +26,5 @@ infra/terraform/**/backend.hcl
 
 # Lambda packages (scripts/build_lambda_packages.py)
 /build/
+
+k8s/secret.yaml

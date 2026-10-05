@@ -22,7 +22,7 @@ from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
 from app.items.models import Description, ItemStatus, ItemType, SearchChunk
 from app.items.repos import ItemRepository
 from app.items.services import ItemService
-from app.query_normalization import QueryNormalizer
+from app.query_normalization import NormalizedQuery, QueryNormalizer
 from app.users.models import User
 
 pytestmark = pytest.mark.skipif(not os.environ.get("STASH_TEST_POSTGRES_URL"), reason="STASH_TEST_POSTGRES_URL is not set")
@@ -67,19 +67,33 @@ async def user_id(session: AsyncSession) -> uuid.UUID:
     return user.id
 
 
-class _QueryEmbedder(Embedder):
-    """Embeds each query as `vectors[query]`."""
+class _Normalizer(QueryNormalizer):
+    """Stands in for the LLM: rewrites each query as `rewrites[query]`
+    (or keeps it) with `expansions[query]` (or none); `fail` simulates an
+    outage."""
 
-    def __init__(self, vectors: dict[str, list[float]]):
-        self.vectors = vectors
+    def __init__(self, rewrites=None, expansions=None, fail=False):
+        self.rewrites = rewrites or {}
+        self.expansions = expansions or {}
+        self.fail = fail
+
+    async def normalize(self, query: str) -> NormalizedQuery:
+        if self.fail:
+            raise TimeoutError("openai timed out")
+        return NormalizedQuery(query=self.rewrites.get(query, query), expansions=self.expansions.get(query, []))
+
+
+class _QueryEmbedder(Embedder):
+    """Embeds whatever it's asked (the query, with any expansions) as
+    `vector`, recording the texts."""
+
+    def __init__(self, vector: list[float]):
+        self.vector = vector
+        self.texts: list[str] = []
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
-        return [self.vectors[text] for text in texts]
-
-
-class _AsTyped(QueryNormalizer):
-    async def normalize(self, query: str) -> str:
-        return query
+        self.texts.extend(texts)
+        return [self.vector for _ in texts]
 
 
 class _Storage:
@@ -112,9 +126,20 @@ async def _image(session: AsyncSession, user_id: uuid.UUID, chunks: dict[str, li
     return item_id
 
 
-async def _search(session: AsyncSession, user_id: uuid.UUID, query: str, vector: list[float]) -> list[uuid.UUID]:
+async def _search(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    query: str,
+    vector: list[float],
+    normalizer: QueryNormalizer | None = None,
+    embedder: Embedder | None = None,
+) -> list[uuid.UUID]:
     results = await ItemService(session, _Storage()).search_items(
-        user_id=user_id, query=query, limit=20, embedder=_QueryEmbedder({query: vector}), normalizer=_AsTyped()
+        user_id=user_id,
+        query=query,
+        limit=20,
+        embedder=embedder or _QueryEmbedder(vector),
+        normalizer=normalizer or _Normalizer(),
     )
     return [listed.item.id for listed in results]
 
@@ -232,3 +257,97 @@ async def test_deleting_an_item_deletes_its_chunks(session, user_id):
 
     count = await session.scalar(select(func.count()).select_from(SearchChunk).where(SearchChunk.item_id == item_id))
     assert count == 0
+
+
+async def _file(session: AsyncSession, user_id: uuid.UUID, filename: str) -> uuid.UUID:
+    item = await ItemRepository(session).create_file_item(
+        item_id=uuid.uuid4(),
+        user_id=user_id,
+        storage_key=f"files/{uuid.uuid4()}",
+        content_etag='"e"',
+        content_sha256="0" * 64,
+        filename=filename,
+        content_type="application/pdf",
+        size_bytes=1,
+    )
+    await session.commit()
+    return item.id
+
+
+# Nowhere near any chunk the tests below make (all on a0-a3): only the
+# literal matches can find anything.
+_FAR = _unit(a7=1)
+_RESUME = _Normalizer(expansions={"resume": ["cv", "curriculum vitae"]})
+
+
+async def test_an_expansion_finds_a_description_that_never_says_the_query(session, user_id):
+    cv = await _image(session, user_id, {"curriculum vitae of a software engineer": _unit(a0=1)})
+    await _image(session, user_id, {"grey cat on a sofa": _unit(a1=1)})
+
+    assert await _search(session, user_id, "resume", _FAR, normalizer=_RESUME) == [cv]
+    # Without expansions, nothing in it says "resume".
+    assert await _search(session, user_id, "resume", _FAR) == []
+
+
+async def test_a_direct_match_ranks_above_an_expansion_only_match(session, user_id, caplog):
+    caplog.set_level(logging.INFO)
+    direct = await _image(session, user_id, {"resume template, word document": _unit(a0=1)})
+    # Newer, and a far better ts_rank for the expansions: still after.
+    by_expansion = await _image(
+        session, user_id, {"cv, curriculum vitae, curriculum vitae of an engineer, cv layout": _unit(a1=1)}
+    )
+
+    assert await _search(session, user_id, "resume", _FAR, normalizer=_RESUME) == [direct, by_expansion]
+    results = [record for record in caplog.records if record.getMessage() == "Search result"]
+    assert [record.stash_fields["match_sources"] for record in results] == [["description"], ["description"]]
+
+
+async def test_descriptions_match_the_query_as_typed_and_its_rewrite(session, user_id):
+    rewritten = _Normalizer(rewrites={"кіт Мурчик": "cat Мурчик"})
+    english = await _image(session, user_id, {"grey cat on a sofa": _unit(a0=1)})
+    # A description can quote the user's own words (a caption, a document
+    # in Ukrainian).
+    as_typed = await _image(session, user_id, {"кіт мурчик спить": _unit(a1=1)})
+    await _image(session, user_id, {"dog in a park": _unit(a2=1)})
+
+    # Each must match every word of one query: "cat" alone isn't enough.
+    assert await _search(session, user_id, "кіт Мурчик", _FAR, normalizer=rewritten) == [as_typed]
+    rewritten.rewrites["кіт"] = "cat"
+    assert set(await _search(session, user_id, "кіт", _FAR, normalizer=rewritten)) == {english, as_typed}
+
+
+async def test_filenames_match_the_query_as_typed_and_its_rewrite(session, user_id):
+    rewritten = _Normalizer(rewrites={"резюме": "resume"}, expansions={"резюме": ["cv"]})
+    as_typed = await _file(session, user_id, "резюме_2026.pdf")
+    english = await _file(session, user_id, "Resume_2025.pdf")
+    await _file(session, user_id, "cv.pdf")  # An expansion isn't a filename match.
+
+    assert await _search(session, user_id, "резюме", _FAR, normalizer=rewritten) == [as_typed, english]
+
+
+async def test_semantic_search_embeds_the_query_with_its_expansions(session, user_id):
+    cv = await _image(session, user_id, {"software engineer work history": _unit(a0=1)})
+    embedder = _QueryEmbedder(_at_distance(0.3, towards="a0", away="a5"))
+
+    assert await _search(session, user_id, "resume", _FAR, normalizer=_RESUME, embedder=embedder) == [cv]
+    assert embedder.texts == ["resume, cv, curriculum vitae"]
+
+
+async def test_a_failed_rewrite_searches_the_original_query_alone(session, user_id):
+    item = await _image(session, user_id, {"resume template, word document": _unit(a0=1)})
+    await _image(session, user_id, {"curriculum vitae of a software engineer": _unit(a1=1)})
+    embedder = _QueryEmbedder(_FAR)
+
+    assert await _search(session, user_id, "resume", _FAR, normalizer=_Normalizer(fail=True), embedder=embedder) == [
+        item
+    ]
+    assert embedder.texts == ["resume"]
+
+
+async def test_expansions_with_search_syntax_are_taken_literally(session, user_id):
+    """Expansions are the model's words, not the user's: no `-` (NOT) or
+    `or` operators, which would match far more than meant."""
+    await _image(session, user_id, {"grey cat on a sofa": _unit(a0=1)})
+    sneaky = _Normalizer(expansions={"resume": ["-resume", "x or cat"]})
+
+    assert await _search(session, user_id, "resume", _FAR, normalizer=sneaky) == []

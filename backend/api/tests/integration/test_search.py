@@ -60,9 +60,10 @@ async def test_search_unavailable_when_query_cannot_be_embedded(client: AsyncCli
 @dataclass
 class StubbedSearches:
     """The ids each Postgres-only search "finds", in order, and the
-    queries the text searches were given. A semantic match's best-chunk
-    distance is `semantic_distances[id]`, well within the cutoff unless
-    given, and its best chunk `semantic_chunks[id]`."""
+    queries the text searches were given (the description search's as
+    `(queries, expansions)`). A semantic match's best-chunk distance is
+    `semantic_distances[id]`, well within the cutoff unless given, and its
+    best chunk `semantic_chunks[id]`."""
 
     user_text: list[str] = field(default_factory=list)
     description: list[str] = field(default_factory=list)
@@ -70,7 +71,7 @@ class StubbedSearches:
     semantic_distances: dict[str, float] = field(default_factory=dict)
     semantic_chunks: dict[str, str] = field(default_factory=dict)
     user_text_queries: list[str] = field(default_factory=list)
-    description_queries: list[str] = field(default_factory=list)
+    description_queries: list[tuple[list[str], list[str]]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -80,10 +81,10 @@ def stubbed_searches(monkeypatch: pytest.MonkeyPatch) -> StubbedSearches:
     search can complete on SQLite. The filename match runs for real."""
     stub = StubbedSearches()
 
-    def returning(ids: list[str], queries: list[str] | None = None):
+    def returning(ids: list[str], queries: list | None = None):
         async def search(self, *, user_id, limit, query=None, **kwargs):
             if queries is not None:
-                queries.append(query)
+                queries.append(query if "queries" not in kwargs else (kwargs["queries"], kwargs["expansions"]))
             items = [await self.get(item_id=UUID(item_id), user_id=user_id) for item_id in ids]
             return [item for item in items if item is not None][:limit]
 
@@ -238,8 +239,65 @@ async def test_user_text_is_searched_as_typed_and_descriptions_in_english(
     await _search(client, token, "місто вночі")
 
     assert stubbed_searches.user_text_queries == ["місто вночі"]
-    assert stubbed_searches.description_queries == ["city at night"]
+    # As typed too: a description may quote the user's own words.
+    assert stubbed_searches.description_queries == [(["місто вночі", "city at night"], [])]
     assert embedder.queries == ["city at night"]
+
+
+async def test_expansions_are_full_text_searched_and_embedded_with_the_query(
+    client: AsyncClient,
+    embedder: FakeEmbedder,
+    query_normalizer: FakeQueryNormalizer,
+    stubbed_searches: StubbedSearches,
+):
+    query_normalizer.expansions["resume"] = ["cv", "curriculum vitae"]
+    _, token = await register_and_login(client)
+
+    await _search(client, token, "resume")
+
+    # The rewrite equals the query: searched once.
+    assert stubbed_searches.description_queries == [(["resume"], ["cv", "curriculum vitae"])]
+    assert embedder.queries == ["resume, cv, curriculum vitae"]
+    # The user's own text, as typed only.
+    assert stubbed_searches.user_text_queries == ["resume"]
+
+
+async def test_filenames_match_the_query_as_typed_and_its_rewrite(
+    client: AsyncClient,
+    session: AsyncSession,
+    storage: FakeObjectStorage,
+    query_normalizer: FakeQueryNormalizer,
+    no_vector_index: None,
+):
+    query_normalizer.rewrites["резюме"] = "resume"
+    query_normalizer.expansions["резюме"] = ["cv"]
+    _, token = await register_and_login(client)
+    english = await _file(client, storage, token, "resume_2025.pdf")
+    as_typed = await _file(client, storage, token, "резюме_2026.pdf")
+    await _file(client, storage, token, "cv.pdf")  # Only an expansion: not a filename match.
+    await _saved_in_order(session, as_typed, english)
+
+    # The query as typed matches first, then the rewrite.
+    assert await _search(client, token, "резюме") == [as_typed, english]
+
+
+async def test_a_proper_noun_the_model_keeps_is_searched_untouched(
+    client: AsyncClient,
+    embedder: FakeEmbedder,
+    storage: FakeObjectStorage,
+    query_normalizer: FakeQueryNormalizer,
+    stubbed_searches: StubbedSearches,
+):
+    """The model keeps names as typed, with no expansions; the search
+    passes them on as they are, not lowercased, transliterated or split."""
+    _, token = await register_and_login(client)
+    named = await _file(client, storage, token, "scan.pdf")
+    stubbed_searches.description.append(named)
+
+    assert await _search(client, token, "Шевченко Kobzar-2") == [named]
+    assert stubbed_searches.user_text_queries == ["Шевченко Kobzar-2"]
+    assert stubbed_searches.description_queries == [(["Шевченко Kobzar-2"], [])]
+    assert embedder.queries == ["Шевченко Kobzar-2"]
 
 
 async def test_merged_results_count_towards_the_limit(
@@ -313,6 +371,9 @@ async def test_search_diagnostics_leave_out_chunk_text_and_the_query_by_default(
 
     await _search(client, token, "secret query words")
 
+    [terms] = [record for record in caplog.records if record.getMessage() == "Search query terms"]
+    assert terms.stash_fields["query_chars"] == len("secret query words")
+    assert "query" not in terms.stash_fields
     [candidate] = [record for record in caplog.records if record.getMessage() == "Semantic search candidate"]
     assert "best_chunk" not in candidate.stash_fields
     assert candidate.stash_fields["cosine_distance"] == 0.5
@@ -427,6 +488,60 @@ async def test_search_embeds_the_original_query_when_normalization_fails(
     assert embedder.queries == ["книга про магію"]
 
 
+async def test_a_failed_rewrite_still_finds_items_by_the_original_query(
+    client: AsyncClient,
+    embedder: FakeEmbedder,
+    storage: FakeObjectStorage,
+    query_normalizer: FakeQueryNormalizer,
+    stubbed_searches: StubbedSearches,
+):
+    query_normalizer.fail = True
+    _, token = await register_and_login(client)
+    by_name = await _file(client, storage, token, "resume.pdf")
+    by_description = await _file(client, storage, token, "a.pdf")
+    stubbed_searches.description.append(by_description)
+
+    assert await _search(client, token, "resume") == [by_name, by_description]
+    # The original query alone, without expansions.
+    assert stubbed_searches.description_queries == [(["resume"], [])]
+    assert embedder.queries == ["resume"]
+
+
+async def test_search_logs_the_top_semantic_candidates_before_the_cutoff_at_debug(
+    client: AsyncClient,
+    storage: FakeObjectStorage,
+    query_normalizer: FakeQueryNormalizer,
+    stubbed_searches: StubbedSearches,
+    caplog,
+    monkeypatch,
+):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(get_settings(), "search_log_chunk_text", True)
+    query_normalizer.rewrites["резюме"] = "resume"
+    query_normalizer.expansions["резюме"] = ["cv", "curriculum vitae"]
+    _, token = await register_and_login(client)
+    items = [await _file(client, storage, token, f"{n}.bin") for n in range(12)]
+    stubbed_searches.semantic.extend(items)
+    stubbed_searches.semantic_distances.update({item: round(0.3 + 0.05 * n, 2) for n, item in enumerate(items)})
+
+    # Fewer results than the diagnostics list.
+    await _search(client, token, "резюме", limit=3)
+
+    [terms] = [record for record in caplog.records if record.getMessage() == "Search query terms"]
+    assert terms.levelno == logging.DEBUG
+    assert terms.stash_fields["query"] == "резюме"
+    assert terms.stash_fields["translated_query"] == "resume"
+    assert terms.stash_fields["expansions"] == ["cv", "curriculum vitae"]
+    [top] = [record for record in caplog.records if record.getMessage() == "Semantic search top candidates"]
+    assert top.levelno == logging.DEBUG
+    candidates = top.stash_fields["candidates"]
+    # The 10 nearest, including those past the 0.6 cutoff (0.65, 0.7, 0.75).
+    assert [candidate["item_id"] for candidate in candidates] == items[:10]
+    assert candidates[9]["cosine_distance"] == 0.75
+    assert candidates[9]["similarity"] == 0.25
+    assert top.stash_fields["max_cosine_distance"] == 0.6
+
+
 async def test_search_unavailable_when_normalization_and_embedding_both_fail(
     client: AsyncClient, embedder: FakeEmbedder, query_normalizer: FakeQueryNormalizer
 ):
@@ -512,5 +627,5 @@ async def test_search_works_once_the_openai_key_is_set_and_fetches_it_once(
     assert unfilled_openai_secret["fetched"] == [unfilled_openai_secret["arn"]] * 2
 
 
-async def _fail_normalization(self, query: str) -> str:
+async def _fail_normalization(self, query: str):
     raise ConnectionError("not under test")

@@ -90,8 +90,9 @@ class Settings(BaseSettings):
     # (`get_openai_api_key`), never at startup.
     openai_api_key_secret_arn: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
-    # Search queries are first rewritten into English with this model (see
-    # `app.query_normalization`); a small, fast one is enough. It must
+    # Search queries are first rewritten into English, with a few expansions
+    # (synonyms, abbreviations), by this model in one structured-output call
+    # (see `app.query_normalization`); a small, fast one is enough. It must
     # accept `reasoning.effort = "minimal"` (the GPT-5 family does). If the
     # call fails or takes longer than the timeout, the original query is
     # searched instead.
@@ -114,9 +115,11 @@ class Settings(BaseSettings):
     # (0.83) and "city" find "cities" (0.6), but not unrelated words.
     search_min_text_similarity: float = 0.6
     # TEMPORARY search diagnostics (`Semantic search candidate` log lines):
-    # also log each candidate's best-matching chunk text. That's user
-    # content (a note, a caption, text read from an image), so it's off by
-    # default and refused anywhere but `environment=local`.
+    # also log each candidate's best-matching chunk text, and (at DEBUG,
+    # `Search query terms`) the query, its English rewrite and expansions.
+    # That's user content (a note, a caption, text read from an image, what
+    # the user searched for), so it's off by default and refused anywhere
+    # but `environment=local`.
     search_log_chunk_text: bool = False
 
     # Largest upload, checked on the declared size (the upload URL is

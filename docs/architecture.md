@@ -750,10 +750,11 @@ Never logged: passwords, tokens, emails, note text, captions, filenames,
 search queries (only their length), or document/image content — nor the
 prompts sent to OpenAI or its answers (only `input_chars`/`input_bytes`,
 `output_chars`, `model`, `response_status`). One temporary exception, off
-by default: search's diagnostics (`Semantic search candidate`) can log each
-candidate's best-matching chunk text while search is being tuned, with
-`SEARCH_LOG_CHUNK_TEXT=true`, which the API refuses to start with unless
-`ENVIRONMENT=local` (see "Search").
+by default: search's diagnostics can log each semantic candidate's
+best-matching chunk text (`Semantic search candidate`) and, at DEBUG, the
+query, its English rewrite and expansions (`Search query terms`) while
+search is being tuned, with `SEARCH_LOG_CHUNK_TEXT=true`, which the API
+refuses to start with unless `ENVIRONMENT=local` (see "Search").
 
 Exceptions are logged with their message and stack trace, so what goes into
 an exception message is logged too. Hence: SQLAlchemy engines are created
@@ -1393,18 +1394,20 @@ Client → API (finalize) → PostgreSQL
 
 ### Search
 
-Client → API → PostgreSQL filename match (query as typed)
-             → OpenAI Responses (query → English) → OpenAI Embeddings (English query)
+Client → API → OpenAI Responses (query → English + expansions)
+             → PostgreSQL filename match (query as typed, then English query)
+             → OpenAI Embeddings (English query + expansions)
              → PostgreSQL pg_trgm user-text match (query as typed)
-             → PostgreSQL full-text description match (English query)
-             → PostgreSQL + pgvector best-chunk similarity search (English query embedding)
+             → PostgreSQL full-text description match (query as typed, English query, expansions)
+             → PostgreSQL + pgvector best-chunk similarity search (English query + expansions embedding)
              → Results (one list, in that order of tiers)
 
 Search is hybrid: four matches, ranked in tiers in this order. An item
 found by several is listed once, in the first tier that found it. Text
 the user wrote (filenames, notes, captions) can be in any language, so
-it's matched against the query as typed; the generated descriptions are
-in English, so they're matched against the English rewrite (below). The
+it's matched against the query as typed (filenames against the English
+rewrite too); the generated descriptions are in English, so they're
+matched against the English rewrite and its expansions (below). The
 literal matches exist because the embedding alone can miss short queries,
 and loosening the semantic threshold would let unrelated items back in.
 That's also why items are embedded as several short chunks rather than
@@ -1417,11 +1420,12 @@ because the concept was diluted by everything else the image shows.
    every word of the query as typed (runs of letters and digits,
    case-insensitive), so "resume 2" and "Resume-2.PDF" both find
    `resume-2.pdf`. An exact filename match comes first, then newest first.
-   It's a plain `LIKE` scan of the user's items, with no index, which is
-   fine at one user's scale; `pg_trgm` is the option if that changes. The
-   query isn't normalized for this part, since translating it would break
-   names. Renames apply immediately. Images uploaded before their name was
-   kept have no name to match.
+   Then, if the English rewrite differs, the files matching it the same way
+   ("резюме" also finds `resume_2025.pdf`); never the expansions, which
+   would be too loose for names. It's a plain `LIKE` scan of the user's
+   items, with no index, which is fine at one user's scale; `pg_trgm` is
+   the option if that changes. Renames apply immediately. Images uploaded
+   before their name was kept have no name to match.
 2. User-text match (`ItemRepository.search_by_user_text`): items whose own
    text (`item_text_contents`: a note's or link's text, an image's or
    file's caption) contains something close to the query as typed, by
@@ -1432,13 +1436,19 @@ because the concept was diluted by everything else the image shows.
    "tody" finds "today". A plain scan of the user's items, no index.
 3. Description match (`ItemRepository.search_by_description`): items whose
    `item_descriptions` text (generated description — for an image, all its
-   search chunks — plus caption) contains every word of the English query,
-   so "city" finds an image with a "cyberpunk city" chunk however far that
-   chunk is by meaning, by Postgres full-text search
-   (`websearch_to_tsquery('english')` against the generated, GIN-indexed
-   `search_vector` column; English stemming, so "cities" finds "city"),
-   best `ts_rank` first. A query of only stopwords ("the") matches nothing
-   here.
+   search chunks — plus caption) contains every word of the query as
+   typed, of its English rewrite, or of any of its expansions, so "city"
+   finds an image with a "cyberpunk city" chunk however far that chunk is
+   by meaning, and "resume" (expanded to "cv", "curriculum vitae") finds a
+   CV whose description never says "resume", by Postgres full-text search
+   (the tsqueries OR-ed together against the generated, GIN-indexed
+   `search_vector` column; English stemming, so "cities" finds "city").
+   The query and its rewrite go through `websearch_to_tsquery('english')`;
+   the expansions, written by the model rather than the user, through
+   `plainto_tsquery('english')`, which has no operators. Items matching the
+   query or its rewrite come first, then those found only through an
+   expansion; within each, best `ts_rank` first. A query of only stopwords
+   ("the") matches nothing here.
 4. Semantic match, below: items with a chunk closest in meaning.
 
 All four use the same filters and together return at most `limit` items.
@@ -1478,22 +1488,34 @@ the dead-letter queue or the text changes again. Items saved before search
 chunks existed have none until their text is embedded again (re-analysis
 or an edit); until then they're found by the literal matches only.
 
-Before a query is embedded, the API has a small, fast model
+Before a query is searched, the API has a small, fast model
 (`SEARCH_QUERY_NORMALIZATION_MODEL`, default `gpt-5-nano`, minimal
 reasoning) rewrite it into concise English with the same meaning
-(`app.query_normalization`): searchable text is mostly English, since the
+(`app.query_normalization`), keeping proper nouns (names, brands,
+products, filenames, codes) exactly as typed: searchable text is mostly English, since the
 generated image and document descriptions are always written in English
 (the describer prompts ask for it, whatever the content's language), and a
 Ukrainian query otherwise lands further
 from it than the same query in English. English queries are kept as they
-are. The rewrite is embedded and used for the description full-text match;
-the filename and user-text matches use the query as typed.
-The rewrite is best-effort: if the call fails, times out
-(`SEARCH_QUERY_NORMALIZATION_TIMEOUT_SECONDS`, default 5, no retries) or
-returns something unusable (empty, or far longer than the query), the
-original query is embedded instead and the search still succeeds. Neither
-the query nor its rewrite is logged, only lengths and whether it was
-rewritten.
+are. The same call (structured output: `{"query": ..., "expansions":
+[...]}`) also returns up to 8 expansions: short English terms the user
+plausibly means — synonyms, alternative names, abbreviations and their
+expanded forms ("resume" → "cv", "curriculum vitae") — and none for a
+name, filename or code. A short query otherwise misses items described in
+other words: a CV's description never says "resume", and one word's
+embedding is far from a long description's. The API caps the expansions at
+8 whatever the model returns, drops blanks, implausibly long ones and
+repeats of the query or each other (case-insensitively). The rewrite
+joined with its expansions ("resume, cv, curriculum vitae") is embedded;
+the rewrite and expansions are used for the description full-text match
+and the rewrite for the filename match too, as above; the user-text match
+uses the query as typed only. The rewrite is best-effort: if the call
+fails, times out (`SEARCH_QUERY_NORMALIZATION_TIMEOUT_SECONDS`, default 5,
+no retries) or returns something unusable (not the expected JSON, an
+empty query, or one far longer than the original), the original query is
+searched alone, without expansions, and the search still succeeds.
+Neither the query nor its rewrite or expansions is logged, only lengths,
+the expansion count and whether it was rewritten (except locally, below).
 
 `POST /search` embeds the query once, with the same model, and compares it
 with every chunk of the user's (filtered) items by cosine distance (`<=>`).
@@ -1517,6 +1539,12 @@ Temporary diagnostics, while search is tuned: each search logs one
 only with `SEARCH_LOG_CHUNK_TEXT=true`, allowed only with `ENVIRONMENT=local`),
 and one `Search result` line per returned item with `match_sources`: every
 tier that found it (`filename`, `user_text`, `description`, `semantic`).
+At DEBUG, each search also logs `Search query terms` (lengths and
+expansion count; the query, its rewrite and expansions themselves only
+with `SEARCH_LOG_CHUNK_TEXT=true`) and `Semantic search top candidates`:
+the 10 nearest items with their `similarity` and `cosine_distance` before
+the cutoff, whatever the request's `limit`, for calibrating
+`SEARCH_MAX_COSINE_DISTANCE`.
 
 ### Tags, collections, favorites and filtering
 

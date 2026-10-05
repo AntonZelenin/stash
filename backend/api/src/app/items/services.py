@@ -39,7 +39,7 @@ from app.items.models import (
     TextContent,
 )
 from app.items.repos import ItemFilters, ItemRepository, ItemSort, SemanticMatch
-from app.query_normalization import QueryNormalizer
+from app.query_normalization import NormalizedQuery, QueryNormalizer
 from app.rate_limits.limiter import Charge, RateLimiter
 from app.tags.names import normalize_tag_names
 from app.tags.repos import TagRepository
@@ -336,9 +336,10 @@ def _log_created(item: Item, **fields) -> None:
     logger.info("Item created", item_id=item.id, item_type=item.type, item_status=item.status, **fields)
 
 
-async def _normalized_query(query: str, normalizer: QueryNormalizer) -> str:
-    """`query` rewritten for embedding, or `query` itself if that fails:
-    a worse match for a non-English query beats no search at all."""
+async def _normalized_query(query: str, normalizer: QueryNormalizer) -> NormalizedQuery:
+    """`query` rewritten into English, with its expansions; or `query`
+    itself, without expansions, if that fails (an error, a timeout, an
+    unusable answer): a worse match beats no search at all."""
     try:
         return await normalizer.normalize(query)
     except Exception as exc:
@@ -347,7 +348,64 @@ async def _normalized_query(query: str, normalizer: QueryNormalizer) -> str:
             query_chars=len(query),
             error_type=type(exc).__name__,
         )
-        return query
+        return NormalizedQuery(query=query)
+
+
+def _distinct(*queries: str) -> list[str]:
+    """`queries` without repeats (case- and surrounding-space-insensitively),
+    in order."""
+    seen: set[str] = set()
+    distinct: list[str] = []
+    for query in queries:
+        key = query.strip().casefold()
+        if key not in seen:
+            seen.add(key)
+            distinct.append(query)
+    return distinct
+
+
+def _semantic_text(normalized: NormalizedQuery) -> str:
+    """What's embedded for the semantic match: the English query and its
+    expansions in one string ("resume, cv, curriculum vitae"), so a short
+    query lands nearer the ways an item may describe it."""
+    return ", ".join([normalized.query, *normalized.expansions])
+
+
+# How many of the nearest semantic candidates the debug diagnostics list,
+# whatever the cutoff and `limit`.
+_LOGGED_SEMANTIC_CANDIDATES = 10
+
+
+def _log_search_terms_debug(query: str, normalized: NormalizedQuery, candidates: list[SemanticMatch]) -> None:
+    """Debug-level search diagnostics, for calibrating the semantic cutoff
+    and the expansions: what the stages searched, and the nearest semantic
+    candidates with their scores, before the cutoff. The query, its rewrite
+    and expansions are user content: their text is logged only when
+    `search_log_chunk_text` is on (only a local environment allows it),
+    otherwise only their lengths and count."""
+    settings = get_settings()
+    log_text = settings.search_log_chunk_text
+    logger.debug(
+        "Search query terms",
+        query=query if log_text else None,
+        translated_query=normalized.query if log_text else None,
+        expansions=normalized.expansions if log_text else None,
+        query_chars=len(query),
+        translated_query_chars=len(normalized.query),
+        expansion_count=len(normalized.expansions),
+    )
+    logger.debug(
+        "Semantic search top candidates",
+        candidates=[
+            {
+                "item_id": str(candidate.item.id),
+                "similarity": round(1 - candidate.distance, 4),
+                "cosine_distance": round(candidate.distance, 4),
+            }
+            for candidate in candidates[:_LOGGED_SEMANTIC_CANDIDATES]
+        ],
+        max_cosine_distance=settings.search_max_cosine_distance,
+    )
 
 
 def _log_semantic_candidates(candidates: list[SemanticMatch], max_distance: float | None) -> None:
@@ -529,10 +587,14 @@ class ItemService:
         once, in the first tier that found it.
 
         User-written text (filenames, notes, captions) can be in any
-        language, so it's matched against the query as typed. Descriptions
-        are generated in English, so the full-text and semantic matches use
-        the query rewritten into English (see `app.query_normalization`);
-        if that fails, the original query is searched.
+        language, so it's matched against the query as typed (filenames
+        against its English rewrite too). Descriptions are generated in
+        English, so the full-text match uses the query as typed, its
+        rewrite into English and the rewrite's expansions (see
+        `app.query_normalization`), ranking items found only through an
+        expansion last; the semantic match embeds the rewrite with its
+        expansions. If the rewrite fails, the original query alone is
+        searched, without expansions.
 
         `new_search`: whether it's a search the user just made (counted as
         `search_completed` in analytics) rather than one the client runs
@@ -540,10 +602,13 @@ class ItemService:
         change...)."""
         started = time.perf_counter()
         settings = get_settings()
-        name_matches = await self._search_by_filename(user_id=user_id, query=query, limit=limit, filters=filters)
-        search_text = await _normalized_query(query, normalizer)
+        normalized = await _normalized_query(query, normalizer)
+        direct_queries = _distinct(query, normalized.query)
+        name_matches = await self._search_by_filename(
+            user_id=user_id, queries=direct_queries, limit=limit, filters=filters
+        )
         try:
-            query_embedding = await embedder.embed(search_text)
+            query_embedding = await embedder.embed(_semantic_text(normalized))
         except Exception as exc:
             logger.exception("Failed to embed search query; search unavailable", query_chars=len(query))
             raise SearchUnavailableError() from exc
@@ -555,11 +620,22 @@ class ItemService:
             filters=filters,
         )
         description_matches = await self._repo.search_by_description(
-            user_id=user_id, query=search_text, limit=limit, filters=filters
+            user_id=user_id,
+            queries=direct_queries,
+            expansions=normalized.expansions,
+            limit=limit,
+            filters=filters,
         )
-        semantic_candidates = await self._repo.search_by_chunks(
-            user_id=user_id, query_embedding=query_embedding, limit=limit, filters=filters
+        # At least as many as the debug diagnostics list; only the first
+        # `limit` take part in the search.
+        nearest = await self._repo.search_by_chunks(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            limit=max(limit, _LOGGED_SEMANTIC_CANDIDATES),
+            filters=filters,
         )
+        _log_search_terms_debug(query, normalized, nearest)
+        semantic_candidates = nearest[:limit]
         max_distance = settings.search_max_cosine_distance
         semantic_matches = [
             match for match in semantic_candidates if max_distance is None or match.distance <= max_distance
@@ -594,7 +670,7 @@ class ItemService:
         logger.info(
             "Search completed",
             query_chars=len(query),
-            query_rewritten=search_text != query,
+            query_rewritten=normalized.query != query,
             filename_match_count=len(name_matches),
             user_text_match_count=len(text_matches),
             description_match_count=len(description_matches),
@@ -616,14 +692,21 @@ class ItemService:
         return listed
 
     async def _search_by_filename(
-        self, *, user_id: uuid.UUID, query: str, limit: int, filters: ItemFilters
+        self, *, user_id: uuid.UUID, queries: list[str], limit: int, filters: ItemFilters
     ) -> list[Item]:
-        terms = _filename_terms(query)
-        if not terms:
-            return []
-        return await self._repo.search_by_filename(
-            user_id=user_id, terms=terms, exact=query.strip().lower(), limit=limit, filters=filters
-        )
+        """Files and images whose filename matches any of `queries` (the
+        query as typed, then its English rewrite): all the first one's
+        matches, then the next one's not already found."""
+        found: dict[uuid.UUID, Item] = {}
+        for query in queries:
+            terms = _filename_terms(query)
+            if not terms or len(found) >= limit:
+                continue
+            for item in await self._repo.search_by_filename(
+                user_id=user_id, terms=terms, exact=query.strip().lower(), limit=limit, filters=filters
+            ):
+                found.setdefault(item.id, item)
+        return list(found.values())[:limit]
 
     async def get_item(self, *, user_id: uuid.UUID, item_id: uuid.UUID) -> ListedItem:
         row = await self._repo.get(item_id=item_id, user_id=user_id)

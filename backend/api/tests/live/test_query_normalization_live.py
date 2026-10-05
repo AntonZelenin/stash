@@ -67,8 +67,8 @@ def _comparable(text: str) -> str:
 async def test_equivalent_ukrainian_and_english_queries_normalize_alike(
     normalizer: OpenAIQueryNormalizer, embedder: OpenAIEmbedder, ukrainian: str, english: str
 ):
-    from_ukrainian = await normalizer.normalize(ukrainian)
-    from_english = await normalizer.normalize(english)
+    from_ukrainian = (await normalizer.normalize(ukrainian)).query
+    from_english = (await normalizer.normalize(english)).query
 
     similarity = _cosine_similarity(await embedder.embed(from_ukrainian), await embedder.embed(from_english))
     assert similarity >= _MIN_EQUIVALENT_SIMILARITY, (from_ukrainian, from_english, similarity)
@@ -87,4 +87,4 @@ async def test_equivalent_ukrainian_and_english_queries_normalize_alike(
     ],
 )
 async def test_english_queries_are_kept_as_they_are(normalizer: OpenAIQueryNormalizer, query: str):
-    assert _comparable(await normalizer.normalize(query)) == _comparable(query)
+    assert _comparable((await normalizer.normalize(query)).query) == _comparable(query)
