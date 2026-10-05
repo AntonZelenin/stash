@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use api::{Collection, ItemUpdate, ListedItem, Tag, TextItemType};
+use api::{Collection, ItemUpdate, ListedItem, MAX_SEARCH_NOTE_LENGTH, Tag, TextItemType};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use dioxus::prelude::*;
 use dioxus_i18n::t;
@@ -17,6 +17,7 @@ use crate::icons::{
     IconLink, IconMoreHorizontal, IconPencil, IconTrash,
 };
 use crate::media::{AudioBody, AudioStage, MediaKind, MediaPlayer, VideoBody};
+use crate::search_note::ItemSearchNote;
 use crate::text_kind::{Segment, TextKind, first_url, link_segments, text_kind};
 use crate::url_refresh::{RefreshingImage, UrlRefresh, use_url_refresh};
 use crate::viewer_nav::{Step, ViewerNav, keep_step_keys, step_for_key, stepped};
@@ -819,8 +820,9 @@ fn use_favorite(
 }
 
 /// An item open in its `ItemView`, in `mode`: its date, favorite button
-/// and menu above its full content and tags (viewing), or its edit form
-/// (editing).
+/// and menu above its full content, tags and search note (viewing), or its
+/// edit form (editing). Without a search note, viewing offers to add one,
+/// in the edit form.
 ///
 /// `on_mode` asks to switch mode, or to close (None). `on_delete` asks to
 /// delete the item (the view stays open behind the confirmation, and closes
@@ -902,6 +904,10 @@ fn OpenedItem(
                             on_tag_click.call(tag);
                         },
                     }
+                    ItemSearchNote {
+                        note: item.search_note.clone(),
+                        on_add: move |_| on_mode.call(Some(ViewMode::Editing)),
+                    }
                 },
                 ViewMode::Editing => rsx! {
                     ItemEditor {
@@ -960,7 +966,8 @@ fn ItemDetails(item: ListedItem, urls: UrlRefresh) -> Element {
 /// opens. Below it, the collections the item is in and its tags, each with
 /// a × to remove it, and "+ Collection" (a multi-select picker) and "Add
 /// tag" controls; these changes are only applied on Save, so Cancel undoes
-/// them too.
+/// them too. Last, any item's search note, which can be added, changed or
+/// cleared.
 ///
 /// Only changed fields are sent. `on_saved` gets the updated item, or None
 /// if nothing had changed; `on_cancel` drops the changes. If a collection
@@ -976,7 +983,9 @@ fn ItemEditor(
     let session = use_context::<AuthSession>();
     let original_text = item.text.clone().unwrap_or_default();
     let original_filename = item.file.as_ref().map(|file| file.filename.clone());
+    let original_search_note = item.search_note.clone().unwrap_or_default();
     let mut text = use_signal(|| original_text.clone());
+    let mut search_note = use_signal(|| original_search_note.clone());
     let mut filename = use_signal(|| original_filename.clone().unwrap_or_default());
     let original_type = TextItemType::from_api(&item.r#type);
     let mut chosen_type = use_signal(|| original_type.unwrap_or(TextItemType::Text));
@@ -1065,6 +1074,9 @@ fn ItemEditor(
         item_type: chooses_type
             .then_some(chosen_type())
             .filter(|chosen| Some(*chosen) != original_type),
+        // Empty clears it.
+        search_note: Some(search_note().trim().to_string())
+            .filter(|note| note != original_search_note.trim()),
     };
     let invalid = (edits_text && text().trim().is_empty())
         || (edits_filename && filename().trim().is_empty());
@@ -1315,6 +1327,19 @@ fn ItemEditor(
                         }
                     }
                 }
+            }
+            label { class: "item-editor-field",
+                span { class: "item-editor-label", {t!("search-note-label")} }
+                textarea {
+                    class: "item-editor-input item-editor-textarea item-editor-textarea-short",
+                    maxlength: "{MAX_SEARCH_NOTE_LENGTH}",
+                    placeholder: t!("search-note-placeholder"),
+                    value: "{search_note}",
+                    disabled: saving(),
+                    oninput: move |evt| search_note.set(evt.value()),
+                    onkeydown: save_on_shortcut,
+                }
+                span { class: "item-editor-hint", {t!("search-note-hint")} }
             }
             if chooses_type {
                 label { class: "item-editor-field",
@@ -2186,6 +2211,7 @@ mod tests {
             status: "ready".to_string(),
             created_at: "2026-09-24T12:21:14Z".to_string(),
             text: None,
+            search_note: None,
             download_url: None,
             thumbnail_url: None,
             file: None,
@@ -2612,5 +2638,119 @@ mod tests {
             split_url("https://sub.example.com:8080?x"),
             ("sub.example.com:8080".to_string(), Some("?x".to_string()))
         );
+    }
+
+    /// `item`'s card as the grid renders it, with its view open in
+    /// `opened` (if any), as HTML in English.
+    fn rendered(item: ListedItem, opened: Option<ViewMode>) -> String {
+        use std::cell::RefCell;
+        use std::sync::Arc;
+
+        use api::{ApiClient, TokenPair, TokenStore};
+
+        struct SignedOut;
+
+        impl TokenStore for SignedOut {
+            fn load(&self) -> Option<TokenPair> {
+                None
+            }
+            fn save(&self, _: &TokenPair) {}
+            fn clear(&self) {}
+        }
+
+        thread_local! {
+            static SHOWN: RefCell<Option<(ListedItem, Option<ViewMode>)>> = const { RefCell::new(None) };
+        }
+        SHOWN.with(|shown| *shown.borrow_mut() = Some((item, opened)));
+
+        #[allow(non_snake_case)]
+        fn Card() -> Element {
+            let (item, opened) = SHOWN.with(|shown| shown.borrow().clone()).unwrap();
+            use_context_provider(|| {
+                AuthSession::new(ApiClient::new("http://api.test"), Arc::new(SignedOut))
+            });
+            rsx! {
+                ItemCard {
+                    item,
+                    selecting: false,
+                    selected: false,
+                    on_toggle_selected: |_| {},
+                    opened,
+                    nav: None,
+                    on_view: Callback::new(|_| {}),
+                    on_opened: Callback::new(|_| {}),
+                    on_delete: |_| {},
+                    on_tags_changed: |_| {},
+                    on_favorite_changed: |_| {},
+                    on_edited: |_| {},
+                    on_tag_click: |_| {},
+                }
+            }
+        }
+        crate::search_note::tests::render(Card)
+    }
+
+    fn with_search_note(item: ListedItem) -> ListedItem {
+        ListedItem {
+            text: Some("Shown caption".to_string()),
+            search_note: Some("Hidden search words".to_string()),
+            ..item
+        }
+    }
+
+    #[test]
+    fn cards_never_show_the_search_note() {
+        for item in [
+            image("img"),
+            file("pdf", "document", true),
+            file("vid", "video", true),
+            file("mp3", "audio", true),
+            item("txt", "text"),
+            item("url", "link"),
+        ] {
+            let html = rendered(with_search_note(item.clone()), None);
+            assert!(html.contains("Shown caption"), "{}: {html}", item.r#type);
+            assert!(
+                !html.contains("Hidden search words"),
+                "{}: {html}",
+                item.r#type
+            );
+        }
+    }
+
+    #[test]
+    fn an_opened_item_shows_its_search_note() {
+        let html = rendered(with_search_note(image("img")), Some(ViewMode::Viewing));
+
+        assert!(html.contains("Hidden search words"), "{html}");
+        assert!(!html.contains("Add search note"), "{html}");
+    }
+
+    #[test]
+    fn an_opened_item_without_a_search_note_offers_to_add_one() {
+        let html = rendered(image("img"), Some(ViewMode::Viewing));
+
+        assert!(html.contains("+ Add search note"), "{html}");
+    }
+
+    #[test]
+    fn the_edit_form_has_the_search_note_to_change() {
+        let html = rendered(
+            with_search_note(file("pdf", "document", true)),
+            Some(ViewMode::Editing),
+        );
+
+        assert!(html.contains("Search note"), "{html}");
+        assert!(html.contains("Hidden search words"), "{html}");
+        // Both fields: the caption is still its own.
+        assert!(html.contains("Shown caption"), "{html}");
+    }
+
+    #[test]
+    fn the_edit_form_offers_an_empty_search_note_without_one() {
+        let html = rendered(image("img"), Some(ViewMode::Editing));
+
+        assert!(html.contains("Search note"), "{html}");
+        assert!(html.contains("Extra words to find it by"), "{html}");
     }
 }

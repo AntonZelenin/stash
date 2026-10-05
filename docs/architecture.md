@@ -178,6 +178,9 @@ Stores:
   AI-generated for images, documents and videos (by the workers, after
   any caption), the item's own text for notes/links (written by the API on
   save).
+- Search notes (`items.search_note`): optional extra words the user adds
+  to find an item by, apart from its caption and description (see
+  "Search").
 - Tags and collections.
 - Search chunks — each description split into short pieces, each with its
   embedding (`item_search_chunks`).
@@ -365,7 +368,7 @@ boto3 or knows which backend it's on.
 Image and file bytes never pass through the API (or its Lambda): the client
 uploads them straight to object storage.
 
-    client → POST /uploads {type, filename, content_type, size_bytes, text, tags}
+    client → POST /uploads {type, filename, content_type, size_bytes, text, search_note, tags}
            ← {upload_id, upload: {url, method: PUT, headers}, expires_at}
     client → PUT upload.url (the bytes, with upload.headers) → S3 / MinIO
     client → POST /uploads/{upload_id}/finalize
@@ -392,8 +395,8 @@ signed for that key, that content type, that exact `Content-Length` and
 limit is enforced by S3 itself, not only by the API), and any PUT once an
 object is there: the URL can create the staging object once, never replace
 it. Last, it records a pending upload (`pending_uploads`: id = the future
-item id, user, staging key, signed type and size, filename, caption, tag
-names, `expires_at`), in the same transaction deleting up to 100 of the
+item id, user, staging key, signed type and size, filename, caption,
+search note, tag names, `expires_at`), in the same transaction deleting up to 100 of the
 user's abandoned pending rows (see "Incomplete uploads").
 
 Finalize (`ItemService.finalize_upload`): loads the pending upload by id
@@ -746,7 +749,7 @@ visibility_timeout` it's SQS redrive that moves the message). External calls (Op
 succeeded/failed` with `operation`, `model` and `duration_ms`; storage
 failures with `storage_key`.
 
-Never logged: passwords, tokens, emails, note text, captions, filenames,
+Never logged: passwords, tokens, emails, note text, captions, search notes, filenames,
 search queries (only their length), or document/image content — nor the
 prompts sent to OpenAI or its answers (only `input_chars`/`input_bytes`,
 `output_chars`, `model`, `response_status`). One temporary exception, off
@@ -1042,7 +1045,8 @@ Where each event comes from, and how it's counted:
   Account deletion is `account_deleted` only.
 - `item_description_edited`: a `PATCH /items/{id}` that changed the user's
   text (a note's or link's text, an image's or file's caption, including
-  removing it); a rename, a type change or an unchanged text isn't one.
+  removing it); a rename, a type change, a search note edit or an unchanged
+  text isn't one.
 - `search_completed`: once per search the user makes, after it succeeded
   (a 503 or 429 isn't). The client sends `rerun: true` on `POST /search`
   for a query it already got results for (results refreshed after an edit,
@@ -1398,13 +1402,13 @@ Client → API → OpenAI Responses (query → English + expansions)
              → PostgreSQL filename match (query as typed, then English query)
              → OpenAI Embeddings (English query + expansions)
              → PostgreSQL pg_trgm user-text match (query as typed)
-             → PostgreSQL full-text description match (query as typed, English query, expansions)
+             → PostgreSQL full-text description + search note match (query as typed, English query, expansions)
              → PostgreSQL + pgvector best-chunk similarity search (English query + expansions embedding)
              → Results (one list, in that order of tiers)
 
 Search is hybrid: four matches, ranked in tiers in this order. An item
 found by several is listed once, in the first tier that found it. Text
-the user wrote (filenames, notes, captions) can be in any language, so
+the user wrote (filenames, notes, captions, search notes) can be in any language, so
 it's matched against the query as typed (filenames against the English
 rewrite too); the generated descriptions are in English, so they're
 matched against the English rewrite and its expansions (below). The
@@ -1449,6 +1453,17 @@ because the concept was diluted by everything else the image shows.
    query or its rewrite come first, then those found only through an
    expansion; within each, best `ts_rank` first. A query of only stopwords
    ("the") matches nothing here.
+
+   The item's search note (`items.search_note`) is matched here too, the
+   same way: a generated, GIN-indexed `items.search_note_vector`, tokenized
+   like `search_vector` and weighted `A` (the description's words are the
+   default `D`). An item matches if either vector does, and is ranked by
+   `ts_rank` of the two concatenated, so a match in the user's own note
+   ranks above the same match in a generated description (and an item
+   matching in both, first). An item with a note but no description row
+   (a file with no caption that isn't analyzed) is found by its note. A
+   search note isn't part of the user-text match (2) or the description,
+   so it's never embedded: semantic search doesn't see it.
 4. Semantic match, below: items with a chunk closest in meaning.
 
 All four use the same filters and together return at most `limit` items.
@@ -1679,6 +1694,9 @@ stored type and never infer it from the content again
   are removed.
 - Files: the displayed filename, which is also what downloads are named.
   The storage key and stored object never change.
+- Any item: the search note (blank removes it). It's a column of the item
+  itself, with its full-text vector generated by Postgres, so nothing else
+  is rebuilt and nothing is re-embedded.
 
 When the searchable text changes, the item goes through `embedding_jobs`
 again, as on creation.
@@ -1844,7 +1862,7 @@ settings: `MAX_IMAGE_UPLOAD_BYTES` (100 MB) and `MAX_FILE_UPLOAD_BYTES`
 (500 MB), on the declared size and on what arrived (413). The bytes go
 straight to S3 with the pre-signed PUT, so the API never holds them.
 Every text field has a maximum length (422): notes and captions 100,000
-characters, search queries 1,000, filenames 1,000 (stored cut to 255),
+characters, search notes 2,000, search queries 1,000, filenames 1,000 (stored cut to 255),
 tag names 200 as sent (50 after trimming), emails 254, passwords 72
 characters and 72 UTF-8 bytes (bcrypt's limit; 256 accepted at login),
 Turnstile tokens 2,048.
@@ -1858,7 +1876,7 @@ from clients that escape non-ASCII), 4 as raw UTF-8.
 
 | Category | Setting | Limit | Longest valid body, worst case |
 |---|---|---|---|
-| content: `POST /items/text`, `POST /uploads`, `PATCH /items/{id}` | `MAX_CONTENT_REQUEST_BODY_BYTES` | 2 MiB | `POST /uploads`: caption 100,000 × 12 + filename 1,000 × 12 + content type 255 × 12 + 20 tags × 200 × 12 + < 500 of keys and punctuation = 1,263,560 bytes |
+| content: `POST /items/text`, `POST /uploads`, `PATCH /items/{id}` | `MAX_CONTENT_REQUEST_BODY_BYTES` | 2 MiB | `POST /uploads`: caption 100,000 × 12 + search note 2,000 × 12 + filename 1,000 × 12 + content type 255 × 12 + 20 tags and 20 collections × 200 × 12 + < 650 of keys and punctuation = 1,335,710 bytes |
 | everything else | `MAX_REQUEST_BODY_BYTES` | 64 KiB | `POST /users` with a Turnstile token: 254 × 12 + 72 × 12 + 2,048 × 12 + keys < 29 KB (`POST /items/delete`, 100 escaped ids: 21,910) |
 
 2 MiB leaves 66% over the worst content body (a raw UTF-8 one is under
@@ -1987,7 +2005,7 @@ it for users, and must change with it.
 Deleting an account (see "Deleting the account") removes the user's active
 content and everything derived from it from the live database, in one
 transaction: items, notes and links, image and file rows, filenames,
-captions, generated descriptions, search chunks and their embeddings,
+captions, search notes, generated descriptions, search chunks and their embeddings,
 tags, collections, pending uploads and every session. The user's stored
 objects (originals, thumbnails, staged uploads) are scheduled for deletion
 in that same transaction.
@@ -2076,6 +2094,8 @@ User content is sent to OpenAI for processing:
 - search chunks (captions, note and link text, generated descriptions),
   for embeddings;
 - search queries, for normalization and embedding.
+
+Search notes are never sent: they're matched in Postgres only.
 
 Responses API calls set `store=False` and the Embeddings API stores no
 responses (see "Processing Worker"), so nothing is kept for later
@@ -2195,6 +2215,13 @@ Component-specific `CLAUDE.md` files may be added inside individual directories.
   account are uploaded once (`imported_from_device`). The Normal/Blind mode
   (toggled in the top bar) is per device. Blind mode sends the hidden tags
   as `exclude_tag_id` to listing, search, counts and "Surprise me".
+- Search notes (`frontend/packages/ui/src/search_note.rs`): the capture
+  box keeps its one text field (the note, or the staged files' caption);
+  "+ Add search note", beside "+ Add tag", reveals a full-width search note
+  line under the actions row, which stays while it holds text and is sent
+  with the note or every staged file. Item cards never show a search note;
+  an opened item shows it under its tags (or offers to add one, in the edit
+  form), and the edit form changes or clears it.
 - Product analytics (see "Product analytics"): the `analytics` crate (events,
   session clock, queue, PostHog transport) and `ui/src/analytics.rs`
   (`use_init_analytics`, `ActivityTracker`), configured at build time by

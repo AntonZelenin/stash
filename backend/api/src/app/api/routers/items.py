@@ -113,6 +113,7 @@ async def create_text_item(
             tags=payload.tags,
             collections=payload.collections,
             item_type=_domain_text_type(payload.type),
+            search_note=payload.search_note,
         )
     except InvalidTagNameError:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, _INVALID_TAGS) from None
@@ -146,6 +147,7 @@ async def start_upload(
             filename=payload.filename,
             content_type=payload.content_type,
             text=payload.text,
+            search_note=payload.search_note,
             tags=payload.tags,
             collections=payload.collections,
             limiter=limiter,
@@ -451,7 +453,12 @@ async def update_item(
         ).update_item(
             user_id=current_user.id,
             item_id=item_id,
-            edit=ItemEdit(text=payload.text, filename=payload.filename, item_type=_domain_text_type(payload.type)),
+            edit=ItemEdit(
+                text=payload.text,
+                filename=payload.filename,
+                item_type=_domain_text_type(payload.type),
+                search_note=payload.search_note,
+            ),
         )
     except ItemNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from None
@@ -590,6 +597,7 @@ def to_listed_item(listed: ListedItemResult) -> ListedItem:
         status=ItemStatus(listed.item.status),
         created_at=listed.item.created_at,
         text=listed.item.text_content.text if listed.item.text_content else None,
+        search_note=listed.item.search_note,
         download_url=listed.download_url,
         thumbnail_url=listed.thumbnail_url,
         file=(

@@ -10,6 +10,10 @@ from app.tags.names import MAX_TAG_NAME_LENGTH, MAX_TAGS_PER_ITEM
 
 # Longest note/link text or caption: a long document's worth of notes.
 MAX_TEXT_LENGTH = 100_000
+# Longest search note: a few lines of extra context for search, not a
+# second caption (and well within the content body limit, see
+# `Settings.max_content_request_body_bytes`).
+MAX_SEARCH_NOTE_LENGTH = 2_000
 # Longest filename accepted; stored names are cut to 255 characters
 # (`app.items.files.clean_filename`), keeping the extension.
 MAX_FILENAME_LENGTH = 1_000
@@ -109,6 +113,9 @@ class CreateTextItemRequest(BaseModel):
     # Only used when the text mixes text and URLs (default `text`); a bare
     # URL is always a link and text without URLs always a note.
     type: TextItemType | None = None
+    # Optional extra context for search, shown only when the item is
+    # opened; blank is none.
+    search_note: str | None = Field(default=None, max_length=MAX_SEARCH_NOTE_LENGTH)
 
     @field_validator("text")
     @classmethod
@@ -133,6 +140,8 @@ class UpdateItemRequest(BaseModel):
     # Notes and links only. Used when the resulting text mixes text and
     # URLs (unset keeps the current type); otherwise the text decides.
     type: TextItemType | None = None
+    # Any item's search note; an empty one removes it.
+    search_note: str | None = Field(default=None, max_length=MAX_SEARCH_NOTE_LENGTH)
 
 
 MAX_ITEMS_PER_DELETE = 100
@@ -166,6 +175,8 @@ class StartUploadRequest(BaseModel):
     content_type: str | None = Field(default=None, max_length=255)
     # Optional caption stored on the new item; blank is none.
     text: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+    # Optional search note for the new item; blank is none.
+    search_note: str | None = Field(default=None, max_length=MAX_SEARCH_NOTE_LENGTH)
     # Tag names to put on the new item.
     tags: list[TagNameInput] = Field(default_factory=list, max_length=MAX_TAGS_PER_ITEM)
     # Names of collections to put the new item in.
@@ -255,6 +266,9 @@ class ListedItem(BaseModel):
     status: ItemStatus
     created_at: datetime
     text: str | None = None
+    # The user's extra context for search, if any. For the item's opened
+    # view and its edit form only: clients don't show it on cards.
+    search_note: str | None = None
     # Temporary, pre-signed — set only for `type == image`/`file`, and
     # only while the underlying object storage URL remains valid. Served
     # under the original filename; images open inline, files only where

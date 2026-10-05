@@ -203,11 +203,13 @@ class ItemEdit:
     (blank removes the caption). `filename`: a file's displayed (and
     downloaded-as) name; files only. `item_type`: `text` or `link`, notes
     and links only; used when the resulting text mixes text and URLs,
-    otherwise the text decides (see `resolve_text_item_type`)."""
+    otherwise the text decides (see `resolve_text_item_type`).
+    `search_note`: any item's search note (blank removes it)."""
 
     text: str | None = None
     filename: str | None = None
     item_type: ItemType | None = None
+    search_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,8 +269,9 @@ def _as_utc(moment: datetime) -> datetime:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
-def _clean_caption(text: str | None) -> str | None:
-    """An upload's optional caption; blank is none."""
+def _clean_optional_text(text: str | None) -> str | None:
+    """An optional text (an upload's caption, a search note); blank is
+    none."""
     return (text.strip() if text is not None else None) or None
 
 
@@ -581,7 +584,8 @@ class ItemService:
         """Hybrid search, in tiers: files and images whose filename matches
         `query` (see `_filename_terms`), then items whose own text (note,
         link, caption) is close to it (trigram similarity), then items
-        whose description contains its words (full-text), then semantic
+        whose description or search note contains its words (full-text,
+        a search note's match weighted above a description's), then semantic
         matches: items whose best-matching search chunk is closest in
         meaning, within `search_max_cosine_distance`. Each item is listed
         once, in the first tier that found it.
@@ -796,6 +800,10 @@ class ItemService:
             item.type = resolve_text_item_type(
                 item.text_content.text if item.text_content else "", requested=edit.item_type, default=item.type
             )
+        # Full-text search reads it straight from the item (a generated
+        # column), and it's never embedded: nothing to send anywhere.
+        if edit.search_note is not None:
+            item.search_note = _clean_optional_text(edit.search_note)
 
         if needs_embedding:
             await self._add_embedding_job(item)
@@ -806,6 +814,7 @@ class ItemService:
             previous_item_type=previous_type if item.type != previous_type else None,
             renamed=edit.filename is not None,
             text_edited=edit.text is not None,
+            search_note_edited=edit.search_note is not None,
             reembedding=needs_embedding,
         )
         if text_changed:
@@ -1018,13 +1027,15 @@ class ItemService:
         tags: list[str] = (),
         collections: list[str] = (),
         item_type: ItemType | None = None,
+        search_note: str | None = None,
     ) -> Item:
         """`tags` are tag names to put on the new item (see `_link_tags`),
         `collections` names of collections to put it in (see
         `_get_collections`).
         `item_type` (`text` or `link`) is used only if the text mixes text
         and URLs, defaulting to `text`; otherwise the text decides (see
-        `resolve_text_item_type`)."""
+        `resolve_text_item_type`). `search_note` is optional (blank is
+        none)."""
         collection_names = normalize_collection_names(list(collections))
         resolved_tags = await self._link_tags(user_id, normalize_tag_names(list(tags)))
         resolved_collections = await self._get_collections(user_id, collection_names)
@@ -1033,6 +1044,7 @@ class ItemService:
             user_id=user_id,
             text=text,
             item_type=item_type,
+            search_note=_clean_optional_text(search_note),
             tags=resolved_tags,
             collections=resolved_collections,
         )
@@ -1058,6 +1070,7 @@ class ItemService:
         filename: str | None = None,
         content_type: str | None = None,
         text: str | None = None,
+        search_note: str | None = None,
         tags: list[str] = (),
         collections: list[str] = (),
         limiter: RateLimiter,
@@ -1084,10 +1097,12 @@ class ItemService:
         extension, and must match the content on finalize); ignored for
         files, whose type comes from `filename`'s extension and, on
         finalize, their content. `filename` names downloads (for images
-        that's all it does). `text` is an optional caption (blank is
-        none), `tags` are tag names to put on the item and `collections`
-        names of collections to put it in."""
-        caption = _clean_caption(text)
+        that's all it does). `text` is an optional caption and
+        `search_note` an optional search note (blank is none), `tags` are
+        tag names to put on the item and `collections` names of
+        collections to put it in."""
+        caption = _clean_optional_text(text)
+        search_note = _clean_optional_text(search_note)
         tag_names = normalize_tag_names(list(tags))
         collection_names = normalize_collection_names(list(collections))
 
@@ -1137,6 +1152,7 @@ class ItemService:
             size_bytes=size_bytes,
             filename=filename,
             caption=caption,
+            search_note=search_note,
             tag_names=tag_names,
             collection_names=collection_names,
             expires_at=datetime.now(UTC) + timedelta(seconds=ttl),
@@ -1280,6 +1296,7 @@ class ItemService:
             size_bytes=stored.size_bytes,
             filename=upload.filename,
             text=upload.caption,
+            search_note=upload.search_note,
             tags=resolved_tags,
             collections=resolved_collections,
         )
@@ -1340,6 +1357,7 @@ class ItemService:
             content_type=classified.content_type,
             size_bytes=stored.size_bytes,
             text=upload.caption,
+            search_note=upload.search_note,
             status=ItemStatus.pending if classified.analyzable else ItemStatus.completed,
             tags=resolved_tags,
             collections=resolved_collections,

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 from stash_shared.embeddings import EMBEDDING_DIMENSIONS, Embedder
 
-from app.items.models import Description, ItemStatus, ItemType, SearchChunk
+from app.items.models import Description, Item, ItemStatus, ItemType, SearchChunk
 from app.items.repos import ItemRepository
 from app.items.services import ItemService
 from app.query_normalization import NormalizedQuery, QueryNormalizer
@@ -101,10 +101,12 @@ class _Storage:
         return f"https://storage.test/{key}"
 
 
-async def _image(session: AsyncSession, user_id: uuid.UUID, chunks: dict[str, list[float]]) -> uuid.UUID:
+async def _image(
+    session: AsyncSession, user_id: uuid.UUID, chunks: dict[str, list[float]], search_note: str | None = None
+) -> uuid.UUID:
     """A completed image whose generated description is `chunks` (one per
     line, as the image analyzer stores them), embedded as given — what the
-    embedding worker would have written."""
+    embedding worker would have written — with `search_note`, if any."""
     item_id = uuid.uuid4()
     repo = ItemRepository(session)
     item = await repo.create_image_item(
@@ -115,6 +117,7 @@ async def _image(session: AsyncSession, user_id: uuid.UUID, chunks: dict[str, li
         content_sha256="0" * 64,
         content_type="image/png",
         size_bytes=1,
+        search_note=search_note,
     )
     item.status = ItemStatus.completed
     item.description = Description(text="\n".join(chunks))
@@ -259,7 +262,11 @@ async def test_deleting_an_item_deletes_its_chunks(session, user_id):
     assert count == 0
 
 
-async def _file(session: AsyncSession, user_id: uuid.UUID, filename: str) -> uuid.UUID:
+async def _file(
+    session: AsyncSession, user_id: uuid.UUID, filename: str, search_note: str | None = None
+) -> uuid.UUID:
+    """A file nothing describes (no caption, not analyzed): no description
+    row at all."""
     item = await ItemRepository(session).create_file_item(
         item_id=uuid.uuid4(),
         user_id=user_id,
@@ -269,6 +276,7 @@ async def _file(session: AsyncSession, user_id: uuid.UUID, filename: str) -> uui
         filename=filename,
         content_type="application/pdf",
         size_bytes=1,
+        search_note=search_note,
     )
     await session.commit()
     return item.id
@@ -351,3 +359,73 @@ async def test_expansions_with_search_syntax_are_taken_literally(session, user_i
     sneaky = _Normalizer(expansions={"resume": ["-resume", "x or cat"]})
 
     assert await _search(session, user_id, "resume", _FAR, normalizer=sneaky) == []
+
+
+# ---- search notes ----
+
+
+async def test_a_search_note_alone_finds_an_item(session, user_id, caplog):
+    caplog.set_level(logging.INFO)
+    image = await _image(session, user_id, {"a bowl of red soup": _unit(a0=1)}, search_note="Granny's borscht, 1987")
+    # No description row at all: found by its note only.
+    scan = await _file(session, user_id, "scan_0042.pdf", search_note="паспорт, сторінка 2")
+    await _image(session, user_id, {"grey cat on a sofa": _unit(a1=1)})
+
+    assert await _search(session, user_id, "borscht", _FAR) == [image]
+    # Indexed like descriptions: stemmed, and split at punctuation.
+    assert await _search(session, user_id, "grannies", _FAR) == [image]
+    assert await _search(session, user_id, "1987", _FAR) == [image]
+    # User-written, so it can be in any language and is matched as typed.
+    assert await _search(session, user_id, "паспорт", _FAR) == [scan]
+    results = [record for record in caplog.records if record.getMessage() == "Search result"]
+    assert {tuple(record.stash_fields["match_sources"]) for record in results} == {("description",)}
+
+
+async def test_a_search_note_is_matched_through_the_rewrite_and_expansions(session, user_id):
+    rewritten = _Normalizer(rewrites={"резюме": "resume"}, expansions={"резюме": ["cv"]})
+    by_rewrite = await _image(session, user_id, {"a printed page": _unit(a0=1)}, search_note="resume for Acme")
+    by_expansion = await _image(session, user_id, {"a printed page": _unit(a1=1)}, search_note="old cv")
+
+    assert await _search(session, user_id, "резюме", _FAR, normalizer=rewritten) == [by_rewrite, by_expansion]
+
+
+async def test_a_search_note_match_ranks_above_a_generated_description_match(session, user_id):
+    noted = await _image(session, user_id, {"a bowl of red soup": _unit(a0=1)}, search_note="borscht")
+    # Newer, and says it twice: still after the user's own note.
+    described = await _image(
+        session, user_id, {"borscht with sour cream": _unit(a1=1), "a pot of borscht": _unit(a2=1)}
+    )
+
+    assert await _search(session, user_id, "borscht", _FAR) == [noted, described]
+
+
+async def test_a_note_and_description_match_together_rank_first(session, user_id):
+    described = await _image(session, user_id, {"borscht with sour cream": _unit(a0=1)})
+    both = await _image(session, user_id, {"a pot of borscht": _unit(a1=1)}, search_note="borscht")
+    noted = await _image(session, user_id, {"a bowl of red soup": _unit(a2=1)}, search_note="borscht")
+
+    assert await _search(session, user_id, "borscht", _FAR) == [both, noted, described]
+
+
+async def test_filename_matches_still_come_before_search_note_matches(session, user_id):
+    noted = await _image(session, user_id, {"a printed page": _unit(a0=1)}, search_note="invoice from Acme")
+    named = await _file(session, user_id, "invoice.pdf")
+
+    assert await _search(session, user_id, "invoice", _FAR) == [named, noted]
+
+
+async def test_a_changed_or_cleared_search_note_stops_matching(session, user_id):
+    image = await _image(session, user_id, {"a bowl of red soup": _unit(a0=1)}, search_note="borscht")
+    item = await session.get(Item, image)
+
+    item.search_note = "solyanka"
+    await session.commit()
+    assert await _search(session, user_id, "borscht", _FAR) == []
+    assert await _search(session, user_id, "solyanka", _FAR) == [image]
+
+    item.search_note = None
+    await session.commit()
+    assert await _search(session, user_id, "solyanka", _FAR) == []
+    # Its description still matches as before.
+    assert await _search(session, user_id, "soup", _FAR) == [image]
+

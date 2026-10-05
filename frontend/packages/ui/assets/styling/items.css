@@ -1214,6 +1214,16 @@
     min-height: 200px;
 }
 
+/* A search note is a few lines at most. */
+.item-editor-textarea-short {
+    min-height: 60px;
+}
+
+.item-editor-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .item-editor-tags {
     display: flex;
     flex-wrap: wrap;
@@ -1413,4 +1423,36 @@
         bottom: 20px;
         transform: none;
     }
+}
+
+/* ---- an opened item's search note (never on its card) ---- */
+
+/* Under the tags, smaller and muted: secondary to the item's content. */
+.item-search-note {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 10px;
+}
+
+.item-search-note-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.item-search-note-text {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.item-search-note-add {
+    align-self: flex-start;
+    margin-top: 10px;
 }

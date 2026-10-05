@@ -55,6 +55,9 @@ pub(crate) struct CreateTextItemRequest {
     /// See `TextItemType`; unset for the server's default (`text`).
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<TextItemType>,
+    /// Optional extra context for search (see `ListedItem::search_note`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_note: Option<String>,
 }
 
 /// The type chosen for a note/link whose text mixes text and URLs. The
@@ -109,6 +112,10 @@ pub struct NewUpload {
     /// Optional caption for the new item.
     #[serde(rename = "text", skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+    /// Optional search note for the new item (see
+    /// `ListedItem::search_note`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_note: Option<String>,
     /// Tag names for the new item.
     pub tags: Vec<String>,
     /// Names of collections to put the new item in.
@@ -397,6 +404,11 @@ pub struct ListedItem {
     pub status: String,
     pub created_at: String,
     pub text: Option<String>,
+    /// The user's extra context for search, apart from the caption (or a
+    /// note's text): shown only when the item is opened or edited, never
+    /// on its card. `default` keeps older API responses deserializable.
+    #[serde(default)]
+    pub search_note: Option<String>,
     /// Temporary, pre-signed — set only for `type == "image"`/`"file"`.
     /// Files open inline where that's safe and possible, under their
     /// original filename; otherwise they download.
@@ -434,6 +446,9 @@ pub struct ItemUpdate {
     /// type for text mixing text and URLs.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<TextItemType>,
+    /// Any item's search note, where empty removes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -547,5 +562,74 @@ mod tests {
                 item_count: 13,
             }]
         );
+    }
+
+    #[test]
+    fn listed_items_without_a_search_note_still_parse() {
+        let parsed: ListedItem = serde_json::from_str(
+            r#"{"id": "i1", "type": "text", "status": "completed", "created_at": "2026-10-05T12:00:00Z", "text": "hi"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.search_note, None);
+
+        let noted: ListedItem = serde_json::from_str(
+            r#"{"id": "i1", "type": "text", "status": "completed", "created_at": "2026-10-05T12:00:00Z", "text": "hi", "search_note": "groceries"}"#,
+        )
+        .unwrap();
+        assert_eq!(noted.search_note.as_deref(), Some("groceries"));
+    }
+
+    #[test]
+    fn a_search_note_is_sent_only_if_there_is_one() {
+        let text_item = |search_note: Option<&str>| {
+            serde_json::to_value(CreateTextItemRequest {
+                text: "buy milk".to_string(),
+                tags: Vec::new(),
+                collections: Vec::new(),
+                item_type: None,
+                search_note: search_note.map(str::to_string),
+            })
+            .unwrap()
+        };
+        assert_eq!(text_item(Some("groceries"))["search_note"], "groceries");
+        assert!(text_item(None).get("search_note").is_none());
+
+        let upload = |search_note: Option<&str>| {
+            serde_json::to_value(NewUpload {
+                upload_type: UploadType::File,
+                file_name: "a.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                size_bytes: 1,
+                caption: Some("caption".to_string()),
+                search_note: search_note.map(str::to_string),
+                tags: Vec::new(),
+                collections: Vec::new(),
+            })
+            .unwrap()
+        };
+        let noted = upload(Some("tax return"));
+        assert_eq!(
+            (&noted["text"], &noted["search_note"]),
+            (&"caption".into(), &"tax return".into())
+        );
+        assert!(upload(None).get("search_note").is_none());
+    }
+
+    #[test]
+    fn an_edit_sends_the_search_note_only_when_it_changed() {
+        let unchanged = serde_json::to_value(ItemUpdate {
+            text: Some("caption".to_string()),
+            ..ItemUpdate::default()
+        })
+        .unwrap();
+        assert!(unchanged.get("search_note").is_none());
+
+        // Empty clears it.
+        let cleared = serde_json::to_value(ItemUpdate {
+            search_note: Some(String::new()),
+            ..ItemUpdate::default()
+        })
+        .unwrap();
+        assert_eq!(cleared, serde_json::json!({"search_note": ""}));
     }
 }

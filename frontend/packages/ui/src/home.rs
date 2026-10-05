@@ -30,6 +30,7 @@ use crate::icons::{
 use crate::items::{ItemGrid, ItemViewer, TagPicker, TextTypeSelect, suggested_tags};
 use crate::preferences::{DisplayMode, Preferences, sync_hidden_tags};
 use crate::routes::Route;
+use crate::search_note::{AddSearchNoteButton, SearchNoteInput, search_note_shown};
 use crate::selection::{
     SelectionBar, SelectionEvent, merged, toggled_id, use_selection_events, with_local_edits,
 };
@@ -428,6 +429,11 @@ pub fn Home() -> Element {
     // open.
     let mut pending_collections = use_signal(Vec::<String>::new);
     let mut picking_collection = use_signal(|| false);
+    // The search note for whatever is sent next, and whether its field was
+    // asked for ("+ Add search note"): hidden until then, so the capture box
+    // stays as simple as ever when it isn't used.
+    let mut search_note = use_signal(String::new);
+    let mut search_note_open = use_signal(|| false);
     // The user's suggested tags (recently, then frequently used), minus any
     // already added. Refetched as pending tags change (including being
     // cleared once something is saved with them) and when a card's tags
@@ -769,6 +775,8 @@ pub fn Home() -> Element {
                     note.set(String::new());
                     pending_tags.set(Vec::new());
                     pending_collections.set(Vec::new());
+                    search_note.set(String::new());
+                    search_note_open.set(false);
                 }
                 status.set(last_error);
                 saved_items.restart();
@@ -832,6 +840,8 @@ pub fn Home() -> Element {
                 let labels = ItemLabels {
                     tags: pending_tags(),
                     collections: pending_collections(),
+                    search_note: Some(search_note().trim().to_string())
+                        .filter(|note| !note.is_empty()),
                 };
                 spawn(async move {
                     is_submitting.set(true);
@@ -889,6 +899,8 @@ pub fn Home() -> Element {
                 let labels = ItemLabels {
                     tags: pending_tags(),
                     collections: pending_collections(),
+                    search_note: Some(search_note().trim().to_string())
+                        .filter(|note| !note.is_empty()),
                 };
                 match session.create_text_item(&text, labels, chosen_type).await {
                     Ok(_) => {
@@ -896,6 +908,8 @@ pub fn Home() -> Element {
                         note_type.set(TextItemType::Text);
                         pending_tags.set(Vec::new());
                         pending_collections.set(Vec::new());
+                        search_note.set(String::new());
+                        search_note_open.set(false);
                         saved_items.restart();
                         search_results.restart();
                         item_counts.restart();
@@ -1309,7 +1323,7 @@ pub fn Home() -> Element {
                                 IconArrowUp {}
                             }
                         }
-                        // [ SUGGESTED: #tag • #tag … ]  [ + Add tag ] [ + Collection ]
+                        // [ SUGGESTED: #tag • #tag … ]  [ + Add tag ] [ + Add search note ] [ + Collection ]
                         div { class: "home-options-row",
                             // One click adds a suggestion to the pending
                             // tags; ones already added are left out. Empty
@@ -1347,6 +1361,11 @@ pub fn Home() -> Element {
                                     span { class: "home-option-plus", "+" }
                                     {t!("tags-add")}
                                 }
+                                AddSearchNoteButton {
+                                    open: search_note_open,
+                                    note: search_note(),
+                                    disabled: is_submitting(),
+                                }
                                 if COLLECTIONS_ENABLED {
                                     div { class: "collection-picker-anchor",
                                         button {
@@ -1376,6 +1395,14 @@ pub fn Home() -> Element {
                                         }
                                     }
                                 }
+                            }
+                        }
+                        // Only once asked for, or while it holds text.
+                        if search_note_shown(search_note_open(), &search_note()) {
+                            SearchNoteInput {
+                                value: search_note,
+                                disabled: is_submitting(),
+                                on_submit: submit,
                             }
                         }
                     }

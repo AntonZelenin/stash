@@ -140,11 +140,11 @@ class Settings(BaseSettings):
     #
     # Content (`POST /items/text`, `POST /uploads`, `PATCH /items/{id}`):
     # the largest is `POST /uploads`: caption 100,000 x 12 = 1,200,000,
-    # filename 1,000 x 12 = 12,000, content type 255 x 12 = 3,060, 20 tags
-    # and 20 collections x 200 x 12 = 48,000 each, the rest (keys, quotes,
-    # commas, type, size) under 600: at most 1,311,660 bytes (1.25 MiB).
-    # 2 MiB leaves 60% more for whitespace and other encoders; raw UTF-8
-    # needs at most 470 KB.
+    # search note 2,000 x 12 = 24,000, filename 1,000 x 12 = 12,000,
+    # content type 255 x 12 = 3,060, 20 tags and 20 collections x 200 x 12
+    # = 48,000 each, the rest (keys, quotes, commas, type, size) under 650:
+    # at most 1,335,710 bytes (1.27 MiB). 2 MiB leaves 57% more for
+    # whitespace and other encoders; raw UTF-8 needs at most 480 KB.
     max_content_request_body_bytes: int = 2 * 1024 * 1024
     # Everything else. The largest is `POST /users`: email 254 x 12 =
     # 3,048, password 72 x 12 = 864, Turnstile token 2,048 x 12 = 24,576,

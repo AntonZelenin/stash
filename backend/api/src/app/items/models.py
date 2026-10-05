@@ -74,6 +74,13 @@ class Item(Base):
     # processing attempt started.
     status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # The user's extra context for search, shown only when the item is
+    # opened: never with the item's caption or in its description, so it's
+    # neither embedded nor sent to OpenAI. Matched by full-text search
+    # through `search_note_vector`, a generated column only the migrations
+    # define (see `ItemRepository.search_by_description`). None if there's
+    # none.
+    search_note: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     text_content: Mapped["TextContent | None"] = relationship(back_populates="item", uselist=False)
     image: Mapped["ImageMetadata | None"] = relationship(back_populates="item", uselist=False)
@@ -193,6 +200,8 @@ class PendingUpload(Base):
     # The new item's caption, and tag and collection names (already
     # normalized).
     caption: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Its search note (see `Item.search_note`).
+    search_note: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     tag_names: Mapped[list[str]] = mapped_column(JSON, default=list)
     collection_names: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

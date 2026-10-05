@@ -404,6 +404,8 @@ paths:
                     maxLength: 200
                 type:
                   $ref: "#/components/schemas/TextItemType"
+                search_note:
+                  $ref: "#/components/schemas/SearchNote"
 
       responses:
         "202":
@@ -1772,6 +1774,8 @@ components:
             and searchable). Blank is treated as absent.
           type: string
           maxLength: 100000
+        search_note:
+          $ref: "#/components/schemas/SearchNote"
         tags:
           description: >-
             Tag names to put on the new item (existing tags reused
@@ -2098,6 +2102,14 @@ components:
           type:
             - string
             - "null"
+        search_note:
+          description: >-
+            The user's search note, if any (see `SearchNote`). Meant for the
+            item's opened view and edit form; clients don't show it on item
+            cards.
+          type:
+            - string
+            - "null"
         download_url:
           description: >-
             Temporary, pre-signed download URL. Set only for `type == image`
@@ -2136,6 +2148,17 @@ components:
             - string
             - "null"
 
+    SearchNote:
+      description: >-
+        Optional extra context the user adds for search, apart from the
+        caption (or a note's text) and from the generated description: it's
+        never shown on item cards, never embedded or sent to OpenAI, and is
+        matched by the full-text part of `POST /search`, ranked above an
+        equal match in a generated description. Surrounding whitespace is
+        trimmed; blank is treated as absent.
+      type: string
+      maxLength: 2000
+
     TextItemType:
       description: >-
         The type for a note/link whose text mixes text and URLs. Ignored
@@ -2167,6 +2190,11 @@ components:
             Must not be blank.
           type: string
           maxLength: 1000
+        search_note:
+          description: >-
+            Any item's search note (see `SearchNote`); blank removes it.
+          type: string
+          maxLength: 2000
 
     DeleteItemsRequest:
       type: object

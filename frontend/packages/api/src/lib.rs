@@ -6,7 +6,7 @@ mod error;
 mod models;
 mod token_store;
 
-pub use client::{ApiClient, MAX_FILES_PER_DUPLICATE_CHECK};
+pub use client::{ApiClient, MAX_FILES_PER_DUPLICATE_CHECK, MAX_SEARCH_NOTE_LENGTH};
 pub use error::{ApiError, FieldError};
 pub use models::{
     Collection, CurrentUser, DuplicateGroup, ItemCounts, ItemCreated, ItemKindCounts, ItemQuery,

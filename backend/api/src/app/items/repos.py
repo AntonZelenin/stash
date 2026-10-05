@@ -266,6 +266,7 @@ class ItemRepository:
         user_id: uuid.UUID,
         text: str,
         item_type: ItemType,
+        search_note: str | None = None,
         tags: list[Tag] = (),
         collections: list[Collection] = (),
     ) -> Item:
@@ -278,6 +279,7 @@ class ItemRepository:
             user_id=user_id,
             type=item_type,
             status=ItemStatus.completed,
+            search_note=search_note,
             text_content=TextContent(text=text),
             description=Description(text=text),
             tags=list(tags),
@@ -299,6 +301,7 @@ class ItemRepository:
         size_bytes: int,
         filename: str | None = None,
         text: str | None = None,
+        search_note: str | None = None,
         tags: list[Tag] = (),
         collections: list[Collection] = (),
     ) -> Item:
@@ -306,6 +309,7 @@ class ItemRepository:
             id=item_id,
             user_id=user_id,
             type=ItemType.image,
+            search_note=search_note,
             image=ImageMetadata(
                 storage_key=storage_key,
                 content_etag=content_etag,
@@ -339,6 +343,7 @@ class ItemRepository:
         content_type: str,
         size_bytes: int,
         text: str | None = None,
+        search_note: str | None = None,
         status: ItemStatus = ItemStatus.completed,
         tags: list[Tag] = (),
         collections: list[Collection] = (),
@@ -350,6 +355,7 @@ class ItemRepository:
             user_id=user_id,
             type=ItemType.file,
             status=status,
+            search_note=search_note,
             file=FileMetadata(
                 storage_key=storage_key,
                 content_etag=content_etag,
@@ -620,32 +626,45 @@ class ItemRepository:
     ) -> list[Item]:
         """The user's items whose searchable text (`item_descriptions`: the
         AI-generated description — for an image, all its search chunks —
-        plus the caption) contains every word of any of `queries` (the
-        query as typed and its English rewrite) or of any of `expansions`
-        (other terms for it: "cv" for "resume"), so "city" finds an image
-        with a "cyberpunk city" chunk however far its embedding is (the
-        text is indexed with the 'english' config, so "cities" finds
-        "city"). Items matching one of `queries` come first, then those
-        matching only an expansion; within each, best `ts_rank` (against
-        all of them) first, then newest. `websearch_to_tsquery` accepts any
-        input (its operators are the user's, so expansions, written by a
-        model, go through `plainto_tsquery`, which has none), and a query of
-        only stopwords ("the") matches nothing. Uses the GIN index on
-        `search_vector`. Postgres only."""
+        plus the caption) or search note (`items.search_note`) contains
+        every word of any of `queries` (the query as typed and its English
+        rewrite) or of any of `expansions` (other terms for it: "cv" for
+        "resume"), so "city" finds an image with a "cyberpunk city" chunk
+        however far its embedding is (the text is indexed with the
+        'english' config, so "cities" finds "city"). Items matching one of
+        `queries` come first, then those matching only an expansion; within
+        each, best `ts_rank` (against all of them) first, then newest. Both
+        texts are ranked as one, the search note's words weighted 'A' and
+        the description's 'D', so a match in the user's own note ranks
+        above the same match in a description. `websearch_to_tsquery`
+        accepts any input (its operators are the user's, so expansions,
+        written by a model, go through `plainto_tsquery`, which has none),
+        and a query of only stopwords ("the") matches nothing. Uses the GIN
+        indexes on `search_vector` and `search_note_vector`. Postgres
+        only."""
         direct = _any_tsquery([func.websearch_to_tsquery("english", query) for query in queries])
         if direct is None:
             return []
         expanded = _any_tsquery([func.plainto_tsquery("english", expansion) for expansion in expansions])
-        search_vector = literal_column("item_descriptions.search_vector")
+        description_vector = literal_column("item_descriptions.search_vector")
+        note_vector = literal_column("items.search_note_vector")
         ts_query = direct if expanded is None else direct.op("||")(expanded)
-        rank = func.ts_rank(search_vector, ts_query)
+
+        def matches(query):
+            # Each vector on its own, so each can use its index. Either may
+            # be NULL (no description row, no note).
+            return or_(description_vector.op("@@")(query), note_vector.op("@@")(query))
+
+        empty = literal_column("''::tsvector")
+        searchable = func.coalesce(note_vector, empty).op("||")(func.coalesce(description_vector, empty))
+        rank = func.ts_rank(searchable, ts_query)
         stmt = (
             select(Item)
-            .join(Description, Description.item_id == Item.id)
+            .outerjoin(Description, Description.item_id == Item.id)
             .options(*_LISTED_ITEM_LOADS)
-            .where(Item.user_id == user_id, search_vector.op("@@")(ts_query))
+            .where(Item.user_id == user_id, matches(ts_query))
             .order_by(
-                case((search_vector.op("@@")(direct), 0), else_=1),
+                case((matches(direct), 0), else_=1),
                 rank.desc(),
                 Item.created_at.desc(),
                 Item.id,

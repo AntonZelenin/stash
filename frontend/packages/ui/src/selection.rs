@@ -830,6 +830,7 @@ mod tests {
             status: "ready".to_string(),
             created_at: "2026-09-24T12:21:14Z".to_string(),
             text: Some(id.to_string()),
+            search_note: None,
             download_url: None,
             thumbnail_url: None,
             file: None,

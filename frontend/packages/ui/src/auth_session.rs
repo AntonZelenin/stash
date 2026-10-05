@@ -11,11 +11,12 @@ use dioxus::prelude::*;
 
 /// What a new item is saved with besides its content: names of tags to put
 /// on it and of collections to put it in (existing ones reused, missing ones
-/// created).
+/// created), and its optional search note.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ItemLabels {
     pub tags: Vec<String>,
     pub collections: Vec<String>,
+    pub search_note: Option<String>,
 }
 
 /// Shared, reactive auth state. A platform entrypoint constructs one (with
@@ -144,6 +145,7 @@ impl AuthSession {
                         &labels.tags,
                         &labels.collections,
                         item_type,
+                        labels.search_note.as_deref(),
                     )
                     .await
             }
@@ -209,6 +211,7 @@ impl AuthSession {
             content_type: content_type.to_string(),
             size_bytes: data.len() as u64,
             caption,
+            search_note: labels.search_note,
             tags: labels.tags,
             collections: labels.collections,
         };

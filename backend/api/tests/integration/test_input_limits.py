@@ -8,7 +8,7 @@ import pytest
 from fastapi.routing import APIRoute
 from httpx import AsyncClient
 
-from app.api.schemas.items import MAX_FILENAME_LENGTH, MAX_TEXT_LENGTH
+from app.api.schemas.items import MAX_FILENAME_LENGTH, MAX_SEARCH_NOTE_LENGTH, MAX_TEXT_LENGTH
 from app.collections.names import MAX_COLLECTION_NAME_LENGTH, MAX_COLLECTIONS_PER_ITEM
 from app.body_size import BodyLimit, BodyLimitedRoute, body_limit_of
 from app.config import get_settings
@@ -105,8 +105,22 @@ async def test_upload_caption_filename_and_tag_limits(client: AsyncClient):
     caption = await start_upload(client, token, type="file", filename="a.txt", size_bytes=1, text="x" * 100_001)
     filename = await start_upload(client, token, type="file", filename="x" * 1_001, size_bytes=1)
     tag = await start_upload(client, token, type="file", filename="a.txt", size_bytes=1, tags=["x" * 201])
+    note = await start_upload(
+        client, token, type="file", filename="a.txt", size_bytes=1, search_note="x" * (MAX_SEARCH_NOTE_LENGTH + 1)
+    )
 
-    assert (caption.status_code, filename.status_code, tag.status_code) == (422, 422, 422)
+    assert (caption.status_code, filename.status_code, tag.status_code, note.status_code) == (422, 422, 422, 422)
+
+
+async def test_search_note_limits(client: AsyncClient):
+    _, token = await register_and_login(client)
+    too_long = "x" * (MAX_SEARCH_NOTE_LENGTH + 1)
+
+    on_create = await client.post("/items/text", json={"text": "note", "search_note": too_long}, headers=_auth(token))
+    created = await client.post("/items/text", json={"text": "note"}, headers=_auth(token))
+    on_edit = await client.patch(f"/items/{created.json()['id']}", json={"search_note": too_long}, headers=_auth(token))
+
+    assert (on_create.status_code, on_edit.status_code) == (422, 422)
 
 
 async def test_tag_name_limits(client: AsyncClient):
@@ -190,6 +204,7 @@ async def test_longest_caption_filename_and_tags_fit_on_upload_and_edit(client: 
             "size_bytes": 10,
             "filename": EMOJI * (MAX_FILENAME_LENGTH - 4) + ".txt",
             "text": EMOJI * MAX_TEXT_LENGTH,
+            "search_note": EMOJI * MAX_SEARCH_NOTE_LENGTH,
             "tags": [f"{EMOJI * (MAX_TAG_NAME_LENGTH - 3)} {n}" for n in range(MAX_TAGS_PER_ITEM)],
             "collections": [
                 f"{EMOJI * (MAX_COLLECTION_NAME_LENGTH - 3)} {n}" for n in range(MAX_COLLECTIONS_PER_ITEM)
@@ -201,7 +216,7 @@ async def test_longest_caption_filename_and_tags_fit_on_upload_and_edit(client: 
     created = await client.post("/items/text", json={"text": "note"}, headers=_auth(token))
     edited = await client.patch(
         f"/items/{created.json()['id']}",
-        content=json.dumps({"text": EMOJI * MAX_TEXT_LENGTH}),
+        content=json.dumps({"text": EMOJI * MAX_TEXT_LENGTH, "search_note": EMOJI * MAX_SEARCH_NOTE_LENGTH}),
         headers={**_auth(token), **_JSON},
     )
 
@@ -220,6 +235,7 @@ async def test_the_largest_possible_content_body_is_under_the_limit(client: Asyn
             "filename": EMOJI * MAX_FILENAME_LENGTH,
             "content_type": EMOJI * 255,
             "text": EMOJI * MAX_TEXT_LENGTH,
+            "search_note": EMOJI * MAX_SEARCH_NOTE_LENGTH,
             "tags": [EMOJI * (4 * MAX_TAG_NAME_LENGTH)] * MAX_TAGS_PER_ITEM,
             "collections": [EMOJI * (4 * MAX_COLLECTION_NAME_LENGTH)] * MAX_COLLECTIONS_PER_ITEM,
         }

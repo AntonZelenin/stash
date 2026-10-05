@@ -35,6 +35,7 @@ mod duplicates;
 mod filters;
 mod items;
 mod media;
+mod search_note;
 mod selection;
 mod surprise;
 mod text_kind;

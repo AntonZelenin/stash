@@ -627,6 +627,14 @@
     color: inherit;
 }
 
+/* The search note, once asked for: the capture box's own text area again
+   (see home.rs), lined up with the text row above, under the actions row's
+   hairline. */
+.home-search-note {
+    display: flex;
+    padding-left: 12px;
+}
+
 .home-status {
     margin: 16px 0 0;
     color: #dc2626;

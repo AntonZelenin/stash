@@ -15,6 +15,8 @@ use crate::models::{
 
 /// Most files `find_duplicates` takes at once (the API's limit).
 pub const MAX_FILES_PER_DUPLICATE_CHECK: usize = 100;
+/// Longest search note the API accepts, in characters.
+pub const MAX_SEARCH_NOTE_LENGTH: usize = 2_000;
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -162,7 +164,7 @@ impl ApiClient {
     }
 
     /// `tags`: names of tags to put on the new item; `collections`: names
-    /// of collections to put it in.
+    /// of collections to put it in; `search_note`: its optional search note.
     pub async fn create_text_item(
         &self,
         access_token: &str,
@@ -170,6 +172,7 @@ impl ApiClient {
         tags: &[String],
         collections: &[String],
         item_type: Option<TextItemType>,
+        search_note: Option<&str>,
     ) -> Result<ItemCreated, ApiError> {
         let response = self
             .authenticated(Method::POST, "/items/text", access_token)
@@ -178,6 +181,7 @@ impl ApiClient {
                 tags: tags.to_vec(),
                 collections: collections.to_vec(),
                 item_type,
+                search_note: search_note.map(str::to_string),
             })
             .send()
             .await
